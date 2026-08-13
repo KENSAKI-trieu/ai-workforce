@@ -1,7 +1,8 @@
 """HTTP client for the standalone, stateless AI runtime."""
 
 from functools import lru_cache
-from typing import Any
+import json
+from typing import Any, Iterator
 
 import httpx
 
@@ -9,7 +10,9 @@ from app.core.config import settings
 
 
 class AIServiceError(RuntimeError):
-    pass
+    def __init__(self, message: str, *, status_code: int | None = None) -> None:
+        super().__init__(message)
+        self.status_code = status_code
 
 
 class AIServiceClient:
@@ -27,20 +30,79 @@ class AIServiceClient:
             return {}
         return {"X-AI-Service-Key": settings.AI_SERVICE_INTERNAL_TOKEN}
 
-    def _post(self, path: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def _post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         if not self.enabled:
             raise AIServiceError("AI service URL is not configured")
         try:
+            headers = {**self.headers, **(extra_headers or {})}
             response = httpx.post(
                 f"{self.base_url}{path}",
                 json=payload,
-                headers=self.headers,
+                headers=headers,
                 timeout=self.timeout,
             )
             response.raise_for_status()
             return response.json()
-        except httpx.HTTPError as exc:
+        except httpx.HTTPStatusError as exc:
+            raise AIServiceError(
+                f"AI service request failed: {path}",
+                status_code=exc.response.status_code,
+            ) from exc
+        except httpx.RequestError as exc:
             raise AIServiceError(f"AI service request failed: {path}") from exc
+
+    def _stream_post(
+        self,
+        path: str,
+        payload: dict[str, Any],
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> Iterator[dict[str, Any]]:
+        if not self.enabled:
+            raise AIServiceError("AI service URL is not configured")
+        headers = {
+            **self.headers,
+            **(extra_headers or {}),
+            "Accept": "text/event-stream",
+            "Accept-Encoding": "identity",
+        }
+        try:
+            with httpx.stream(
+                "POST",
+                f"{self.base_url}{path}",
+                json=payload,
+                headers=headers,
+                timeout=self.timeout,
+            ) as response:
+                response.raise_for_status()
+                event_name = "message"
+                data_lines: list[str] = []
+                for line in response.iter_lines():
+                    if not line:
+                        if data_lines:
+                            data = json.loads("\n".join(data_lines))
+                            yield {"event": event_name, **data}
+                        event_name, data_lines = "message", []
+                    elif line.startswith("event:"):
+                        event_name = line[6:].strip()
+                    elif line.startswith("data:"):
+                        data_lines.append(line[5:].lstrip())
+                if data_lines:
+                    data = json.loads("\n".join(data_lines))
+                    yield {"event": event_name, **data}
+        except httpx.HTTPStatusError as exc:
+            raise AIServiceError(
+                f"AI service request failed: {path}",
+                status_code=exc.response.status_code,
+            ) from exc
+        except (httpx.RequestError, json.JSONDecodeError) as exc:
+            raise AIServiceError(f"AI service stream failed: {path}") from exc
 
     def chunk_document(
         self,
@@ -75,6 +137,66 @@ class AIServiceClient:
             "top_k": top_k,
         })
         return list(result["results"])
+
+    def route_agent(
+        self,
+        message: str,
+        *,
+        requested_role: str | None = None,
+    ) -> dict[str, Any]:
+        return self._post("/v1/agents/route", {
+            "message": message,
+            "requested_role": requested_role,
+        })
+
+    def generate_text(
+        self,
+        messages: list[dict[str, str]],
+        *,
+        provider: str | None = None,
+        model: str | None = None,
+    ) -> dict[str, Any]:
+        return self._post("/v1/llm/generate", {
+            "messages": messages,
+            "provider": provider,
+            "model": model,
+        })
+
+    def run_orchestration(
+        self,
+        payload: dict[str, Any],
+        *,
+        internal_tool_jwt: str,
+    ) -> dict[str, Any]:
+        return self._post(
+            "/v1/orchestration/run",
+            payload,
+            extra_headers={"X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}"},
+        )
+
+    def stream_orchestration(
+        self,
+        payload: dict[str, Any],
+        *,
+        internal_tool_jwt: str,
+    ) -> Iterator[dict[str, Any]]:
+        return self._stream_post(
+            "/v1/orchestration/run/stream",
+            payload,
+            extra_headers={"X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}"},
+        )
+
+    def resume_orchestration(
+        self,
+        payload: dict[str, Any],
+        *,
+        internal_tool_jwt: str,
+    ) -> dict[str, Any]:
+        return self._post(
+            "/v1/orchestration/resume",
+            payload,
+            extra_headers={"X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}"},
+        )
 
 
 @lru_cache(maxsize=1)

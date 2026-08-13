@@ -311,6 +311,9 @@ class TaskComment(Base):
 # ============================================================
 class AgentWorkflow(Base):
     __tablename__ = "agent_workflows"
+    __table_args__ = (
+        Index("idx_agent_workflows_tenant_thread", "tenant_id", "thread_id"),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -467,6 +470,12 @@ class OutboundMessage(Base):
 # ============================================================
 class WorkflowApproval(Base):
     __tablename__ = "workflow_approvals"
+    __table_args__ = (
+        UniqueConstraint(
+            "langgraph_interrupt_id",
+            name="uq_workflow_approval_langgraph_interrupt",
+        ),
+    )
 
     id: Mapped[uuid.UUID] = mapped_column(
         UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
@@ -486,6 +495,9 @@ class WorkflowApproval(Base):
         DateTime(timezone=True), nullable=True
     )
     comments: Mapped[str | None] = mapped_column(Text, nullable=True)
+    langgraph_interrupt_id: Mapped[str | None] = mapped_column(String(255), nullable=True)
+    resumed_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True), nullable=True)
+    resume_error: Mapped[str | None] = mapped_column(Text, nullable=True)
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
@@ -806,6 +818,7 @@ class ChatConversation(Base):
     __tablename__ = "chat_conversations"
     __table_args__ = (
         Index("idx_chat_conversation_user_updated", "user_id", "updated_at"),
+        UniqueConstraint("thread_id", name="uq_chat_conversation_thread_id"),
     )
 
     id: Mapped[uuid.UUID] = mapped_column(

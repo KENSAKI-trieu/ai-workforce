@@ -1,21 +1,27 @@
 """Persistent chat with AI Employees, citations, feedback and task conversion."""
 
+import json
+import logging
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Optional
 
 from fastapi import APIRouter, Depends, HTTPException
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import PlainTextResponse, StreamingResponse
 from pydantic import BaseModel, Field
 from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
 from app.services.agents.agent_executor import execute_agent_chat
+from app.services.agents.langgraph_engine import LangGraphEngine
 
 router = APIRouter(prefix="/agent", tags=["Agent Chat"])
+logger = logging.getLogger(__name__)
 
 
 class AgentChatRequest(BaseModel):
@@ -110,6 +116,30 @@ def _result_attachments(result: dict[str, Any]) -> list[dict[str, Any]]:
     ]
 
 
+def _encode_sse(event: str, data: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(data, ensure_ascii=False, default=str)}\n\n"
+
+
+def _persist_assistant_message(
+    db: Session,
+    conversation: ChatConversation,
+    result: dict[str, Any],
+) -> ChatMessage:
+    assistant_message = ChatMessage(
+        conversation_id=conversation.id,
+        sender="ASSISTANT",
+        content=result["reply"],
+        citations=result.get("citations", []),
+        tools_executed=result.get("tools_executed", []),
+        attachments=_result_attachments(result),
+    )
+    db.add(assistant_message)
+    conversation.updated_at = datetime.now(timezone.utc)
+    db.commit()
+    db.refresh(assistant_message)
+    return assistant_message
+
+
 @router.post("/chat", response_model=AgentChatResponse, summary="Chat with an AI Employee")
 def chat_with_agent(
     req: AgentChatRequest,
@@ -133,15 +163,19 @@ def chat_with_agent(
         if conversation.ai_agent_id != agent.id:
             raise HTTPException(status_code=409, detail="Conversation belongs to another AI Employee")
     else:
+        conversation_id = uuid.uuid4()
         conversation = ChatConversation(
+            id=conversation_id,
             tenant_id=current_user.tenant_id,
             user_id=current_user.id,
             ai_agent_id=agent.id,
             title=req.message.strip()[:120],
-            thread_id=req.thread_id or str(uuid.uuid4()),
+            thread_id=str(conversation_id),
         )
         db.add(conversation)
         db.flush()
+    if conversation.thread_id != str(conversation.id):
+        conversation.thread_id = str(conversation.id)
 
     db.add(ChatMessage(
         conversation_id=conversation.id,
@@ -157,24 +191,124 @@ def chat_with_agent(
         user=current_user,
         role_code=role_code,
         message=req.message,
-        thread_id=conversation.thread_id,
+        thread_id=str(conversation.id),
     )
-    assistant_message = ChatMessage(
-        conversation_id=conversation.id,
-        sender="ASSISTANT",
-        content=result["reply"],
-        citations=result.get("citations", []),
-        tools_executed=result.get("tools_executed", []),
-        attachments=_result_attachments(result),
-    )
-    db.add(assistant_message)
-    conversation.updated_at = datetime.now(timezone.utc)
-    db.commit()
-    db.refresh(assistant_message)
+    assistant_message = _persist_assistant_message(db, conversation, result)
     return AgentChatResponse(
         conversation_id=str(conversation.id),
         message_id=str(assistant_message.id),
         **result,
+    )
+
+
+@router.post("/chat/stream", summary="Stream chat tokens and sanitized execution status over SSE")
+def stream_chat_with_agent(
+    req: AgentChatRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> StreamingResponse:
+    if not req.message.strip():
+        raise HTTPException(status_code=400, detail="Message cannot be empty")
+    role_code = req.agent_role.upper()
+    agent = db.query(AIAgent).filter(
+        AIAgent.tenant_id == current_user.tenant_id,
+        AIAgent.role_code == role_code,
+    ).first()
+    if not agent:
+        raise HTTPException(status_code=404, detail=f"Agent '{role_code}' not found")
+    if not agent.is_active:
+        raise HTTPException(status_code=409, detail=f"Agent '{role_code}' is inactive")
+
+    if req.conversation_id:
+        conversation = _get_conversation(
+            db, current_user, req.conversation_id, allow_shared=False
+        )
+        if conversation.ai_agent_id != agent.id:
+            raise HTTPException(status_code=409, detail="Conversation belongs to another AI Employee")
+    else:
+        conversation_id = uuid.uuid4()
+        conversation = ChatConversation(
+            id=conversation_id,
+            tenant_id=current_user.tenant_id,
+            user_id=current_user.id,
+            ai_agent_id=agent.id,
+            title=req.message.strip()[:120],
+            thread_id=str(conversation_id),
+        )
+        db.add(conversation)
+        db.flush()
+    if conversation.thread_id != str(conversation.id):
+        conversation.thread_id = str(conversation.id)
+
+    db.add(ChatMessage(
+        conversation_id=conversation.id,
+        sender="USER",
+        content=req.message.strip(),
+        attachments=req.attachments,
+    ))
+    conversation.updated_at = datetime.now(timezone.utc)
+    db.commit()
+
+    def event_stream():
+        try:
+            result: dict[str, Any] | None = None
+            if settings.LANGGRAPH_ENABLED:
+                for item in LangGraphEngine().execute_stream(
+                    db=db,
+                    user=current_user,
+                    agent=agent,
+                    message=req.message,
+                    conversation_id=str(conversation.id),
+                ):
+                    event = str(item.get("event") or "message")
+                    if event == "complete":
+                        result = dict(item["response"])
+                    else:
+                        yield _encode_sse(
+                            event,
+                            {key: value for key, value in item.items() if key != "event"},
+                        )
+            else:
+                yield _encode_sse("status", {"phase": "ANALYZING"})
+                result = execute_agent_chat(
+                    db=db,
+                    user=current_user,
+                    role_code=role_code,
+                    message=req.message,
+                    thread_id=str(conversation.id),
+                )
+                if result.get("tools_executed"):
+                    yield _encode_sse("status", {"phase": "TOOL_CALLING"})
+                if result.get("approval_card"):
+                    yield _encode_sse("status", {"phase": "WAITING_APPROVAL"})
+                else:
+                    for token in re.findall(r"\S+\s*|\s+", str(result.get("reply") or "")):
+                        yield _encode_sse("token", {"delta": token})
+                    yield _encode_sse("status", {"phase": "COMPLETED"})
+
+            if result is None:
+                raise RuntimeError("Chat stream ended without a response")
+            assistant_message = _persist_assistant_message(db, conversation, result)
+            yield _encode_sse("complete", {
+                "conversation_id": str(conversation.id),
+                "message_id": str(assistant_message.id),
+                **result,
+            })
+        except Exception:
+            db.rollback()
+            logger.exception("Agent chat stream failed")
+            yield _encode_sse("error", {
+                "message": "Không thể hoàn tất yêu cầu. Vui lòng thử lại.",
+            })
+
+    return StreamingResponse(
+        event_stream(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
     )
 
 

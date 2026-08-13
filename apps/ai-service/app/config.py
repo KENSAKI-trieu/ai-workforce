@@ -1,5 +1,6 @@
 from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
+from urllib.parse import quote_plus
 
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -10,6 +11,7 @@ class Settings(BaseSettings):
     AI_SERVICE_HOST: str = "0.0.0.0"
     AI_SERVICE_PORT: int = 8100
     AI_SERVICE_INTERNAL_TOKEN: Optional[str] = None
+    BACKEND_TOOL_GATEWAY_URL: str = "http://localhost:8000"
 
     EMBEDDING_BACKEND: str = "deterministic"
     EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
@@ -46,6 +48,39 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: Optional[str] = None
     GOOGLE_AI_API_KEY: Optional[str] = None
+    OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
+    GEMINI_CHAT_MODEL: str = "gemini-2.0-flash"
+    LLM_TIMEOUT_SECONDS: float = Field(default=90.0, gt=0)
+    LLM_MAX_RETRIES: int = Field(default=2, ge=0, le=10)
+    AGENT_MAX_MODEL_CALLS: int = Field(default=8, ge=1, le=100)
+    AGENT_MAX_TOOL_CALLS: int = Field(default=12, ge=1, le=200)
+    AGENT_MIDDLEWARE_MODEL_RETRIES: int = Field(default=2, ge=0, le=10)
+    AGENT_COMPLEXITY_THRESHOLD: int = Field(default=4, ge=1, le=20)
+
+    # Migration gates. LangChain is available from phase 2 and can still be
+    # rolled out by role while the deterministic provider remains a fallback.
+    LANGCHAIN_ENABLED: bool = False
+    LANGGRAPH_ENABLED: bool = False
+    LANGCHAIN_AGENT_ROLES: str = ""
+    LANGGRAPH_CHECKPOINT_BACKEND: Literal["memory", "postgres"] = "memory"
+    LANGGRAPH_CHECKPOINT_DATABASE_URL: Optional[str] = None
+    LANGGRAPH_CHECKPOINT_AUTO_SETUP: bool = True
+    POSTGRES_HOST: str = "localhost"
+    POSTGRES_PORT: int = 5432
+    POSTGRES_DB: str = "ai_workforce_db"
+    POSTGRES_USER: str = "postgres"
+    POSTGRES_PASSWORD: Optional[str] = None
+
+    @property
+    def langgraph_checkpoint_database_url(self) -> str | None:
+        if self.LANGGRAPH_CHECKPOINT_DATABASE_URL:
+            return self.LANGGRAPH_CHECKPOINT_DATABASE_URL.replace("+asyncpg", "")
+        if self.LANGGRAPH_CHECKPOINT_BACKEND != "postgres" or self.POSTGRES_PASSWORD is None:
+            return None
+        return (
+            f"postgresql://{quote_plus(self.POSTGRES_USER)}:{quote_plus(self.POSTGRES_PASSWORD)}@"
+            f"{self.POSTGRES_HOST}:{self.POSTGRES_PORT}/{quote_plus(self.POSTGRES_DB)}"
+        )
 
     model_config = SettingsConfigDict(
         env_file=".env",

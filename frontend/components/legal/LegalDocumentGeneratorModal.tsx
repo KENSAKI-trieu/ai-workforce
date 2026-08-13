@@ -1,7 +1,7 @@
 "use client";
 
 import axios from "axios";
-import { AlertTriangle, CheckCircle2, Download, FileCheck2, Loader2, ShieldCheck, WandSparkles, X } from "lucide-react";
+import { AlertTriangle, CheckCircle2, FileCheck2, Loader2, Send, ShieldCheck, WandSparkles, X } from "lucide-react";
 import { FormEvent, useEffect, useMemo, useState } from "react";
 
 import styles from "@/app/agents/LEGAL/legal.module.css";
@@ -65,7 +65,12 @@ async function errorMessage(error: unknown) {
   return error.message;
 }
 
-export default function LegalDocumentGeneratorModal({ onClose }: { onClose: () => void }) {
+interface SubmittedDraft {
+  artifact_id: string;
+  status: string;
+}
+
+export default function LegalDocumentGeneratorModal({ onClose, onSubmitted }: { onClose: () => void; onSubmitted?: (draft: SubmittedDraft) => void }) {
   const [templates, setTemplates] = useState<DocumentTemplate[]>([]);
   const [documentType, setDocumentType] = useState("");
   const [fields, setFields] = useState<Record<string, string>>({});
@@ -130,19 +135,12 @@ export default function LegalDocumentGeneratorModal({ onClose }: { onClose: () =
         if (!data.valid || data.warnings.length > 0) return;
       }
 
-      const response = await api.post<Blob>("/api/v1/legal/generate-document", {
+      const { data } = await api.post<SubmittedDraft>("/api/v1/legal/document-drafts", {
         document_type: documentType,
         output_format: outputFormat,
         fields,
-      }, { responseType: "blob" });
-      const url = URL.createObjectURL(response.data);
-      const link = document.createElement("a");
-      link.href = url;
-      link.download = `${documentType.toLowerCase()}.${outputFormat}`;
-      document.body.appendChild(link);
-      link.click();
-      link.remove();
-      window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      });
+      onSubmitted?.(data);
       onClose();
     } catch (reason) {
       setError(await errorMessage(reason));
@@ -155,7 +153,7 @@ export default function LegalDocumentGeneratorModal({ onClose }: { onClose: () =
     <div className={styles.modalBackdrop} role="presentation" onMouseDown={(event) => { if (!busy && event.target === event.currentTarget) onClose(); }}>
       <form className={`${styles.modal} ${styles.generatorModal}`} onSubmit={generate} role="dialog" aria-modal="true" aria-labelledby="legal-generator-title">
         <header>
-          <div><span><WandSparkles size={19} /></span><div><h2 id="legal-generator-title">Tạo văn bản pháp lý</h2><p>Thu thập dữ liệu → kiểm tra điều khoản → tạo bản nháp</p></div></div>
+          <div><span><WandSparkles size={19} /></span><div><h2 id="legal-generator-title">Tạo văn bản pháp lý</h2><p>Thu thập dữ liệu → tạo bản nháp → gửi phê duyệt</p></div></div>
           <button type="button" onClick={onClose} disabled={busy} title="Đóng"><X size={17} /></button>
         </header>
 
@@ -204,7 +202,7 @@ export default function LegalDocumentGeneratorModal({ onClose }: { onClose: () =
               )}
 
               <div className={styles.formatControl}><span>Định dạng đầu ra</span><div><button type="button" className={outputFormat === "docx" ? styles.selected : ""} onClick={() => setOutputFormat("docx")}>DOCX</button><button type="button" className={outputFormat === "pdf" ? styles.selected : ""} onClick={() => setOutputFormat("pdf")}>PDF</button></div></div>
-              <div className={styles.generatorNotice}><ShieldCheck size={14} /><span>Bản nháp sẽ chứa thông báo Legal Review và không được xem là văn bản đã phê duyệt.</span></div>
+              <div className={styles.generatorNotice}><ShieldCheck size={14} /><span>Bản nháp được gửi tới CEO/Admin/Owner. Người tạo chỉ tải được bản cuối sau khi được phê duyệt.</span></div>
             </>
           )}
         </div>
@@ -212,8 +210,8 @@ export default function LegalDocumentGeneratorModal({ onClose }: { onClose: () =
         <footer>
           <button type="button" className={styles.secondaryButton} onClick={onClose} disabled={busy}>Hủy</button>
           <button type="submit" className={styles.primaryButton} disabled={busy || loading || !requiredComplete}>
-            {busy ? <Loader2 className={styles.spin} size={16} /> : <Download size={16} />}
-            {validation?.warnings.length ? "Tạo bản nháp với cảnh báo" : "Kiểm tra & tạo bản nháp"}
+            {busy ? <Loader2 className={styles.spin} size={16} /> : <Send size={16} />}
+            {validation?.warnings.length ? "Gửi duyệt với cảnh báo" : "Kiểm tra & gửi phê duyệt"}
           </button>
         </footer>
       </form>

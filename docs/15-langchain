@@ -1,0 +1,255 @@
+## Hướng đề xuất
+
+Không viết lại toàn bộ AI Service. Áp dụng theo mô hình chuyển đổi từng phần:
+
+```text
+Frontend
+   ↓
+Backend — Auth, tenant, ACL, audit, approval, database
+   ↓
+AI Service
+   ├── LangChain: model, prompt, tools, structured output
+   ├── LangGraph: workflow, state, routing, HITL
+   └── RAG hiện tại: embedding, hybrid search, BGE reranking
+```
+
+Backend vẫn là nguồn sự thật và nơi quyết định quyền. AI Service không được truy cập database nghiệp vụ trực tiếp.
+
+LangChain phù hợp với model/tool/structured output; LangGraph cung cấp persistence, streaming, durable execution và human-in-the-loop. [LangChain Agents](https://docs.langchain.com/oss/python/langchain/agents), [LangGraph overview](https://docs.langchain.com/oss/python/langgraph/overview).
+
+## Kế hoạch triển khai
+
+### Giai đoạn 1 — Baseline và hàng rào an toàn
+
+Thời gian dự kiến: 2–3 ngày.
+
+- Lập bộ test chuẩn cho Legal, HR, Finance, Knowledge và chat chung.
+- Ghi lại chất lượng, citation, token, chi phí và độ trễ hiện tại.
+- Contract test cho:
+  - `/v1/llm/generate`
+  - `/v1/agents/route`
+  - embedding, reranking và chunking.
+- Bổ sung feature flags:
+  - `LANGCHAIN_ENABLED`
+  - `LANGGRAPH_ENABLED`
+  - `LANGCHAIN_AGENT_ROLES`
+- Giữ implementation cũ làm fallback.
+
+Kết quả: có thể bật/tắt LangChain theo từng tenant hoặc agent mà không downtime.
+
+### Giai đoạn 2 — Tích hợp LangChain ở lớp LLM
+
+Thời gian: 3–5 ngày.
+
+Thêm các dependency được pin phiên bản tương thích:
+
+- `langchain`
+- `langchain-core`
+- `langchain-openai`
+- `langchain-google-genai`
+
+Tạo cấu trúc:
+
+```text
+apps/ai-service/app/
+├── chains/
+│   ├── chat.py
+│   ├── rag_answer.py
+│   └── structured_extraction.py
+├── models/
+│   └── factory.py
+└── schemas/
+    ├── routing.py
+    ├── citations.py
+    └── findings.py
+```
+
+Công việc:
+
+- Thay lớp gọi OpenAI/Gemini trực tiếp bằng LangChain Chat Models.
+- Giữ nguyên response contract hiện tại.
+- Chuẩn hóa kết quả bằng Pydantic structured output.
+- Retry, timeout và provider fallback tiếp tục hoạt động.
+- Provider tùy chỉnh hiện tại vẫn là fallback.
+
+Structured output giúp kết quả như finding hợp đồng, citation và agent routing được validate thay vì parse JSON thủ công. [Structured output](https://docs.langchain.com/oss/python/langchain/structured-output).
+
+### Giai đoạn 3 — Chuẩn hóa Tool Registry
+
+Thời gian: 4–6 ngày.
+
+Chuyển các tool hiện có thành LangChain tools:
+
+- RAG search.
+- Tra cứu nhân sự.
+- Tra cứu nghỉ phép.
+- Tạo task.
+- Tra cứu chi phí.
+- Tạo văn bản pháp lý.
+- Gửi yêu cầu phê duyệt.
+
+Mỗi tool phải có:
+
+- Pydantic input schema.
+- Quyền role/phòng ban.
+- Tenant ID bắt buộc.
+- Timeout và retry policy.
+- Audit metadata.
+- Phân loại `READ_ONLY`, `WRITE`, `EXTERNAL_ACTION`.
+
+AI Service gọi tool thông qua một internal tool gateway của backend. Backend kiểm tra lại JWT nội bộ, tenant và ACL; không tin dữ liệu quyền do LLM gửi lên.
+
+### Giai đoạn 4 — Middleware và guardrails
+
+Thời gian: 3–4 ngày.
+
+Tích hợp middleware cho:
+
+- Tenant/ACL context injection.
+- Chặn tool không được cấp quyền.
+- PII redaction.
+- Giới hạn số vòng lặp/tool calls.
+- Model selection theo độ phức tạp.
+- Retry và fallback.
+- Validate output và citation.
+- Ghi token/cost/latency.
+
+LangChain middleware cho phép can thiệp trước/sau model và tool call mà không sửa agent loop. [Middleware](https://docs.langchain.com/oss/python/langchain/middleware/overview).
+
+### Giai đoạn 5 — Xây LangGraph orchestration
+
+Thời gian: 5–8 ngày.
+
+Thay lớp `LangGraphEngine` mô phỏng hiện tại bằng graph thật.
+
+State đề xuất:
+
+```python
+class WorkforceAgentState(TypedDict):
+    tenant_id: str
+    user_id: str
+    role: str
+    department: str
+    conversation_id: str
+    messages: list
+    intent: str
+    selected_agent: str
+    retrieved_context: list
+    tool_calls: list
+    citations: list
+    approval_id: str | None
+    final_answer: str | None
+    errors: list
+```
+
+Graph chính:
+
+```text
+Input guard
+   ↓
+Intent router
+   ↓
+Agent selector
+   ↓
+Retrieve context
+   ↓
+Model/tool decision
+   ├── Read-only tool → thực thi
+   ├── Action tool → approval interrupt
+   └── Không cần tool
+   ↓
+Output validation
+   ↓
+Citation verification
+   ↓
+Response
+```
+
+Tách subgraph theo nghiệp vụ:
+
+- Legal Agent.
+- HR Agent.
+- Finance Agent.
+- Customer Support.
+- Knowledge Agent.
+- CEO orchestration.
+
+### Giai đoạn 6 — Persistence và Human-in-the-loop
+
+Thời gian: 4–6 ngày.
+
+- Dùng PostgreSQL checkpointer.
+- `thread_id` ánh xạ với `conversation_id`.
+- `workflow_id` liên kết với `AgentWorkflow`.
+- Khi graph cần thực hiện hành động:
+  1. Tạo approval trong backend.
+  2. LangGraph `interrupt`.
+  3. CEO/Admin/Owner hoặc Manager duyệt theo policy.
+  4. Backend gọi resume với cùng thread.
+  5. Graph tiếp tục từ checkpoint.
+
+LangGraph interrupt có thể dừng workflow, lưu state và tiếp tục sau khi nhận quyết định phê duyệt. [Interrupts](https://docs.langchain.com/oss/python/langgraph/interrupts), [Persistence](https://docs.langchain.com/oss/python/langgraph/persistence).
+
+### Giai đoạn 7 — Streaming và giao diện
+
+Thời gian: 3–5 ngày.
+
+- Stream token và trạng thái node bằng SSE hoặc WebSocket.
+- UI hiển thị:
+  - Đang phân tích yêu cầu.
+  - Đang tìm tài liệu.
+  - Đang gọi công cụ.
+  - Đang chờ phê duyệt.
+  - Đã hoàn thành.
+- Không hiển thị chain-of-thought hoặc prompt nội bộ.
+- Giữ lại execution trace đã được làm sạch cho audit.
+
+### Giai đoạn 8 — Evaluation và rollout
+
+Thời gian: 4–6 ngày.
+
+Thứ tự rollout:
+
+1. Knowledge/Legal chat chỉ đọc.
+2. RAG và citation.
+3. Rà soát hợp đồng với structured output.
+4. HR và Finance read-only.
+5. Tool tạo task/văn bản.
+6. Tool có tác động bên ngoài hoặc cần phê duyệt.
+
+Triển khai canary:
+
+- 5% request.
+- 25%.
+- 50%.
+- 100%.
+
+Có thể dùng LangSmith cho tracing/evaluation, nhưng với dữ liệu pháp lý và nhân sự nên redaction trước khi gửi hoặc cân nhắc self-host. LangSmith hỗ trợ offline/online evaluation và tracing theo thread. [LangSmith Evaluation](https://docs.langchain.com/langsmith/evaluation), [Observability](https://docs.langchain.com/langsmith/observability-concepts).
+
+## Tiêu chí nghiệm thu
+
+- Không có truy cập chéo tenant/phòng ban.
+- 100% tool call trái quyền bị từ chối.
+- Structured output hợp lệ ≥ 99%.
+- Citation trỏ đúng tài liệu và đoạn nguồn.
+- Workflow phê duyệt có thể dừng/resume sau khi restart.
+- P95 latency không tăng quá 20% so với baseline.
+- Chi phí trung bình không tăng quá 15%.
+- Có thể rollback về implementation cũ bằng feature flag.
+- Tất cả hành động ghi dữ liệu đều có audit log.
+
+## Phần không nên chuyển sang LangChain ngay
+
+Nên giữ nguyên:
+
+- Chunking tùy chỉnh.
+- Hugging Face embedding.
+- Hybrid retrieval.
+- BGE reranking.
+- PostgreSQL/pgvector.
+- Tenant, ACL, audit và approval.
+- Business API của backend.
+
+Các phần này đang độc lập và không nhận được nhiều lợi ích nếu chỉ bọc lại bằng LangChain.
+
+Tổng thời gian ước tính cho một kỹ sư AI/backend: khoảng **4–6 tuần**. MVP đầu tiên — LangChain model adapter, structured output và một Legal Chat graph chỉ đọc — có thể hoàn thành trong khoảng **7–10 ngày làm việc**.

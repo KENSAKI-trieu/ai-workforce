@@ -4,12 +4,14 @@ API Endpoints for Legal, IT, Finance, and Sales domain operations.
 
 import io
 import json
+import mimetypes
+import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
-from fastapi.responses import PlainTextResponse, StreamingResponse
+from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
@@ -25,7 +27,9 @@ from app.services.legal_service import (
 )
 from app.services.contract_review import detect_contract_type, review_contract
 from app.services.legal_document_generator import generate_legal_document
+from app.services.legal_draft_storage import read_legal_artifact, save_legal_artifact
 from app.services.legal_documents import list_document_schemas, validate_document_fields
+from app.services.notification_service import create_notification
 from app.services.rag_service import hybrid_search_documents
 from app.services.it_service import handle_it_request
 from app.services.finance_service import audit_invoice_and_reconcile
@@ -33,6 +37,7 @@ from app.services.sales_service import handle_sales_request
 
 router = APIRouter(tags=["Specialized Domain APIs"])
 MAX_LEGAL_FILE_BYTES = 10 * 1024 * 1024
+LEGAL_DOCUMENT_APPROVERS = {"Owner", "Admin", "CEO"}
 
 
 class ContractAuditRequest(BaseModel):
@@ -65,6 +70,61 @@ class LegalDocumentGenerateRequest(BaseModel):
 class LegalDocumentValidationRequest(BaseModel):
     document_type: str
     fields: dict[str, Any]
+
+
+def _legal_draft_approval(
+    db: Session,
+    current_user: User,
+    artifact_id: str,
+) -> WorkflowApproval:
+    approvals = db.query(WorkflowApproval).join(AgentWorkflow).filter(
+        AgentWorkflow.tenant_id == current_user.tenant_id,
+        WorkflowApproval.action_type == "LEGAL_DOCUMENT_APPROVAL",
+    ).all()
+    approval = next(
+        (
+            item
+            for item in approvals
+            if str((item.payload or {}).get("artifact_id")) == artifact_id
+        ),
+        None,
+    )
+    if not approval:
+        raise HTTPException(status_code=404, detail="Legal document draft not found")
+    return approval
+
+
+def _legal_draft_item(approval: WorkflowApproval, current_user: User) -> dict[str, Any]:
+    payload = approval.payload or {}
+    is_reviewer = current_user.role in LEGAL_DOCUMENT_APPROVERS
+    is_creator = approval.workflow.initiator_id == current_user.id
+    approved = approval.status == "APPROVED"
+    download_variant = "draft" if is_reviewer and not approved else "approved"
+    artifact_id = str(payload.get("artifact_id"))
+    return {
+        "artifact_id": artifact_id,
+        "approval_id": str(approval.id),
+        "workflow_id": str(approval.workflow_id),
+        "document_type": payload.get("document_type"),
+        "document_type_label": payload.get("document_type_label"),
+        "filename": payload.get("filename"),
+        "output_format": payload.get("output_format"),
+        "status": approval.status,
+        "comments": approval.comments,
+        "requester_name": payload.get("requester_name"),
+        "requester_id": payload.get("requester_id"),
+        "submitted_at": (
+            approval.workflow.created_at.isoformat()
+            if approval.workflow.created_at
+            else None
+        ),
+        "updated_at": approval.updated_at.isoformat() if approval.updated_at else None,
+        "can_preview": is_reviewer or is_creator,
+        "can_download": is_reviewer or (is_creator and approved),
+        "download_variant": download_variant,
+        "preview_url": f"/api/v1/legal/document-drafts/{artifact_id}/preview",
+        "download_url": f"/api/v1/legal/document-drafts/{artifact_id}/download?variant={download_variant}",
+    }
 
 
 async def _read_legal_file(file: UploadFile) -> tuple[str, str, list[str]]:
@@ -321,16 +381,204 @@ def generate_legal_document_endpoint(
     req: LegalDocumentGenerateRequest,
     current_user: User = Depends(get_current_active_user),
 ):
+    raise HTTPException(
+        status_code=410,
+        detail="Direct generation is disabled; submit through /legal/document-drafts",
+    )
+
+
+@router.post(
+    "/legal/document-drafts",
+    status_code=201,
+    summary="Generate and submit a legal document for approval",
+)
+def submit_legal_document_draft(
+    req: LegalDocumentGenerateRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
     try:
-        content, filename, media_type = generate_legal_document(
-            req.document_type, req.output_format, req.fields
+        draft_content, filename, media_type = generate_legal_document(
+            req.document_type, req.output_format, req.fields, approved=False
+        )
+        approved_content, _, _ = generate_legal_document(
+            req.document_type, req.output_format, req.fields, approved=True
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    return StreamingResponse(
-        io.BytesIO(content),
+
+    artifact_id = uuid.uuid4().hex
+    draft_key = save_legal_artifact(
+        tenant_id=current_user.tenant_id,
+        artifact_id=artifact_id,
+        variant="draft",
+        filename=filename,
+        content=draft_content,
+    )
+    approved_key = save_legal_artifact(
+        tenant_id=current_user.tenant_id,
+        artifact_id=artifact_id,
+        variant="approved",
+        filename=filename,
+        content=approved_content,
+    )
+    template = next(
+        (
+            item
+            for item in list_document_schemas()
+            if item["id"] == req.document_type.upper()
+        ),
+        None,
+    )
+    document_type_label = template["label"] if template else req.document_type
+    workflow = AgentWorkflow(
+        tenant_id=current_user.tenant_id,
+        initiator_id=current_user.id,
+        title=f"Phê duyệt văn bản: {document_type_label}",
+        status="AWAITING_APPROVAL",
+        current_step=1,
+        dag_plan={
+            "agent_role": "LEGAL",
+            "steps": ["DRAFT_CREATED", "EXECUTIVE_APPROVAL", "CREATOR_DOWNLOAD"],
+        },
+    )
+    db.add(workflow)
+    db.flush()
+    approval = WorkflowApproval(
+        workflow_id=workflow.id,
+        action_type="LEGAL_DOCUMENT_APPROVAL",
+        risk_level="MEDIUM",
+        payload={
+            "artifact_id": artifact_id,
+            "document_type": req.document_type.upper(),
+            "document_type_label": document_type_label,
+            "filename": filename,
+            "media_type": media_type,
+            "output_format": req.output_format.lower(),
+            "draft_storage_key": draft_key,
+            "approved_storage_key": approved_key,
+            "requester_id": str(current_user.id),
+            "requester_name": current_user.full_name,
+            "reason": "Văn bản do Legal Agent tạo cần CEO, Admin hoặc Owner phê duyệt trước khi người tạo tải xuống.",
+            "data_sources": [document_type_label],
+            "preview_url": f"/api/v1/legal/document-drafts/{artifact_id}/preview",
+            "review_download_url": f"/api/v1/legal/document-drafts/{artifact_id}/download?variant=draft",
+        },
+        status="WAITING",
+    )
+    db.add(approval)
+    for approver in db.query(User).filter(
+        User.tenant_id == current_user.tenant_id,
+        User.role.in_(LEGAL_DOCUMENT_APPROVERS),
+        User.is_active.is_(True),
+    ).all():
+        create_notification(
+            db,
+            user=approver,
+            event_type="APPROVAL_REQUIRED",
+            title="Văn bản pháp lý chờ phê duyệt",
+            message=f"{current_user.full_name} đã gửi {document_type_label}.",
+            severity="WARNING",
+            entity_type="APPROVAL",
+            entity_id=str(approval.id),
+            dedup_key=f"legal-document-approval:{approval.id}:{approver.id}",
+        )
+    db.commit()
+    db.refresh(approval)
+    return _legal_draft_item(approval, current_user)
+
+
+@router.get("/legal/document-drafts", summary="List generated legal documents")
+def list_legal_document_drafts(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> list[dict[str, Any]]:
+    query = db.query(WorkflowApproval).join(AgentWorkflow).filter(
+        AgentWorkflow.tenant_id == current_user.tenant_id,
+        WorkflowApproval.action_type == "LEGAL_DOCUMENT_APPROVAL",
+    )
+    if current_user.role not in LEGAL_DOCUMENT_APPROVERS:
+        query = query.filter(AgentWorkflow.initiator_id == current_user.id)
+    approvals = query.order_by(AgentWorkflow.created_at.desc()).all()
+    return [_legal_draft_item(approval, current_user) for approval in approvals]
+
+
+@router.get(
+    "/legal/document-drafts/{artifact_id}/preview",
+    summary="Preview a generated legal document",
+)
+def preview_legal_document_draft(
+    artifact_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    approval = _legal_draft_approval(db, current_user, artifact_id)
+    if (
+        current_user.role not in LEGAL_DOCUMENT_APPROVERS
+        and approval.workflow.initiator_id != current_user.id
+    ):
+        raise HTTPException(status_code=403, detail="You cannot preview this legal document")
+    payload = approval.payload or {}
+    try:
+        content = read_legal_artifact(str(payload["draft_storage_key"]))
+        text = extract_file_text(str(payload["filename"]), content)
+    except (KeyError, OSError, ValueError, DocumentParseError) as exc:
+        raise HTTPException(status_code=404, detail="Legal document artifact is unavailable") from exc
+    return {
+        "artifact_id": artifact_id,
+        "filename": payload.get("filename"),
+        "document_type_label": payload.get("document_type_label"),
+        "status": approval.status,
+        "requester_name": payload.get("requester_name"),
+        "content": text,
+    }
+
+
+@router.get(
+    "/legal/document-drafts/{artifact_id}/download",
+    summary="Download a generated legal document with approval enforcement",
+)
+def download_legal_document_draft(
+    artifact_id: str,
+    variant: str = "approved",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    approval = _legal_draft_approval(db, current_user, artifact_id)
+    is_reviewer = current_user.role in LEGAL_DOCUMENT_APPROVERS
+    is_creator = approval.workflow.initiator_id == current_user.id
+    if variant not in {"draft", "approved"}:
+        raise HTTPException(status_code=422, detail="Unsupported document variant")
+    if variant == "draft" and not is_reviewer:
+        raise HTTPException(status_code=403, detail="Only executive approvers can download the draft")
+    if variant == "approved" and approval.status != "APPROVED":
+        raise HTTPException(
+            status_code=403,
+            detail="The approved artifact is unavailable until approval is completed",
+        )
+    if variant == "approved" and not is_reviewer and not is_creator:
+        raise HTTPException(
+            status_code=403,
+            detail="Only the creator or an executive approver can download this document",
+        )
+    payload = approval.payload or {}
+    storage_field = "draft_storage_key" if variant == "draft" else "approved_storage_key"
+    try:
+        content = read_legal_artifact(str(payload[storage_field]))
+    except (KeyError, OSError, ValueError) as exc:
+        raise HTTPException(status_code=404, detail="Legal document artifact is unavailable") from exc
+    filename = Path(str(payload.get("filename") or "legal-document")).name
+    media_type = str(payload.get("media_type") or mimetypes.guess_type(filename)[0] or "application/octet-stream")
+    disposition_name = filename if variant == "draft" else f"approved-{filename}"
+    return Response(
+        content=content,
         media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{disposition_name}\"; "
+                f"filename*=UTF-8''{quote(disposition_name)}"
+            )
+        },
     )
 
 

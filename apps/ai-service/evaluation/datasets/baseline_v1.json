@@ -1,0 +1,139 @@
+{
+  "version": "pre-langchain-v1",
+  "description": "Synthetic, non-sensitive baseline captured before LangChain migration.",
+  "routing_cases": [
+    {
+      "id": "route-hr-leave",
+      "agent": "HR",
+      "message": "Tôi còn bao nhiêu ngày nghỉ phép?",
+      "expected_role": "HR"
+    },
+    {
+      "id": "route-finance-budget",
+      "agent": "FINANCE",
+      "message": "Kiểm tra ngân sách và chi phí tháng này.",
+      "expected_role": "FINANCE"
+    },
+    {
+      "id": "route-legal-contract",
+      "agent": "LEGAL",
+      "message": "Rà soát rủi ro trong điều khoản chấm dứt hợp đồng.",
+      "expected_role": "LEGAL"
+    },
+    {
+      "id": "route-knowledge-policy",
+      "agent": "KNOWLEDGE",
+      "message": "Tìm quy định làm việc từ xa trong kho kiến thức.",
+      "expected_role": "KNOWLEDGE"
+    },
+    {
+      "id": "route-general-support",
+      "agent": "GENERAL_CHAT",
+      "message": "Tôi cần hỗ trợ xử lý một yêu cầu của khách hàng.",
+      "expected_role": "CUSTOMER_SUPPORT"
+    }
+  ],
+  "grounded_cases": [
+    {
+      "id": "grounded-legal-payment",
+      "agent": "LEGAL",
+      "query": "Thời hạn thanh toán là bao lâu?",
+      "expected_terms": ["30 ngày", "hóa đơn"],
+      "chunks": [
+        {
+          "id": "legal-1",
+          "content": "Khách hàng thanh toán trong vòng 30 ngày kể từ ngày nhận hóa đơn hợp lệ.",
+          "source_file": "mau-hop-dong-dich-vu.docx",
+          "section_title": "Điều 4. Thanh toán",
+          "page_start": 3
+        }
+      ]
+    },
+    {
+      "id": "grounded-hr-leave",
+      "agent": "HR",
+      "query": "Số ngày nghỉ phép năm là bao nhiêu?",
+      "expected_terms": ["12 ngày", "nghỉ phép"],
+      "chunks": [
+        {
+          "id": "hr-1",
+          "content": "Nhân viên toàn thời gian được hưởng 12 ngày nghỉ phép trong một năm.",
+          "source_file": "noi-quy-lao-dong.docx",
+          "section_title": "Nghỉ phép năm",
+          "page_start": 8
+        }
+      ]
+    },
+    {
+      "id": "grounded-finance-approval",
+      "agent": "FINANCE",
+      "query": "Khoản chi nào cần CEO duyệt?",
+      "expected_terms": ["100.000.000", "CEO"],
+      "chunks": [
+        {
+          "id": "finance-1",
+          "content": "Mọi khoản chi từ 100.000.000 VNĐ phải được CEO phê duyệt trước khi thanh toán.",
+          "source_file": "quy-che-tai-chinh.pdf",
+          "section_title": "Hạn mức phê duyệt",
+          "page_start": 5
+        }
+      ]
+    },
+    {
+      "id": "grounded-knowledge-remote",
+      "agent": "KNOWLEDGE",
+      "query": "Được làm việc từ xa mấy ngày?",
+      "expected_terms": ["2 ngày", "quản lý"],
+      "chunks": [
+        {
+          "id": "knowledge-1",
+          "content": "Nhân viên được làm việc từ xa tối đa 2 ngày mỗi tuần khi có quản lý trực tiếp xác nhận.",
+          "source_file": "chinh-sach-lam-viec-linh-hoat.docx",
+          "section_title": "Làm việc từ xa",
+          "page_start": 2
+        }
+      ]
+    },
+    {
+      "id": "grounded-support-sla",
+      "agent": "GENERAL_CHAT",
+      "query": "Bao lâu phải phản hồi ticket?",
+      "expected_terms": ["4 giờ", "ticket"],
+      "chunks": [
+        {
+          "id": "support-1",
+          "content": "Ticket mức độ thông thường phải được phản hồi lần đầu trong vòng 4 giờ làm việc.",
+          "source_file": "support-sla.txt",
+          "section_title": "Thời gian phản hồi"
+        }
+      ]
+    }
+  ],
+  "chat_cases": [
+    {
+      "id": "chat-legal",
+      "agent": "LEGAL",
+      "message": "Giải thích điều khoản trách nhiệm."
+    },
+    {
+      "id": "chat-hr",
+      "agent": "HR",
+      "message": "Hướng dẫn quy trình nghỉ phép."
+    },
+    {
+      "id": "chat-finance",
+      "agent": "FINANCE",
+      "message": "Tóm tắt báo cáo chi phí."
+    },
+    {
+      "id": "chat-knowledge",
+      "agent": "KNOWLEDGE",
+      "message": "Tìm chính sách làm việc từ xa."
+    },
+    {
+      "id": "chat-general",
+      "agent": "GENERAL_CHAT",
+      "message": "Hỗ trợ tôi xử lý yêu cầu này."
+    }
+  ]
+}

@@ -5,9 +5,12 @@ import { FormEvent, KeyboardEvent, useCallback, useEffect, useRef, useState } fr
 import { useParams, useRouter } from "next/navigation";
 import {
   Bot,
+  CheckCircle2,
+  Circle,
   Copy,
   Download,
   History,
+  LoaderCircle,
   MessageSquare,
   Plus,
   RefreshCw,
@@ -27,6 +30,7 @@ import {
   HRMessageCard,
 } from "@/components/hr/HRChatTools";
 import api from "@/lib/api";
+import { ExecutionPhase, streamAgentChat } from "@/lib/chatStream";
 import { useAuthStore } from "@/store/useAuthStore";
 
 interface Agent {
@@ -57,6 +61,16 @@ interface ChatResponse {
   citations: Citation[];
   hr_card?: Record<string, unknown> | null;
 }
+
+const EXECUTION_LABELS: Record<ExecutionPhase, string> = {
+  ANALYZING: "Đang phân tích yêu cầu",
+  SEARCHING: "Đang tìm tài liệu",
+  TOOL_CALLING: "Đang gọi công cụ",
+  WAITING_APPROVAL: "Đang chờ phê duyệt",
+  COMPLETED: "Đã hoàn thành",
+};
+
+const EXECUTION_PHASES = Object.keys(EXECUTION_LABELS) as ExecutionPhase[];
 
 interface ChatMessage {
   id: string;
@@ -121,7 +135,9 @@ interface AgentConfigurationOptions {
 }
 
 function messageFrom(error: unknown) {
-  if (!axios.isAxiosError(error)) return "Không thể xử lý yêu cầu.";
+  if (!axios.isAxiosError(error)) {
+    return error instanceof Error ? error.message : "Không thể xử lý yêu cầu.";
+  }
   const detail = error.response?.data?.detail;
   return typeof detail === "string" ? detail : error.message;
 }
@@ -138,6 +154,9 @@ export default function AgentPage() {
   const [message, setMessage] = useState("");
   const [conversationLoading, setConversationLoading] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [streamedReply, setStreamedReply] = useState("");
+  const [streamPhase, setStreamPhase] = useState<ExecutionPhase>("ANALYZING");
+  const [streamPhases, setStreamPhases] = useState<ExecutionPhase[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [showSettings, setShowSettings] = useState(false);
   const [prompt, setPrompt] = useState("");
@@ -215,7 +234,7 @@ export default function AgentPage() {
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: "smooth" });
-  }, [messages, busy]);
+  }, [messages, busy, streamedReply, streamPhase]);
 
   const submitMessage = async (content: string) => {
     if (!content || !agent || busy) return;
@@ -230,13 +249,32 @@ export default function AgentPage() {
     setMessages((current) => [...current, optimisticMessage]);
     setMessage("");
     setBusy(true);
+    setStreamedReply("");
+    setStreamPhase("ANALYZING");
+    setStreamPhases(["ANALYZING"]);
     setError(null);
     try {
-      const { data } = await api.post<ChatResponse>("/api/v1/agent/chat", {
+      let completedResponse: ChatResponse | null = null;
+      await streamAgentChat({
         agent_role: agent.role_code,
         message: content,
         conversation_id: conversationId,
+      }, (event) => {
+        if (event.event === "status") {
+          setStreamPhase(event.phase);
+          setStreamPhases((current) => current.includes(event.phase)
+            ? current
+            : [...current, event.phase]);
+        } else if (event.event === "token") {
+          setStreamedReply((current) => current + event.delta);
+        } else if (event.event === "complete") {
+          completedResponse = event as unknown as ChatResponse;
+        } else if (event.event === "error") {
+          throw new Error(event.message);
+        }
       });
+      if (!completedResponse) throw new Error("Luồng phản hồi kết thúc chưa hoàn chỉnh.");
+      const data = completedResponse as ChatResponse;
       setConversationId(data.conversation_id);
       await Promise.all([
         loadConversation(data.conversation_id),
@@ -248,6 +286,8 @@ export default function AgentPage() {
       setError(messageFrom(reason));
     } finally {
       setBusy(false);
+      setStreamedReply("");
+      setStreamPhases([]);
       composerRef.current?.focus();
     }
   };
@@ -599,8 +639,35 @@ export default function AgentPage() {
                   <div className="ai-chat-message-avatar">
                     {agent?.avatar_emoji || <Bot size={17} />}
                   </div>
-                  <div className="ai-chat-typing" aria-label="AI đang trả lời">
-                    <span /><span /><span />
+                  <div className="ai-chat-streaming" aria-live="polite">
+                    <div className="ai-chat-execution-status" aria-label={EXECUTION_LABELS[streamPhase]}>
+                      {EXECUTION_PHASES.map((phase) => {
+                        const reached = streamPhases.includes(phase);
+                        const active = phase === streamPhase && phase !== "COMPLETED";
+                        return (
+                          <div
+                            className={`ai-chat-execution-step ${active ? "active" : ""} ${reached ? "reached" : ""}`}
+                            key={phase}
+                          >
+                            {active
+                              ? <LoaderCircle size={14} className="ai-chat-spin" />
+                              : reached
+                                ? <CheckCircle2 size={14} />
+                                : <Circle size={14} />}
+                            <span>{EXECUTION_LABELS[phase]}</span>
+                          </div>
+                        );
+                      })}
+                    </div>
+                    {streamedReply ? (
+                      <div className="ai-chat-bubble">
+                        <ChatMessageContent content={streamedReply} />
+                      </div>
+                    ) : (
+                      <div className="ai-chat-typing" aria-hidden="true">
+                        <span /><span /><span />
+                      </div>
+                    )}
                   </div>
                 </div>
               )}

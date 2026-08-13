@@ -32,6 +32,20 @@ Main internal endpoints:
 
 Set `AI_SERVICE_INTERNAL_TOKEN` in both services outside local development.
 
+## LangChain model layer
+
+OpenAI and Gemini chat calls use LangChain chat models. Configure
+`OPENAI_API_KEY` and/or `GOOGLE_AI_API_KEY`; calls retry according to
+`LLM_MAX_RETRIES`, time out after `LLM_TIMEOUT_SECONDS`, then fall through to
+the other configured provider and finally the deterministic local provider.
+An explicit model override applies only to the primary provider.
+
+The `app/chains` package contains chat, grounded RAG answer and structured
+extraction chains. Routing decisions, citations and contract findings are
+validated with the Pydantic models under `app/schemas`. Set
+`LANGCHAIN_ENABLED=true` to enable structured model routing; the registry route
+remains the fallback when no external model is configured or all calls fail.
+
 ## BGE reranking
 
 Docker enables `BAAI/bge-reranker-v2-m3` by default (`RERANK_BACKEND=bge`). The model is lazy-loaded on

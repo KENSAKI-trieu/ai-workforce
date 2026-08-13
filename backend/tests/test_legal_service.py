@@ -258,7 +258,7 @@ def test_license_upload_endpoint(client, employee_token_headers):
     assert data["risk_level"] == "HIGH"
 
 
-def test_document_generator_endpoint(client, employee_token_headers):
+def test_direct_document_generator_is_disabled(client, employee_token_headers, ceo_token_headers):
     fields = {
         "nda_type": "mutual",
         "party_a": "NovaSoft",
@@ -286,12 +286,121 @@ def test_document_generator_endpoint(client, employee_token_headers):
             "output_format": "docx",
             "fields": fields,
         },
-        headers=employee_token_headers,
+        headers=ceo_token_headers,
     )
 
-    assert response.status_code == 200
-    assert "officedocument" in response.headers["content-type"]
-    assert response.content[:2] == b"PK"
+    assert response.status_code == 410
+
+    blocked = client.post(
+        "/api/v1/legal/generate-document",
+        json={
+            "document_type": "NDA",
+            "output_format": "docx",
+            "fields": fields,
+        },
+        headers=employee_token_headers,
+    )
+    assert blocked.status_code == 410
+
+
+def test_legal_document_draft_requires_executive_approval_before_creator_download(
+    client, employee_token_headers, ceo_token_headers
+):
+    fields = {
+        "nda_type": "mutual",
+        "party_a": "NovaSoft",
+        "party_b": "Partner",
+        "purpose": "Đánh giá cơ hội hợp tác Project Y",
+        "confidential_information": "Mã nguồn và tài liệu kỹ thuật",
+        "effective_date": "2026-08-08",
+        "duration": "2 năm",
+        "confidentiality_duration": "3 năm sau khi chấm dứt",
+        "governing_law": "Việt Nam",
+        "dispute_resolution": "Trọng tài VIAC",
+    }
+    submitted = client.post(
+        "/api/v1/legal/document-drafts",
+        json={
+            "document_type": "NDA",
+            "output_format": "docx",
+            "fields": fields,
+        },
+        headers=employee_token_headers,
+    )
+    assert submitted.status_code == 201
+    draft = submitted.json()
+    assert draft["status"] == "WAITING"
+    assert draft["can_download"] is False
+
+    blocked_download = client.get(
+        draft["download_url"], headers=employee_token_headers
+    )
+    assert blocked_download.status_code == 403
+
+    pending = client.get(
+        "/api/v1/approvals/pending", headers=ceo_token_headers
+    ).json()
+    approval = next(
+        item for item in pending if item["id"] == draft["approval_id"]
+    )
+    assert approval["action_type"] == "LEGAL_DOCUMENT_APPROVAL"
+    assert "draft_storage_key" not in approval["payload"]
+    assert "approved_storage_key" not in approval["payload"]
+
+    preview = client.get(
+        approval["payload"]["preview_url"], headers=ceo_token_headers
+    )
+    assert preview.status_code == 200
+    assert "THỎA THUẬN BẢO MẬT THÔNG TIN" in preview.json()["content"]
+
+    review_file = client.get(
+        approval["payload"]["review_download_url"], headers=ceo_token_headers
+    )
+    assert review_file.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(review_file.content)) as archive:
+        draft_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "DỰ THẢO - CẦN PHÊ DUYỆT PHÁP LÝ" in draft_xml
+
+    manager_login = client.post(
+        "/api/v1/auth/login",
+        json={"email": "hr.manager@company.com", "password": "Password123!"},
+    )
+    assert manager_login.status_code == 200
+    manager_headers = {
+        "Authorization": f"Bearer {manager_login.json()['access_token']}"
+    }
+    manager_action = client.post(
+        f"/api/v1/approvals/{draft['approval_id']}/action",
+        json={"action": "APPROVE"},
+        headers=manager_headers,
+    )
+    assert manager_action.status_code == 403
+
+    approved = client.post(
+        f"/api/v1/approvals/{draft['approval_id']}/action",
+        json={"action": "APPROVE", "comments": "Đồng ý phát hành"},
+        headers=ceo_token_headers,
+    )
+    assert approved.status_code == 200
+    assert approved.json()["status"] == "APPROVED"
+
+    creator_documents = client.get(
+        "/api/v1/legal/document-drafts", headers=employee_token_headers
+    ).json()
+    creator_draft = next(
+        item for item in creator_documents if item["artifact_id"] == draft["artifact_id"]
+    )
+    assert creator_draft["status"] == "APPROVED"
+    assert creator_draft["can_download"] is True
+    assert creator_draft["comments"] == "Đồng ý phát hành"
+
+    final_file = client.get(
+        creator_draft["download_url"], headers=employee_token_headers
+    )
+    assert final_file.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(final_file.content)) as archive:
+        approved_xml = archive.read("word/document.xml").decode("utf-8")
+    assert "ĐÃ PHÊ DUYỆT NỘI BỘ" in approved_xml
 
 
 def test_document_templates_endpoint(client, employee_token_headers):

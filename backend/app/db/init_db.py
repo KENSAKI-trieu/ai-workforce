@@ -329,7 +329,10 @@ def init_db():
         ]
 
         default_agent_tools = {
-            "CEO": ["generate_and_execute_ceo_dag"],
+            "CEO": [
+                "generate_and_execute_ceo_dag", "rag_search", "create_task",
+                "expense_lookup", "generate_legal_document", "submit_approval_request",
+            ],
             "HR": [
                 "query_leave_balance",
                 "request_leave",
@@ -347,8 +350,13 @@ def init_db():
                 "create_hr_task",
                 "send_hr_notification",
                 "export_hr_directory",
+                "rag_search",
+                "employee_lookup",
+                "leave_lookup",
+                "create_task",
+                "submit_approval_request",
             ],
-            "KNOWLEDGE": ["hybrid_search_documents"],
+            "KNOWLEDGE": ["hybrid_search_documents", "rag_search"],
             "LEGAL": [
                 "audit_contract_risk",
                 "compare_contract_versions",
@@ -356,10 +364,12 @@ def init_db():
                 "check_software_licenses",
                 "generate_legal_document",
                 "hybrid_rag_search",
+                "rag_search",
+                "submit_approval_request",
             ],
-            "IT": ["search_it_kb", "create_jira_ticket"],
-            "FINANCE": ["reconcile_po_db"],
-            "SALES": ["generate_quotation_pdf"],
+            "IT": ["search_it_kb", "create_jira_ticket", "rag_search", "create_task", "submit_approval_request"],
+            "FINANCE": ["reconcile_po_db", "rag_search", "expense_lookup", "create_task", "submit_approval_request"],
+            "SALES": ["generate_quotation_pdf", "rag_search", "create_task", "submit_approval_request"],
         }
         legacy_tools = ["query_leave_balance", "request_leave", "hybrid_rag_search"]
         for adata in agents_data:
@@ -380,11 +390,20 @@ def init_db():
                     is_active=True,
                     tools_access=default_agent_tools[adata["role_code"]],
                     allowed_actions=default_agent_tools[adata["role_code"]],
+                    configuration_version=6,
                 )
                 db.add(agent)
                 logger.info(f"Seeded AI Agent: {adata['role_code']} ({adata['name']})")
             elif agent.tools_access == legacy_tools and adata["role_code"] != "HR":
                 agent.tools_access = default_agent_tools[adata["role_code"]]
+                agent.allowed_actions = default_agent_tools[adata["role_code"]]
+                agent.configuration_version = 6
+            elif (agent.configuration_version or 1) < 6:
+                denied = set(agent.disallowed_actions or [])
+                additions = set(default_agent_tools[adata["role_code"]]) - denied
+                agent.tools_access = sorted(set(agent.tools_access or []) | additions)
+                agent.allowed_actions = sorted(set(agent.allowed_actions or []) | additions)
+                agent.configuration_version = 6
         db.commit()
 
         # 4. Seed Knowledge Base Documents & Vector Chunks

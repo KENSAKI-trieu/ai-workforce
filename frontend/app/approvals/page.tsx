@@ -3,7 +3,7 @@
 import axios from "axios";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { useRouter } from "next/navigation";
-import { CheckCircle2, Edit3, RefreshCw, Scale, ShieldAlert, XCircle } from "lucide-react";
+import { CheckCircle2, Download, Edit3, Eye, Loader2, RefreshCw, Scale, ShieldAlert, X, XCircle } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import api from "@/lib/api";
 import { useAuthStore } from "@/store/useAuthStore";
@@ -21,6 +21,8 @@ interface ApprovalItem {
   expires_at?: string;
 }
 
+interface LegalPreview { filename: string; document_type_label: string; status: string; requester_name: string; content: string; }
+
 function errorMessage(error: unknown): string {
   if (axios.isAxiosError(error)) {
     return String(error.response?.data?.detail || error.message);
@@ -37,6 +39,8 @@ export default function ApprovalsCenterPage() {
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
   const [error, setError] = useState<string | null>(null);
+  const [legalPreview, setLegalPreview] = useState<LegalPreview | null>(null);
+  const [previewLoading, setPreviewLoading] = useState(false);
 
   const selected = useMemo(
     () => approvals.find((item) => item.id === selectedId) || null,
@@ -93,6 +97,38 @@ export default function ApprovalsCenterPage() {
       );
     } finally {
       setSubmitting(false);
+    }
+  };
+
+  const previewLegalDraft = async () => {
+    const url = selected?.payload.preview_url;
+    if (typeof url !== "string") return;
+    setPreviewLoading(true);
+    setError(null);
+    try {
+      const { data } = await api.get<LegalPreview>(url);
+      setLegalPreview(data);
+    } catch (reason) {
+      setError(errorMessage(reason));
+    } finally {
+      setPreviewLoading(false);
+    }
+  };
+
+  const downloadLegalDraft = async () => {
+    const url = selected?.payload.review_download_url;
+    if (typeof url !== "string") return;
+    setError(null);
+    try {
+      const response = await api.get<Blob>(url, { responseType: "blob" });
+      const objectUrl = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = typeof selected?.payload.filename === "string" ? selected.payload.filename : "legal-draft";
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (reason) {
+      setError(errorMessage(reason));
     }
   };
 
@@ -173,20 +209,27 @@ export default function ApprovalsCenterPage() {
                   <div style={{ marginBottom: 14 }}>
                     <strong>Nguồn dữ liệu:</strong> {selected.data_sources.length ? selected.data_sources.join(", ") : "Chưa khai báo"}
                   </div>
-                  <label style={{ fontWeight: 650, display: "block", marginBottom: 6 }}>Payload đề xuất</label>
-                  <textarea
-                    className="ta-input"
-                    rows={14}
-                    value={editedPayload || JSON.stringify(selected.payload, null, 2)}
-                    onChange={(event) => setEditedPayload(event.target.value)}
-                    onFocus={() => {
-                      if (!editedPayload) setEditedPayload(JSON.stringify(selected.payload, null, 2));
-                    }}
-                    style={{ fontFamily: "monospace", fontSize: 12 }}
-                  />
+                  {selected.action_type === "LEGAL_DOCUMENT_APPROVAL" ? <div style={{ padding: 14, border: "1px solid #DBE4EC", borderRadius: 9, background: "#F8FAFC" }}>
+                    <strong style={{ display: "block", marginBottom: 5 }}>{String(selected.payload.document_type_label || "Văn bản pháp lý")}</strong>
+                    <small style={{ color: "var(--text-muted)" }}>{String(selected.payload.filename || "Bản nháp")}</small>
+                    <p style={{ margin: "8px 0 12px", color: "var(--text-muted)", fontSize: 13 }}>Xem nội dung hoặc tải bản nháp trước khi quyết định. Payload lưu trữ nội bộ không được hiển thị.</p>
+                    <div style={{ display: "flex", gap: 8 }}><button className="ta-btn ta-btn-ghost" disabled={previewLoading} onClick={() => void previewLegalDraft()}>{previewLoading ? <Loader2 className="animate-spin" size={15} /> : <Eye size={15} />} Xem nội dung</button><button className="ta-btn ta-btn-ghost" onClick={() => void downloadLegalDraft()}><Download size={15} /> Tải bản nháp</button></div>
+                  </div> : <>
+                    <label style={{ fontWeight: 650, display: "block", marginBottom: 6 }}>Payload đề xuất</label>
+                    <textarea
+                      className="ta-input"
+                      rows={14}
+                      value={editedPayload || JSON.stringify(selected.payload, null, 2)}
+                      onChange={(event) => setEditedPayload(event.target.value)}
+                      onFocus={() => {
+                        if (!editedPayload) setEditedPayload(JSON.stringify(selected.payload, null, 2));
+                      }}
+                      style={{ fontFamily: "monospace", fontSize: 12 }}
+                    />
+                  </>}
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16 }}>
                     <button disabled={submitting} className="ta-btn" onClick={() => void act("REJECT")}><XCircle size={15} /> Từ chối</button>
-                    <button disabled={submitting} className="ta-btn ta-btn-ghost" onClick={() => void act("EDIT_AND_APPROVE")}><Edit3 size={15} /> Sửa & duyệt</button>
+                    {selected.action_type !== "LEGAL_DOCUMENT_APPROVAL" && <button disabled={submitting} className="ta-btn ta-btn-ghost" onClick={() => void act("EDIT_AND_APPROVE")}><Edit3 size={15} /> Sửa & duyệt</button>}
                     <button disabled={submitting} className="ta-btn ta-btn-primary" onClick={() => void act("APPROVE")}><CheckCircle2 size={15} /> Phê duyệt</button>
                   </div>
                 </>
@@ -195,6 +238,7 @@ export default function ApprovalsCenterPage() {
           </div>
         </main>
       </div>
+      {legalPreview && <div role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) setLegalPreview(null); }} style={{ position: "fixed", zIndex: 500, inset: 0, display: "grid", placeItems: "center", padding: 24, background: "rgba(15,23,42,.52)" }}><section role="dialog" aria-modal="true" style={{ width: "min(900px, 100%)", maxHeight: "calc(100vh - 48px)", display: "flex", flexDirection: "column", overflow: "hidden", borderRadius: 12, background: "#fff", boxShadow: "0 24px 70px rgba(15,23,42,.3)" }}><header style={{ display: "flex", alignItems: "center", justifyContent: "space-between", padding: "14px 17px", borderBottom: "1px solid #E2E8F0" }}><div><strong>{legalPreview.document_type_label}</strong><small style={{ display: "block", marginTop: 3, color: "#64748B" }}>{legalPreview.filename} · {legalPreview.requester_name}</small></div><button className="ta-btn ta-btn-ghost" onClick={() => setLegalPreview(null)}><X size={16} /></button></header><pre style={{ minHeight: 400, margin: 0, padding: 20, overflow: "auto", color: "#334155", font: "400 13px/1.7 Inter, sans-serif", whiteSpace: "pre-wrap" }}>{legalPreview.content}</pre></section></div>}
     </div>
   );
 }

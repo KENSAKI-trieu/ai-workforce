@@ -6,14 +6,24 @@ from app.llm.openai_provider import OpenAIProvider
 
 
 class LLMRouter:
-    def provider(self, name: str | None = None) -> LLMProvider:
+    def providers(self, name: str | None = None) -> list[LLMProvider]:
+        """Return an ordered provider list ending in the custom local fallback."""
         selected = (name or "").lower()
-        if selected == "openai" or (not selected and settings.OPENAI_API_KEY):
-            if not settings.OPENAI_API_KEY:
-                raise RuntimeError("OPENAI_API_KEY is not configured")
-            return OpenAIProvider(settings.OPENAI_API_KEY)
-        if selected == "gemini" or (not selected and settings.GOOGLE_AI_API_KEY):
-            if not settings.GOOGLE_AI_API_KEY:
-                raise RuntimeError("GOOGLE_AI_API_KEY is not configured")
-            return GeminiProvider(settings.GOOGLE_AI_API_KEY)
-        return LocalProvider()
+        if selected not in {"", "openai", "gemini", "local"}:
+            return [LocalProvider()]
+        if selected == "local":
+            return [LocalProvider()]
+
+        order = [selected] if selected else []
+        order.extend(item for item in ("openai", "gemini") if item not in order)
+        providers: list[LLMProvider] = []
+        for provider_name in order:
+            if provider_name == "openai" and settings.OPENAI_API_KEY:
+                providers.append(OpenAIProvider(settings.OPENAI_API_KEY))
+            if provider_name == "gemini" and settings.GOOGLE_AI_API_KEY:
+                providers.append(GeminiProvider(settings.GOOGLE_AI_API_KEY))
+        providers.append(LocalProvider())
+        return providers
+
+    def provider(self, name: str | None = None) -> LLMProvider:
+        return self.providers(name)[0]

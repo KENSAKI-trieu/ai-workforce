@@ -5,7 +5,6 @@ import {
   AlertTriangle,
   ArrowRight,
   BadgeCheck,
-  BookOpen,
   Bot,
   CalendarClock,
   Check,
@@ -36,7 +35,7 @@ import {
   ExternalLink,
   Eye,
 } from "lucide-react";
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { FormEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
 
 import Sidebar from "@/components/Sidebar";
@@ -46,7 +45,7 @@ import api from "@/lib/api";
 import { useAuthStore } from "@/store/useAuthStore";
 import styles from "./legal.module.css";
 
-type View = "overview" | "review" | "knowledge" | "compliance";
+type View = "overview" | "chat" | "review" | "drafts" | "compliance";
 type ReviewMode = "contract" | "compare" | "privacy" | "license";
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 type RepresentedParty = "" | "PARTY_A" | "PARTY_B" | "NEUTRAL";
@@ -67,6 +66,26 @@ interface DocumentItem {
 interface ApprovalItem { id: string; action_type: string; risk_level: Severity | "CRITICAL"; workflow_title: string; }
 interface Citation { document_name?: string; section_title?: string; citation_tag?: string; }
 interface ChatResult { reply: string; citations: Citation[]; conversation_id: string; }
+interface LegalChatMessage { role: "USER" | "ASSISTANT"; content: string; citations?: Citation[]; }
+interface LegalDraft {
+  artifact_id: string;
+  approval_id: string;
+  workflow_id: string;
+  document_type: string;
+  document_type_label: string;
+  filename: string;
+  output_format: string;
+  status: "WAITING" | "APPROVED" | "REJECTED" | "EXPIRED";
+  comments?: string | null;
+  requester_name: string;
+  submitted_at?: string | null;
+  updated_at?: string | null;
+  can_preview: boolean;
+  can_download: boolean;
+  preview_url: string;
+  download_url: string;
+}
+interface LegalDraftPreview { artifact_id: string; filename: string; document_type_label: string; status: string; requester_name: string; content: string; }
 interface RiskFinding {
   id: string;
   clause: string;
@@ -143,7 +162,6 @@ interface LicenseResult {
   findings: Array<{ package: string; license: string; severity: Severity; action: string }>;
   approval_created?: boolean;
 }
-interface SearchResult { id: string; document_name: string; section_title: string; content: string; citation_tag: string; score: number; }
 interface DocumentReader {
   document_id?: string;
   document_name: string;
@@ -187,14 +205,16 @@ export default function LegalAgentPage() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [question, setQuestion] = useState("");
-  const [chatResult, setChatResult] = useState<ChatResult | null>(null);
+  const [chatMessages, setChatMessages] = useState<LegalChatMessage[]>([]);
+  const [conversationId, setConversationId] = useState<string | null>(null);
   const [reviewMode, setReviewMode] = useState<ReviewMode>("contract");
   const [primaryFile, setPrimaryFile] = useState<File | null>(null);
   const [secondaryFile, setSecondaryFile] = useState<File | null>(null);
   const [representedParty, setRepresentedParty] = useState<RepresentedParty>("");
   const [reviewResult, setReviewResult] = useState<ContractReview | PrivacyResult | CompareResult | LicenseResult | null>(null);
-  const [knowledgeQuery, setKnowledgeQuery] = useState("");
-  const [searchResults, setSearchResults] = useState<SearchResult[]>([]);
+  const [drafts, setDrafts] = useState<LegalDraft[]>([]);
+  const [draftPreview, setDraftPreview] = useState<LegalDraftPreview | null>(null);
+  const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [showGenerator, setShowGenerator] = useState(false);
   const questionRef = useRef<HTMLInputElement | null>(null);
 
@@ -202,14 +222,16 @@ export default function LegalAgentPage() {
     setLoading(true);
     setError(null);
     try {
-      const [agentResponse, documentsResponse, approvalsResponse] = await Promise.all([
+      const [agentResponse, documentsResponse, approvalsResponse, draftsResponse] = await Promise.all([
         api.get<Agent>("/api/v1/agents/LEGAL"),
         api.get<DocumentItem[]>("/api/v1/documents"),
         api.get<ApprovalItem[]>("/api/v1/approvals/pending"),
+        api.get<LegalDraft[]>("/api/v1/legal/document-drafts"),
       ]);
       setAgent(agentResponse.data);
       setDocuments(documentsResponse.data);
       setApprovals(approvalsResponse.data.filter((item) => item.action_type.includes("LEGAL")));
+      setDrafts(draftsResponse.data);
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
@@ -243,10 +265,16 @@ export default function LegalAgentPage() {
     if (!content || busy) return;
     setBusy(true);
     setError(null);
+    setChatMessages((current) => [...current, { role: "USER", content }]);
+    setQuestion("");
     try {
-      const { data } = await api.post<ChatResult>("/api/v1/agent/chat", { agent_role: "LEGAL", message: content });
-      setChatResult(data);
-      setQuestion("");
+      const { data } = await api.post<ChatResult>("/api/v1/agent/chat", {
+        agent_role: "LEGAL",
+        message: content,
+        conversation_id: conversationId || undefined,
+      });
+      setConversationId(data.conversation_id);
+      setChatMessages((current) => [...current, { role: "ASSISTANT", content: data.reply, citations: data.citations }]);
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
@@ -291,14 +319,28 @@ export default function LegalAgentPage() {
     }
   };
 
-  const searchKnowledge = async (event: FormEvent) => {
-    event.preventDefault();
-    if (!knowledgeQuery.trim()) return;
+  const downloadDraft = async (draft: LegalDraft) => {
+    if (!draft.can_download) return;
+    setError(null);
+    try {
+      const response = await api.get<Blob>(draft.download_url, { responseType: "blob" });
+      const url = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = url;
+      link.download = draft.status === "APPROVED" ? `approved-${draft.filename}` : draft.filename;
+      link.click();
+      URL.revokeObjectURL(url);
+    } catch (reason) {
+      setError(messageFrom(reason));
+    }
+  };
+
+  const previewDraft = async (draft: LegalDraft) => {
     setBusy(true);
     setError(null);
     try {
-      const { data } = await api.post<SearchResult[]>("/api/v1/documents/search", { query: knowledgeQuery, top_k: 8 });
-      setSearchResults(data);
+      const { data } = await api.get<LegalDraftPreview>(draft.preview_url);
+      setDraftPreview(data);
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
@@ -328,45 +370,21 @@ export default function LegalAgentPage() {
             </div>
             <nav className={styles.nav} aria-label="Legal workspace">
               <button className={view === "overview" ? styles.active : ""} onClick={() => setView("overview")}><CircleGauge size={17} />Tổng quan</button>
+              <button className={view === "chat" ? styles.active : ""} onClick={() => setView("chat")}><MessageSquareText size={17} />Chat</button>
               <button className={view === "review" ? styles.active : ""} onClick={() => { setReviewMode("contract"); setReviewResult(null); setView("review"); }}><FileSearch size={17} />Tài liệu & hợp đồng</button>
-              <button className={view === "knowledge" ? styles.active : ""} onClick={() => setView("knowledge")}><BookOpen size={17} />Kho pháp lý</button>
+              <button className={view === "drafts" ? styles.active : ""} onClick={() => setView("drafts")}><FilePlus2 size={17} />Tạo văn bản</button>
               <button className={view === "compliance" ? styles.active : ""} onClick={() => { setReviewMode("privacy"); setReviewResult(null); setView("compliance"); }}><ShieldAlert size={17} />Compliance & IP</button>
             </nav>
-            <div className={styles.accessScope}>
-              <div><LockKeyhole size={15} /><strong>Phạm vi truy cập</strong></div>
-              <span>{user?.department || "ALL"} · {user?.role || "Employee"}</span>
-              <small>ACL được áp dụng trước truy xuất</small>
-            </div>
-            <div className={styles.railFooter}>
-              <span><span className={styles.liveDot} />RAG services online</span>
-              <small>Hybrid search · Reranker</small>
-            </div>
           </aside>
 
           <main className={styles.main}>
-            <section className={styles.commandBar}>
-              <div className={styles.commandIntro}>
-                <span className={styles.commandIcon}><MessageSquareText size={18} /></span>
-                <div><strong>Hỏi Legal Agent</strong><span>Câu trả lời theo tài liệu bạn được phép truy cập</span></div>
-              </div>
-              <form onSubmit={askLegal}>
-                <input ref={questionRef} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Ví dụ: Tôi được nghỉ phép bao nhiêu ngày?" />
-                <button type="submit" disabled={busy || !question.trim()} title="Gửi câu hỏi">{busy ? <Loader2 className={styles.spin} size={17} /> : <Send size={17} />}</button>
-              </form>
-            </section>
-
             {error && <div className={styles.error}><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError(null)} title="Đóng"><X size={15} /></button></div>}
-            {chatResult && (
-              <section className={styles.answerPanel}>
-                <header><span><Bot size={16} /></span><div><strong>Legal Counsel AI</strong><small>Trả lời có kiểm soát nguồn</small></div><button onClick={() => setChatResult(null)} title="Đóng"><X size={15} /></button></header>
-                <div className={styles.answerBody}><ChatMessageContent content={chatResult.reply} /></div>
-                {chatResult.citations.length > 0 && <footer>{chatResult.citations.map((citation, index) => <span key={index}><FileText size={12} />{citation.citation_tag || citation.document_name}{citation.section_title ? ` · ${citation.section_title}` : ""}</span>)}</footer>}
-              </section>
-            )}
+
+            {view === "chat" && <ChatWorkspace messages={chatMessages} question={question} setQuestion={setQuestion} busy={busy} send={askLegal} inputRef={questionRef} onNewChat={() => { setChatMessages([]); setConversationId(null); setQuestion(""); }} />}
 
             {view === "overview" && (
               <>
-                <div className={styles.headingRow}><div><span className={styles.eyebrow}>LEGAL OPERATIONS</span><h1>Trung tâm pháp chế</h1></div><button className={styles.primaryButton} onClick={() => setShowGenerator(true)}><FilePlus2 size={16} />Tạo văn bản</button></div>
+                <div className={styles.headingRow}><div><span className={styles.eyebrow}>LEGAL OPERATIONS</span><h1>Trung tâm pháp chế</h1></div><button className={styles.primaryButton} onClick={() => setView("drafts")}><FilePlus2 size={16} />Tạo văn bản</button></div>
                 <section className={styles.stats}>
                   <article><span className={styles.statIcon}><FileText size={18} /></span><div><strong>{loading ? "—" : legalDocuments.length}</strong><small>Tài liệu được phép xem</small></div><span className={styles.trend}>ACL</span></article>
                   <article><span className={`${styles.statIcon} ${styles.amber}`}><ShieldAlert size={18} /></span><div><strong>{approvals.length}</strong><small>Chờ phê duyệt Legal</small></div><button onClick={() => router.push("/approvals")} title="Mở phê duyệt"><ArrowRight size={15} /></button></article>
@@ -383,9 +401,8 @@ export default function LegalAgentPage() {
                       <Tool icon={GitCompareArrows} title="Clause Comparison" meta="V1 / V2 · Changed terms" tone="cyan" onClick={() => openTool("compare")} />
                       <Tool icon={Fingerprint} title="Privacy Checker" meta="PII · PDPL · Approval" tone="rose" onClick={() => openTool("privacy")} />
                       <Tool icon={Code2} title="OSS & License" meta="GPL · AGPL · MIT · Apache" tone="green" onClick={() => openTool("license")} />
-                      <Tool icon={WandSparkles} title="Contract Generator" meta="DOCX · PDF · 7 templates" tone="amber" onClick={() => setShowGenerator(true)} />
-                      <Tool icon={BookOpen} title="Policy QA" meta="Nội quy · OT · Remote · Leave" tone="blue" onClick={() => { setQuestion("Theo chính sách công ty, "); questionRef.current?.focus(); }} />
-                      <Tool icon={Search} title="Legal Document Search" meta="Contract · NDA · SOW · MSA" tone="cyan" onClick={() => setView("knowledge")} />
+                      <Tool icon={WandSparkles} title="Contract Generator" meta="Tạo · Gửi duyệt · Tải bản cuối" tone="amber" onClick={() => setView("drafts")} />
+                      <Tool icon={MessageSquareText} title="Chat Legal Agent" meta="Hỏi đáp · Citation · Lịch sử phiên" tone="blue" onClick={() => setView("chat")} />
                     </div>
                   </section>
 
@@ -423,24 +440,60 @@ export default function LegalAgentPage() {
               />
             )}
 
-            {view === "knowledge" && (
-              <KnowledgeWorkspace
-                documents={legalDocuments}
-                query={knowledgeQuery}
-                setQuery={setKnowledgeQuery}
-                search={searchKnowledge}
-                results={searchResults}
-                busy={busy}
-                userRole={`${user?.department || "ALL"} · ${user?.role || "Employee"}`}
-              />
-            )}
+            {view === "drafts" && <DraftWorkspace drafts={drafts} role={user?.role || "Employee"} notice={draftNotice} openGenerator={() => { setDraftNotice(null); setShowGenerator(true); }} preview={(draft) => void previewDraft(draft)} download={(draft) => void downloadDraft(draft)} openApprovals={() => router.push("/approvals")} busy={busy} />}
           </main>
         </div>
       </div>
 
-      {showGenerator && <LegalDocumentGeneratorModal onClose={() => setShowGenerator(false)} />}
+      {showGenerator && <LegalDocumentGeneratorModal onClose={() => setShowGenerator(false)} onSubmitted={() => { setDraftNotice("Đã tạo bản nháp và gửi tới CEO/Admin/Owner phê duyệt."); setView("drafts"); void loadData(); }} />}
+      {draftPreview && <DraftPreviewModal preview={draftPreview} onClose={() => setDraftPreview(null)} />}
     </div>
   );
+}
+
+function ChatWorkspace({ messages, question, setQuestion, busy, send, inputRef, onNewChat }: {
+  messages: LegalChatMessage[]; question: string; setQuestion: (value: string) => void; busy: boolean;
+  send: (event?: FormEvent) => void; inputRef: RefObject<HTMLInputElement | null>; onNewChat: () => void;
+}) {
+  return <section className={styles.chatWorkspace}>
+    <header><div><span><Bot size={19} /></span><div><strong>Chat với Legal Counsel AI</strong><small>Hỏi đáp pháp lý trong phạm vi cấu hình và quyền truy cập của Agent</small></div></div><button type="button" onClick={onNewChat}><MessageSquareText size={14} />Cuộc trò chuyện mới</button></header>
+    <div className={styles.chatMessages}>
+      {messages.length === 0 && <div className={styles.chatEmpty}><span><ShieldCheck size={28} /></span><h2>Tôi có thể hỗ trợ gì về pháp lý?</h2><p>Hỏi về hợp đồng, quy trình, policy hoặc tài liệu mà bạn được cấp quyền truy cập.</p><div>{["Tóm tắt nghĩa vụ trong hợp đồng", "Giải thích điều khoản chấm dứt", "Policy công ty quy định thế nào?"].map((suggestion) => <button key={suggestion} onClick={() => { setQuestion(suggestion); inputRef.current?.focus(); }}>{suggestion}</button>)}</div></div>}
+      {messages.map((message, index) => <article key={`${message.role}-${index}`} className={message.role === "USER" ? styles.userMessage : styles.agentMessage}>
+        <span>{message.role === "USER" ? "Bạn" : <Bot size={15} />}</span>
+        <div>{message.role === "ASSISTANT" ? <ChatMessageContent content={message.content} /> : <p>{message.content}</p>}{message.citations && message.citations.length > 0 && <footer>{message.citations.map((citation, citationIndex) => <span key={citationIndex}><FileText size={11} />{citation.citation_tag || citation.document_name}{citation.section_title ? ` · ${citation.section_title}` : ""}</span>)}</footer>}</div>
+      </article>)}
+      {busy && <article className={styles.agentMessage}><span><Bot size={15} /></span><div className={styles.typing}><i /><i /><i /></div></article>}
+    </div>
+    <form className={styles.chatComposer} onSubmit={send}><input ref={inputRef} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Nhập câu hỏi cho Legal Agent…" /><button type="submit" disabled={busy || !question.trim()}>{busy ? <Loader2 className={styles.spin} size={17} /> : <Send size={17} />}</button></form>
+  </section>;
+}
+
+function DraftWorkspace({ drafts, role, notice, openGenerator, preview, download, openApprovals, busy }: {
+  drafts: LegalDraft[]; role: string; notice: string | null; openGenerator: () => void;
+  preview: (draft: LegalDraft) => void; download: (draft: LegalDraft) => void; openApprovals: () => void; busy: boolean;
+}) {
+  const reviewer = ["Owner", "Admin", "CEO"].includes(role);
+  return <>
+    <div className={styles.headingRow}><div><span className={styles.eyebrow}>DOCUMENT APPROVAL WORKFLOW</span><h1>Tạo văn bản</h1><p>Tạo bản nháp, gửi phê duyệt và nhận bản cuối có kiểm soát.</p></div><button className={styles.primaryButton} onClick={openGenerator}><FilePlus2 size={16} />Tạo văn bản mới</button></div>
+    {notice && <div className={styles.draftNotice}><CheckCircle2 size={17} /><span>{notice}</span></div>}
+    <section className={styles.draftFlow}>
+      {[ [FilePlus2, "1. Tạo bản nháp", "Người dùng nhập dữ liệu"], [Send, "2. Gửi phê duyệt", "Tự động tạo approval"], [ShieldCheck, "3. Executive review", "CEO · Admin · Owner"], [Download, "4. Tải bản cuối", "Mở sau khi APPROVED"] ].map(([Icon, title, text], index) => <div key={String(title)}><span><Icon size={16} /></span><div><strong>{String(title)}</strong><small>{String(text)}</small></div>{index < 3 && <ChevronRight size={14} />}</div>)}
+    </section>
+    <section className={styles.draftPanel}>
+      <header><div><h2>{reviewer ? "Văn bản trong tenant" : "Văn bản của tôi"}</h2><p>{drafts.length} yêu cầu · quyền tải được kiểm tra ở server</p></div>{reviewer && <button onClick={openApprovals}><ShieldAlert size={14} />Mở Trung tâm phê duyệt</button>}</header>
+      {drafts.length === 0 ? <div className={styles.draftEmpty}><FileText size={30} /><strong>Chưa có văn bản nào</strong><p>Tạo văn bản đầu tiên để bắt đầu workflow phê duyệt.</p></div> : <div className={styles.draftList}>{drafts.map((draft) => <article key={draft.artifact_id}>
+        <span className={styles.draftFileIcon}><FileText size={18} /></span>
+        <div className={styles.draftInfo}><strong>{draft.document_type_label}</strong><small>{draft.filename} · {draft.requester_name}</small><em>{draft.submitted_at ? new Date(draft.submitted_at).toLocaleString("vi-VN") : ""}</em>{draft.comments && <p>Nhận xét: {draft.comments}</p>}</div>
+        <span className={`${styles.draftStatus} ${styles[`draft${draft.status}`]}`}>{draft.status === "WAITING" ? "Chờ duyệt" : draft.status === "APPROVED" ? "Đã duyệt" : draft.status === "REJECTED" ? "Từ chối" : "Hết hạn"}</span>
+        <div className={styles.draftActions}><button disabled={busy || !draft.can_preview} onClick={() => preview(draft)}><Eye size={13} />Xem</button><button disabled={!draft.can_download} onClick={() => download(draft)} title={!draft.can_download ? "Chỉ tải được sau khi được phê duyệt" : "Tải văn bản"}><Download size={13} />{draft.status === "APPROVED" ? "Tải bản cuối" : "Tải bản nháp"}</button></div>
+      </article>)}</div>}
+    </section>
+  </>;
+}
+
+function DraftPreviewModal({ preview, onClose }: { preview: LegalDraftPreview; onClose: () => void }) {
+  return <div className={styles.readerBackdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) onClose(); }}><section className={styles.readerModal} role="dialog" aria-modal="true" aria-label="Xem trước văn bản pháp lý"><header><div><span><FileText size={19} /></span><div><strong>{preview.document_type_label}</strong><small>{preview.filename} · {preview.requester_name} · {preview.status}</small></div></div><button onClick={onClose}><X size={17} /></button></header><pre className={styles.readerContent}>{preview.content}</pre><footer><button onClick={onClose}>Đóng</button></footer></section></div>;
 }
 
 function Tool({ icon: Icon, title, meta, tone, onClick }: { icon: typeof FileSearch; title: string; meta: string; tone: string; onClick: () => void }) {
@@ -636,15 +689,4 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
       </section>
     </div>}
   </div>;
-}
-
-function KnowledgeWorkspace({ documents, query, setQuery, search, results, busy, userRole }: { documents: DocumentItem[]; query: string; setQuery: (value: string) => void; search: (event: FormEvent) => void; results: SearchResult[]; busy: boolean; userRole: string }) {
-  return <>
-    <div className={styles.headingRow}><div><span className={styles.eyebrow}>GOVERNED KNOWLEDGE</span><h1>Kho tri thức pháp lý</h1></div></div>
-    <form className={styles.knowledgeSearch} onSubmit={search}><Search size={18} /><input value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm điều khoản, hợp đồng, NDA hoặc chính sách…" /><button disabled={busy || !query.trim()}>{busy ? <Loader2 className={styles.spin} size={16} /> : "Tìm kiếm"}</button></form>
-    <div className={styles.knowledgeGrid}>
-      <section className={styles.documentList}><div className={styles.sectionHeader}><div><h2>Tài liệu có quyền truy cập</h2><p>{documents.length} tài liệu · {userRole}</p></div><span className={styles.secureBadge}><LockKeyhole size={12} />ACL filtered</span></div>{documents.length === 0 ? <div className={styles.resultEmpty}><BookOpen size={30} /><h3>Chưa có tài liệu phù hợp ACL</h3></div> : documents.map((item) => <article key={item.document_id}><span className={styles.docIcon}><FileText size={17} /></span><div><strong>{item.document_title || item.document_name}</strong><small>{item.collection_name} · {item.chunk_count} chunks</small></div><span className={styles.confidentiality}>{item.confidentiality || "internal"}</span></article>)}</section>
-      <section className={styles.searchResultList}><div className={styles.sectionHeader}><div><h2>Kết quả hybrid search</h2><p>Vector + BM25 · reranked</p></div></div>{results.length === 0 ? <div className={styles.resultEmpty}><Search size={30} /><h3>Nhập truy vấn để tìm tài liệu</h3></div> : results.map((item) => <article key={item.id}><div><span>{Math.round(item.score * 100)}%</span><strong>{item.document_name}</strong></div><h3>{item.section_title}</h3><p>{item.content}</p><small><FileText size={11} />{item.citation_tag}</small></article>)}</section>
-    </div>
-  </>;
 }

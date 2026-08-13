@@ -307,6 +307,7 @@ Những nhóm biến quan trọng gồm:
 | Embedding | `EMBEDDING_BACKEND`, `EMBEDDING_MODEL_NAME`, `EMBEDDING_VERSION`, `EMBEDDING_DIMENSION` |
 | RAG | `RAG_CHUNK_*`, `RAG_MIN_DENSE_SCORE`, `RAG_MIN_RELEVANCE_SCORE` |
 | Reranking | `RERANK_BACKEND`, `RERANK_MODEL_NAME`, `RERANK_MODEL_WEIGHT`, `RERANK_MIN_MODEL_SCORE` |
+| LangChain migration | `LANGCHAIN_ENABLED`, `LANGGRAPH_ENABLED`, `LANGCHAIN_AGENT_ROLES` |
 | Hàng đợi | `REDIS_URL`, `REDIS_QUEUE_NAME` |
 | Email và lưu trữ | `SMTP_*`, `MINIO_*`, `CLOUDINARY_*` |
 
@@ -376,3 +377,4 @@ Các cơ chế trên hỗ trợ kiểm soát rủi ro nhưng không thay thế v
 - [Thiết kế API](docs/09-api-design.md)
 - [Hướng dẫn triển khai](docs/11-deployment.md)
 - [Kiến trúc AI Service](docs/AI_SERVICE_ARCHITECTURE.md)
+- [Streaming và giao diện — Giai đoạn 7](docs/21-streaming-ui-phase-7.md)

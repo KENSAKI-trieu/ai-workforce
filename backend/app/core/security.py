@@ -1,6 +1,6 @@
 from datetime import datetime, timedelta, timezone
 from typing import Any, Optional
-from uuid import UUID
+from uuid import UUID, uuid4
 
 from fastapi import Depends, HTTPException, status, Request
 from fastapi.security import OAuth2PasswordBearer
@@ -89,6 +89,53 @@ def create_refresh_token(
         "iat": datetime.now(timezone.utc),
     }
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def create_internal_tool_token(
+    user: Any,
+    *,
+    agent_role: str | None = None,
+    expires_delta: Optional[timedelta] = None,
+) -> str:
+    """Create a short-lived, backend-issued identity token for tool execution."""
+    expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=5))
+    payload = {
+        "sub": str(user.id),
+        "tenant_id": str(user.tenant_id),
+        "type": "internal_tool",
+        "iss": "ai-workforce-backend",
+        "aud": "internal-tool-gateway",
+        "jti": str(uuid4()),
+        "agent_role": agent_role,
+        "exp": expire,
+        "iat": datetime.now(timezone.utc),
+    }
+    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+
+
+def decode_internal_tool_token(token: str) -> dict[str, Any]:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Invalid internal tool credential",
+    )
+    try:
+        payload = jwt.decode(
+            token,
+            settings.SECRET_KEY,
+            algorithms=[settings.ALGORITHM],
+            audience="internal-tool-gateway",
+            issuer="ai-workforce-backend",
+        )
+    except JWTError as exc:
+        raise credentials_exception from exc
+    if (
+        payload.get("type") != "internal_tool"
+        or not payload.get("sub")
+        or not payload.get("tenant_id")
+        or not payload.get("jti")
+    ):
+        raise credentials_exception
+    return payload
 
 
 def decode_token(token: str) -> dict[str, Any]:

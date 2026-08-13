@@ -33,10 +33,13 @@ services:
       dockerfile: Dockerfile
     container_name: ai_workforce_ai_service
     restart: always
+    env_file:
+      - ./backend/.env
     environment:
       AI_SERVICE_HOST: 0.0.0.0
       AI_SERVICE_PORT: 8100
       AI_SERVICE_INTERNAL_TOKEN: ${AI_SERVICE_INTERNAL_TOKEN:-}
+      BACKEND_TOOL_GATEWAY_URL: http://backend:8000
       EMBEDDING_BACKEND: ${AI_EMBEDDING_BACKEND:-sentence_transformers}
       EMBEDDING_MODEL_NAME: ${AI_EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
       EMBEDDING_VERSION: ${AI_EMBEDDING_VERSION:-qwen3-embedding-v1}
@@ -58,8 +61,24 @@ services:
       RERANK_MIN_MODEL_SCORE: ${AI_RERANK_MIN_MODEL_SCORE:-0.15}
       RERANK_MODEL_WEIGHT: ${AI_RERANK_MODEL_WEIGHT:-0.90}
       RERANK_FALLBACK_ENABLED: ${AI_RERANK_FALLBACK_ENABLED:-true}
+      LANGCHAIN_ENABLED: ${LANGCHAIN_ENABLED:-false}
+      LANGGRAPH_ENABLED: ${LANGGRAPH_ENABLED:-false}
+      LANGGRAPH_CHECKPOINT_BACKEND: postgres
+      LANGGRAPH_CHECKPOINT_AUTO_SETUP: "true"
+      LANGGRAPH_STRICT_MSGPACK: "true"
+      POSTGRES_HOST: postgres
+      POSTGRES_PORT: 5432
+      LANGCHAIN_AGENT_ROLES: ${LANGCHAIN_AGENT_ROLES:-}
       OPENAI_API_KEY: ${OPENAI_API_KEY:-}
       GOOGLE_AI_API_KEY: ${GOOGLE_AI_API_KEY:-}
+      OPENAI_CHAT_MODEL: ${OPENAI_CHAT_MODEL:-gpt-4o-mini}
+      GEMINI_CHAT_MODEL: ${GEMINI_CHAT_MODEL:-gemini-2.0-flash}
+      LLM_TIMEOUT_SECONDS: ${LLM_TIMEOUT_SECONDS:-90}
+      LLM_MAX_RETRIES: ${LLM_MAX_RETRIES:-2}
+      AGENT_MAX_MODEL_CALLS: ${AGENT_MAX_MODEL_CALLS:-8}
+      AGENT_MAX_TOOL_CALLS: ${AGENT_MAX_TOOL_CALLS:-12}
+      AGENT_MIDDLEWARE_MODEL_RETRIES: ${AGENT_MIDDLEWARE_MODEL_RETRIES:-2}
+      AGENT_COMPLEXITY_THRESHOLD: ${AGENT_COMPLEXITY_THRESHOLD:-4}
     ports:
       - "8100:8100"
     volumes:
@@ -76,6 +95,9 @@ services:
       interval: 10s
       timeout: 5s
       retries: 20
+    depends_on:
+      postgres:
+        condition: service_healthy
 
   backend:
     build:
@@ -99,6 +121,8 @@ services:
       FRONTEND_URL: http://localhost:3000
       AI_SERVICE_URL: http://ai-service:8100
       AI_SERVICE_INTERNAL_TOKEN: ${AI_SERVICE_INTERNAL_TOKEN:-}
+      LANGGRAPH_ENABLED: ${LANGGRAPH_ENABLED:-false}
+      LANGGRAPH_LEGACY_FALLBACK: ${LANGGRAPH_LEGACY_FALLBACK:-true}
       EMBEDDING_BACKEND: ${AI_EMBEDDING_BACKEND:-sentence_transformers}
       EMBEDDING_MODEL_NAME: ${AI_EMBEDDING_MODEL_NAME:-Qwen/Qwen3-Embedding-0.6B}
       EMBEDDING_VERSION: ${AI_EMBEDDING_VERSION:-qwen3-embedding-v1}

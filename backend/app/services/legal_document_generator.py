@@ -114,7 +114,7 @@ def _style_docx_table(table, widths: list[int], *, header: bool = True) -> None:
                     _set_docx_font(run, size=9, bold=header and row_index == 0)
 
 
-def _docx_bytes(draft: dict[str, Any]) -> bytes:
+def _docx_bytes(draft: dict[str, Any], *, approved: bool = False) -> bytes:
     from docx import Document
     from docx.enum.text import WD_ALIGN_PARAGRAPH
     from docx.oxml import OxmlElement
@@ -157,12 +157,12 @@ def _docx_bytes(draft: dict[str, Any]) -> bytes:
     header = section.header.paragraphs[0]
     header.alignment = WD_ALIGN_PARAGRAPH.LEFT
     header.paragraph_format.space_after = Pt(0)
-    _set_docx_font(header.add_run("AI WORKFORCE  |  LEGAL DRAFT"), size=8, bold=True, color="667085")
+    _set_docx_font(header.add_run("AI WORKFORCE  |  LEGAL APPROVED" if approved else "AI WORKFORCE  |  LEGAL DRAFT"), size=8, bold=True, color="176B45" if approved else "667085")
     _set_docx_font(header.add_run("                                      CONFIDENTIAL"), size=8, color="98A2B3")
 
     footer = section.footer.paragraphs[0]
     footer.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_docx_font(footer.add_run("Bản nháp do AI tạo - Chỉ có hiệu lực sau khi Legal phê duyệt  |  Trang "), size=8, color="667085")
+    _set_docx_font(footer.add_run("Đã qua workflow phê duyệt nội bộ  |  Trang " if approved else "Bản nháp do AI tạo - Chỉ có hiệu lực sau khi Legal phê duyệt  |  Trang "), size=8, color="667085")
     page_field = OxmlElement("w:fldSimple")
     page_field.set(qn("w:instr"), "PAGE")
     footer._p.append(page_field)
@@ -170,7 +170,7 @@ def _docx_bytes(draft: dict[str, Any]) -> bytes:
     kicker = document.add_paragraph()
     kicker.paragraph_format.space_before = Pt(8)
     kicker.paragraph_format.space_after = Pt(4)
-    _set_docx_font(kicker.add_run("DỰ THẢO - CẦN PHÊ DUYỆT PHÁP LÝ"), size=9, bold=True, color="9B1C1C")
+    _set_docx_font(kicker.add_run("ĐÃ PHÊ DUYỆT NỘI BỘ" if approved else "DỰ THẢO - CẦN PHÊ DUYỆT PHÁP LÝ"), size=9, bold=True, color="176B45" if approved else "9B1C1C")
     title = document.add_paragraph()
     title.paragraph_format.space_after = Pt(4)
     _set_docx_font(title.add_run(draft["title"]), size=22, bold=True, color="0B2545")
@@ -254,7 +254,7 @@ def _docx_bytes(draft: dict[str, Any]) -> bytes:
     notice = document.add_paragraph()
     notice.paragraph_format.space_before = Pt(12)
     notice.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_docx_font(notice.add_run("LƯU Ý: Đây là bản nháp do AI hỗ trợ tạo. Văn bản phải được Legal kiểm tra, phê duyệt và hoàn thiện thông tin pháp lý trước khi ký."), size=8, bold=True, color="9B1C1C")
+    _set_docx_font(notice.add_run("LƯU Ý: Văn bản đã qua workflow phê duyệt nội bộ; các Bên vẫn phải kiểm tra thông tin, thẩm quyền ký và bản cuối trước khi ký kết." if approved else "LƯU Ý: Đây là bản nháp do AI hỗ trợ tạo. Văn bản phải được Legal kiểm tra, phê duyệt và hoàn thiện thông tin pháp lý trước khi ký."), size=8, bold=True, color="176B45" if approved else "9B1C1C")
 
     output = io.BytesIO()
     document.save(output)
@@ -277,7 +277,7 @@ def _register_pdf_fonts() -> tuple[str, str]:
     return "Helvetica", "Helvetica-Bold"
 
 
-def _pdf_bytes(draft: dict[str, Any]) -> bytes:
+def _pdf_bytes(draft: dict[str, Any], *, approved: bool = False) -> bytes:
     from reportlab.lib import colors
     from reportlab.lib.enums import TA_CENTER, TA_JUSTIFY
     from reportlab.lib.pagesizes import LETTER
@@ -294,7 +294,7 @@ def _pdf_bytes(draft: dict[str, Any]) -> bytes:
     small = ParagraphStyle("LegalSmall", parent=body, fontSize=8, leading=10, textColor=colors.HexColor("#667085"))
     warning_style = ParagraphStyle("LegalWarning", parent=body, fontSize=9, leading=12, textColor=colors.HexColor("#9B1C1C"))
     story: list[Any] = []
-    story.append(Paragraph("DỰ THẢO - CẦN PHÊ DUYỆT PHÁP LÝ", ParagraphStyle("Kicker", parent=small, fontName=bold_font, textColor=colors.HexColor("#9B1C1C"), spaceAfter=5)))
+    story.append(Paragraph("ĐÃ PHÊ DUYỆT NỘI BỘ" if approved else "DỰ THẢO - CẦN PHÊ DUYỆT PHÁP LÝ", ParagraphStyle("Kicker", parent=small, fontName=bold_font, textColor=colors.HexColor("#176B45" if approved else "#9B1C1C"), spaceAfter=5)))
     story.append(Paragraph(draft["title"], ParagraphStyle("Title", parent=styles["Title"], fontName=bold_font, fontSize=20, leading=24, alignment=0, textColor=colors.HexColor("#0B2545"), spaceAfter=4)))
     story.append(Paragraph(draft["subtitle"], ParagraphStyle("Subtitle", parent=body, fontSize=11, textColor=colors.HexColor("#475467"), spaceAfter=14)))
     metadata_rows = [[Paragraph(f"<b>{label}</b>", body), Paragraph(value, body)] for label, value in [("Bên A", draft["party_a"]), ("Bên B", draft["party_b"]), *draft["metadata"]]]
@@ -324,13 +324,14 @@ def _pdf_bytes(draft: dict[str, Any]) -> bytes:
     signature_data = [[Paragraph(f"<b>ĐẠI DIỆN BÊN A</b><br/>{draft['party_a']}", body), Paragraph(f"<b>ĐẠI DIỆN BÊN B</b><br/>{draft['party_b']}", body)], [Paragraph("<br/><br/><br/>Họ tên: ____________________<br/>Chức danh: _________________<br/>Ngày: ______________________", body), Paragraph("<br/><br/><br/>Họ tên: ____________________<br/>Chức danh: _________________<br/>Ngày: ______________________", body)]]
     signature = Table(signature_data, colWidths=[3.25 * inch, 3.25 * inch])
     signature.setStyle(TableStyle([("GRID", (0, 0), (-1, -1), 0.4, colors.HexColor("#D0D5DD")), ("BACKGROUND", (0, 0), (-1, 0), colors.HexColor("#F2F4F7")), ("VALIGN", (0, 0), (-1, -1), "TOP"), ("LEFTPADDING", (0, 0), (-1, -1), 8), ("RIGHTPADDING", (0, 0), (-1, -1), 8), ("TOPPADDING", (0, 0), (-1, -1), 7), ("BOTTOMPADDING", (0, 0), (-1, -1), 7)]))
-    story.extend([signature, Spacer(1, 12), Paragraph("LƯU Ý: Đây là bản nháp do AI hỗ trợ tạo. Văn bản phải được Legal kiểm tra, phê duyệt và hoàn thiện thông tin pháp lý trước khi ký.", ParagraphStyle("Notice", parent=small, fontName=bold_font, textColor=colors.HexColor("#9B1C1C"), alignment=TA_CENTER))])
+    notice_text = "LƯU Ý: Văn bản đã qua workflow phê duyệt nội bộ; các Bên vẫn phải kiểm tra thông tin, thẩm quyền ký và bản cuối trước khi ký kết." if approved else "LƯU Ý: Đây là bản nháp do AI hỗ trợ tạo. Văn bản phải được Legal kiểm tra, phê duyệt và hoàn thiện thông tin pháp lý trước khi ký."
+    story.extend([signature, Spacer(1, 12), Paragraph(notice_text, ParagraphStyle("Notice", parent=small, fontName=bold_font, textColor=colors.HexColor("#176B45" if approved else "#9B1C1C"), alignment=TA_CENTER))])
 
     def page_furniture(canvas, doc):
         canvas.saveState()
         canvas.setFont(regular_font, 8)
         canvas.setFillColor(colors.HexColor("#667085"))
-        canvas.drawString(inch, LETTER[1] - 0.55 * inch, "AI WORKFORCE  |  LEGAL DRAFT")
+        canvas.drawString(inch, LETTER[1] - 0.55 * inch, "AI WORKFORCE  |  LEGAL APPROVED" if approved else "AI WORKFORCE  |  LEGAL DRAFT")
         canvas.drawRightString(LETTER[0] - inch, 0.55 * inch, f"Trang {doc.page}")
         canvas.restoreState()
 
@@ -351,7 +352,7 @@ def render_contract_text(document_type: str, fields: dict[str, Any]) -> str:
     return "\n\n".join(lines)
 
 
-def generate_legal_document(document_type: str, output_format: str, fields: dict[str, Any]) -> tuple[bytes, str, str]:
+def generate_legal_document(document_type: str, output_format: str, fields: dict[str, Any], *, approved: bool = False) -> tuple[bytes, str, str]:
     normalized_type = document_type.upper()
     normalized_format = output_format.lower()
     validation = validate_document_fields(normalized_type, fields)
@@ -361,7 +362,7 @@ def generate_legal_document(document_type: str, output_format: str, fields: dict
     draft = build_document_draft(normalized_type, validation["normalized_fields"], validation["warnings"])
     safe_name = normalized_type.lower()
     if normalized_format == "docx":
-        return _docx_bytes(draft), f"{safe_name}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        return _docx_bytes(draft, approved=approved), f"{safe_name}.docx", "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
     if normalized_format == "pdf":
-        return _pdf_bytes(draft), f"{safe_name}.pdf", "application/pdf"
+        return _pdf_bytes(draft, approved=approved), f"{safe_name}.pdf", "application/pdf"
     raise ValueError("Định dạng đầu ra phải là DOCX hoặc PDF")

@@ -2,26 +2,9 @@
 Extended Test Suite covering Phase 2 Advanced Enterprise Improvements, Edge Cases & Benchmark Evaluations.
 """
 
-from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.reranker_service import rerank_chunks
 from app.services.ocr_service import ocr_parse_document_bytes
 from app.services.integration_service import notify_slack_approval_card, jira_sync_ticket_v3
-
-
-def test_langgraph_engine_transitions():
-    """Test LangGraph StateGraph node routing and state execution trace."""
-    engine = LangGraphEngine(thread_id="test-thread-99")
-    state = engine.init_state(user_role="Employee", user_message="Xin nghỉ 1 ngày")
-    
-    assert state.current_node == "Entrypoint"
-    assert len(state.execution_trace) == 1
-
-    state = engine.route_intent(state, target_role="HR")
-    assert state.current_node == "HR_Agent"
-    
-    state = engine.complete_state(state, agent_reply="Đã ghi nhận đơn nghỉ phép")
-    assert state.is_complete is True
-    assert len(state.messages) == 2
 
 
 def test_reranker_service():

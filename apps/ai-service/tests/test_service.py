@@ -3,6 +3,8 @@ import math
 from fastapi.testclient import TestClient
 
 from app.main import app
+from app.config import Settings
+from app.feature_flags import runtime_feature_snapshot, select_langchain_runtime
 from app.rag.embedding.factory import get_embedding_provider
 from app.rag.evaluation.reranking_metrics import ndcg_at_k, reciprocal_rank
 from app.rag.ingestion.chunker import chunk_document
@@ -17,6 +19,57 @@ def test_health() -> None:
     response = client.get("/health")
     assert response.status_code == 200
     assert response.json()["service"] == "ai-service"
+
+
+def test_runtime_health_defaults_to_legacy() -> None:
+    response = client.get("/health/runtime")
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["active_runtime"] == "legacy"
+    assert payload["legacy_fallback"] is True
+    assert payload["langchain"]["effective"] is False
+    assert payload["langgraph"]["effective"] is False
+
+
+def test_internal_health_requires_configured_token(monkeypatch) -> None:
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AI_SERVICE_INTERNAL_TOKEN", "phase-1-secret")
+    assert client.get("/health/runtime").status_code == 401
+    response = client.get(
+        "/health/runtime",
+        headers={"X-AI-Service-Key": "phase-1-secret"},
+    )
+    assert response.status_code == 200
+
+
+def test_langchain_role_gate_and_legacy_fallback() -> None:
+    config = Settings(
+        LANGCHAIN_ENABLED=True,
+        LANGGRAPH_ENABLED=False,
+        LANGCHAIN_AGENT_ROLES=" legal,HR ",
+    )
+    selected = select_langchain_runtime("LEGAL", config=config)
+    assert selected.requested is True
+    assert selected.backend == "langchain"
+    assert selected.available is True
+    assert selected.fallback_reason is None
+
+    excluded = select_langchain_runtime("FINANCE", config=config)
+    assert excluded.requested is False
+    assert excluded.backend == "legacy"
+
+    snapshot = runtime_feature_snapshot(config)
+    assert snapshot["langchain"]["agent_roles"] == ["HR", "LEGAL"]
+    assert snapshot["langchain"]["effective"] is True
+    assert snapshot["active_runtime"] == "langchain"
+
+
+def test_runtime_health_prefers_enabled_langgraph() -> None:
+    config = Settings(LANGCHAIN_ENABLED=True, LANGGRAPH_ENABLED=True)
+    snapshot = runtime_feature_snapshot(config)
+    assert snapshot["active_runtime"] == "langgraph"
+    assert snapshot["langgraph"]["effective"] is True
 
 
 def test_accelerator_health_contract() -> None:
@@ -45,6 +98,39 @@ def test_chunk_endpoint_contract() -> None:
     chunk = response.json()["chunks"][0]
     assert chunk["section_title"] == "Quy trình"
     assert chunk["token_count"] == 5
+
+
+def test_embedding_endpoint_contract() -> None:
+    response = client.post("/v1/embeddings", json={
+        "texts": ["chính sách nghỉ phép", "quy trình phê duyệt"],
+        "input_type": "query",
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert len(payload["vectors"]) == 2
+    assert all(len(vector) == payload["dimension"] for vector in payload["vectors"])
+    assert len(payload["token_counts"]) == 2
+    assert payload["model"]
+    assert payload["version"]
+
+
+def test_token_count_endpoint_contract() -> None:
+    response = client.post("/v1/token-count", json={"texts": ["one two", "three"]})
+    assert response.status_code == 200
+    assert response.json()["token_counts"] == [2, 1]
+
+
+def test_llm_generate_local_contract() -> None:
+    response = client.post("/v1/llm/generate", json={
+        "provider": "local",
+        "messages": [{"role": "user", "content": "baseline contract"}],
+    })
+    assert response.status_code == 200
+    payload = response.json()
+    assert payload["content"] == "Local provider received: baseline contract"
+    assert payload["provider"] == "local"
+    assert payload["model"] == "local-deterministic"
+    assert payload["usage"]["prompt_tokens"] == 2
 
 
 def test_deterministic_embedding_contract() -> None:
@@ -128,7 +214,13 @@ def test_rerank_pipeline_falls_back_to_lexical() -> None:
     assert outcome.results[0]["id"] == "leave"
 
 
-def test_rerank_endpoint_observability_contract() -> None:
+def test_rerank_endpoint_observability_contract(monkeypatch) -> None:
+    monkeypatch.setattr(
+        "app.main.rerank_with_metadata",
+        lambda query, candidates, top_k: RerankPipeline(
+            provider=_FixedBGEReranker()
+        ).run(query, candidates, top_k=top_k),
+    )
     response = client.post("/v1/rag/rerank", json={
         "query": "nghỉ phép 12 ngày",
         "candidates": _rerank_candidates(),

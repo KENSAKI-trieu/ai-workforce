@@ -42,6 +42,9 @@ from app.services.finance_service import audit_invoice_and_reconcile
 from app.services.sales_service import handle_sales_request
 from app.services.ceo_service import generate_and_execute_ceo_dag
 from app.services.audit_service import log_audit_action
+from app.core.config import settings
+from app.services.agents.langgraph_engine import LangGraphEngine
+from app.services.ai_service_client import AIServiceError
 
 logger = logging.getLogger(__name__)
 
@@ -655,6 +658,23 @@ def execute_agent_chat(
         "quote_card": None,
         "dag_plan_card": None,
     }
+
+    if settings.LANGGRAPH_ENABLED:
+        try:
+            return LangGraphEngine().execute(
+                db=db,
+                user=user,
+                agent=agent,
+                message=message,
+                conversation_id=thread_id,
+            )
+        except AIServiceError as exc:
+            if (
+                not settings.LANGGRAPH_LEGACY_FALLBACK
+                or (exc.status_code is not None and exc.status_code < 500)
+            ):
+                raise
+            logger.exception("LangGraph runtime failed; using the legacy deterministic executor")
 
     # -----------------------------------------------------------------------
     # 1. HR Agent Processing

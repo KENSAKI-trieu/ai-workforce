@@ -1,0 +1,197 @@
+{
+  "dataset_version": "pre-langchain-v1",
+  "mode": "offline_deterministic",
+  "runtime": "legacy",
+  "environment": {
+    "python": "3.13.12",
+    "platform": "Windows",
+    "llm_provider": "local",
+    "external_model_calls": 0
+  },
+  "summary": {
+    "case_count": 15,
+    "quality_score": 0.9,
+    "routing_accuracy": 0.6,
+    "grounded_term_recall": 1.0,
+    "citation_coverage": 1.0,
+    "chat_contract_accuracy": 1.0,
+    "prompt_tokens": 33,
+    "completion_tokens": 20,
+    "total_tokens": 53,
+    "estimated_cost_usd": 0.0,
+    "latency_avg_ms": 0.0135,
+    "latency_p95_ms": 0.0409
+  },
+  "known_gaps": [
+    {
+      "code": "MISSING_AGENT_ROUTES",
+      "roles": [
+        "KNOWLEDGE",
+        "LEGAL"
+      ],
+      "description": "Expected domain roles not registered in the current AI Service router."
+    }
+  ],
+  "limitations": [
+    "Offline local-provider results do not measure production LLM semantic quality.",
+    "Cost is zero because the baseline makes no external model calls.",
+    "Latency covers in-process AI Service components, not network or database time."
+  ],
+  "cases": [
+    {
+      "id": "route-hr-leave",
+      "kind": "routing",
+      "agent": "HR",
+      "passed": true,
+      "expected_role": "HR",
+      "actual_role": "HR",
+      "latency_ms": 0.0364
+    },
+    {
+      "id": "route-finance-budget",
+      "kind": "routing",
+      "agent": "FINANCE",
+      "passed": true,
+      "expected_role": "FINANCE",
+      "actual_role": "FINANCE",
+      "latency_ms": 0.0103
+    },
+    {
+      "id": "route-legal-contract",
+      "kind": "routing",
+      "agent": "LEGAL",
+      "passed": false,
+      "expected_role": "LEGAL",
+      "actual_role": "CUSTOMER_SUPPORT",
+      "latency_ms": 0.0196
+    },
+    {
+      "id": "route-knowledge-policy",
+      "kind": "routing",
+      "agent": "KNOWLEDGE",
+      "passed": false,
+      "expected_role": "KNOWLEDGE",
+      "actual_role": "CUSTOMER_SUPPORT",
+      "latency_ms": 0.0147
+    },
+    {
+      "id": "route-general-support",
+      "kind": "routing",
+      "agent": "GENERAL_CHAT",
+      "passed": true,
+      "expected_role": "CUSTOMER_SUPPORT",
+      "actual_role": "CUSTOMER_SUPPORT",
+      "latency_ms": 0.0128
+    },
+    {
+      "id": "grounded-legal-payment",
+      "kind": "grounded_answer",
+      "agent": "LEGAL",
+      "passed": true,
+      "term_recall": 1.0,
+      "citation_present": true,
+      "latency_ms": 0.0117
+    },
+    {
+      "id": "grounded-hr-leave",
+      "kind": "grounded_answer",
+      "agent": "HR",
+      "passed": true,
+      "term_recall": 1.0,
+      "citation_present": true,
+      "latency_ms": 0.0062
+    },
+    {
+      "id": "grounded-finance-approval",
+      "kind": "grounded_answer",
+      "agent": "FINANCE",
+      "passed": true,
+      "term_recall": 1.0,
+      "citation_present": true,
+      "latency_ms": 0.0034
+    },
+    {
+      "id": "grounded-knowledge-remote",
+      "kind": "grounded_answer",
+      "agent": "KNOWLEDGE",
+      "passed": true,
+      "term_recall": 1.0,
+      "citation_present": true,
+      "latency_ms": 0.0038
+    },
+    {
+      "id": "grounded-support-sla",
+      "kind": "grounded_answer",
+      "agent": "GENERAL_CHAT",
+      "passed": true,
+      "term_recall": 1.0,
+      "citation_present": true,
+      "latency_ms": 0.0041
+    },
+    {
+      "id": "chat-legal",
+      "kind": "chat_contract",
+      "agent": "LEGAL",
+      "passed": true,
+      "provider": "local",
+      "model": "local-deterministic",
+      "usage": {
+        "prompt_tokens": 6,
+        "completion_tokens": 4
+      },
+      "latency_ms": 0.0409
+    },
+    {
+      "id": "chat-hr",
+      "kind": "chat_contract",
+      "agent": "HR",
+      "passed": true,
+      "provider": "local",
+      "model": "local-deterministic",
+      "usage": {
+        "prompt_tokens": 6,
+        "completion_tokens": 4
+      },
+      "latency_ms": 0.015
+    },
+    {
+      "id": "chat-finance",
+      "kind": "chat_contract",
+      "agent": "FINANCE",
+      "passed": true,
+      "provider": "local",
+      "model": "local-deterministic",
+      "usage": {
+        "prompt_tokens": 6,
+        "completion_tokens": 4
+      },
+      "latency_ms": 0.0091
+    },
+    {
+      "id": "chat-knowledge",
+      "kind": "chat_contract",
+      "agent": "KNOWLEDGE",
+      "passed": true,
+      "provider": "local",
+      "model": "local-deterministic",
+      "usage": {
+        "prompt_tokens": 7,
+        "completion_tokens": 4
+      },
+      "latency_ms": 0.0081
+    },
+    {
+      "id": "chat-general",
+      "kind": "chat_contract",
+      "agent": "GENERAL_CHAT",
+      "passed": true,
+      "provider": "local",
+      "model": "local-deterministic",
+      "usage": {
+        "prompt_tokens": 8,
+        "completion_tokens": 4
+      },
+      "latency_ms": 0.0069
+    }
+  ]
+}

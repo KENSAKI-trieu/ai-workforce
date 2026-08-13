@@ -54,12 +54,15 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: Optional[str] = None
     MINIO_SECRET_KEY: Optional[str] = None
     KNOWLEDGE_STORAGE_PATH: str = "data/knowledge"
+    LEGAL_DRAFT_STORAGE_PATH: str = "data/legal-drafts"
     CLOUDINARY_URL: Optional[str] = None
 
     # --- Internal AI service ---
     AI_SERVICE_URL: Optional[str] = None
     AI_SERVICE_INTERNAL_TOKEN: Optional[str] = None
     AI_SERVICE_TIMEOUT_SECONDS: float = 120.0
+    LANGGRAPH_ENABLED: bool = False
+    LANGGRAPH_LEGACY_FALLBACK: bool = True
 
     # --- Knowledge embeddings ---
     EMBEDDING_BACKEND: str = "deterministic"

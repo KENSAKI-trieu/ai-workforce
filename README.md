@@ -1,12 +1,12 @@
 # AI Workforce
 
-## Tài khoản chính để test
+## テスト用メインアカウント
 
-- Tài khoản: `test@gmail.com`
-- Mật khẩu: `123456`
-- Quyền: `CEO`
+- メールアドレス: `test@gmail.com`
+- パスワード: `123456`
+- 権限: `CEO`
 
-Chỉ sử dụng tài khoản này trong môi trường development/test.
+このアカウントは development/test 環境でのみ使用してください。
 
 AI Workforce は、マルチテナント対応の業務管理機能と AI エージェントを統合したプラットフォームです。人事、ワークフロー、社内文書検索（RAG）、承認、監査ログ、AI 利用コスト管理などを提供します。
 
@@ -39,16 +39,18 @@ Browser -> Frontend -> Backend -> PostgreSQL / Redis
   - PostgreSQL（`pgvector` extension を含む）
   - Redis 7
 
-## 必要な AI モデル
+## 必要な AI モデルと外部 API
 
-Docker Compose の既定構成では、次の公開 Hugging Face モデルを使用します。
+現在のテスト環境では、Embedding はローカルモデル、Reranking は Jina の外部 API を使用します。
 
 | 用途 | モデル | 設定 |
 | --- | --- | --- |
 | Embedding | `Qwen/Qwen3-Embedding-0.6B` | 1024 次元、`sentence-transformers` |
-| Reranking | `BAAI/bge-reranker-v2-m3` | `CrossEncoder` |
+| Reranking | `jina-reranker-v3.5` | Jina Rerank API |
 
-これらのモデルは初回リクエスト時に自動ダウンロードされます。Docker では `hf_models` volume に保存されるため、コンテナを再作成しても通常は再ダウンロードされません。
+現在の Reranking 設定は `RERANK_BACKEND=jina` です。候補文書は AI Service から Jina API に送信され、返されたスコアで並べ替えられます。`BAAI/bge-reranker-v2-m3` はローカル実行へ切り替える場合の代替モデルであり、現在の Reranking では使用していません。
+
+Embedding モデルは初回リクエスト時に自動ダウンロードされます。Docker では `hf_models` volume に保存されるため、コンテナを再作成しても通常は再ダウンロードされません。
 
 チャット LLM はローカルへのインストールが不要です。必要に応じて API キーを設定します。
 
@@ -100,10 +102,9 @@ AI_EMBEDDING_DIMENSION=1024
 AI_EMBEDDING_DEVICE=cuda
 AI_EMBEDDING_DTYPE=float16
 
-AI_RERANK_BACKEND=bge
-AI_RERANK_MODEL_NAME=BAAI/bge-reranker-v2-m3
-AI_RERANK_DEVICE=cuda
-AI_RERANK_DTYPE=float16
+AI_RERANK_BACKEND=jina
+JINA_RERANK_MODEL=jina-reranker-v3.5
+JINA_API_KEY=Jina の API キー
 
 # 生成 AI を使用する場合のみ設定する
 OPENAI_API_KEY=
@@ -121,9 +122,9 @@ GEMINI_CHAT_MODEL=gemini-3.6-flash
 ```dotenv
 AI_EMBEDDING_DEVICE=cpu
 AI_EMBEDDING_DTYPE=float32
-AI_RERANK_DEVICE=cpu
-AI_RERANK_DTYPE=float32
 ```
+
+Jina Rerank API は外部サービスのため、CPU/GPU の切り替えは不要です。ローカル BGE に切り替える場合のみ `AI_RERANK_DEVICE=cpu` と `AI_RERANK_DTYPE=float32` を設定してください。
 
 さらに、`docker-compose.yml` の `ai-service` にある次の GPU reservation を削除、またはコメントアウトしてください。
 
@@ -137,7 +138,7 @@ deploy:
           capabilities: [gpu]
 ```
 
-CPU でも動作しますが、Embedding と Reranking は GPU より時間がかかります。
+CPU でも動作しますが、Embedding は GPU より時間がかかります。Jina Rerank API の処理速度はローカル GPU の有無に依存しません。
 
 ### 4. ビルドして起動する
 
@@ -154,12 +155,12 @@ docker compose ps
 docker compose logs -f ai-service backend worker
 ```
 
-### 5. Hugging Face モデルを事前ダウンロードする
+### 5. Embedding モデルを事前ダウンロードする
 
-事前ダウンロードは任意です。実行しない場合も、最初の Embedding / Reranking リクエスト時に自動ダウンロードされます。
+事前ダウンロードは任意です。実行しない場合も、最初の Embedding リクエスト時に自動ダウンロードされます。現在の Reranking は Jina API を利用するため、BGE モデルのダウンロードは不要です。
 
 ```bash
-docker compose exec ai-service python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', cache_folder='/models/huggingface/hub'); CrossEncoder('BAAI/bge-reranker-v2-m3', cache_folder='/models/huggingface/hub', max_length=2048); print('Models downloaded')"
+docker compose exec ai-service python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', cache_folder='/models/huggingface/hub'); print('Embedding model downloaded')"
 ```
 
 モデルキャッシュへの書き込み権限エラーが出た場合は、一度だけ次を実行してから再試行します。
@@ -172,8 +173,9 @@ docker compose run --rm --user root ai-service sh -c "mkdir -p /models/huggingfa
 
 ```dotenv
 AI_EMBEDDING_LOCAL_FILES_ONLY=true
-AI_RERANK_LOCAL_FILES_ONLY=true
 ```
+
+`AI_RERANK_LOCAL_FILES_ONLY=true` はローカル BGE を使用する場合にのみ必要です。
 
 ```bash
 docker compose up -d
@@ -260,16 +262,16 @@ CPU の場合は `apps/ai-service/.env` を次のように変更します。
 ```dotenv
 EMBEDDING_DEVICE=cpu
 EMBEDDING_DTYPE=float32
-RERANK_DEVICE=cpu
-RERANK_DTYPE=float32
 EMBEDDING_CACHE_FOLDER=.cache/huggingface
-RERANK_CACHE_FOLDER=.cache/huggingface
+RERANK_BACKEND=jina
+JINA_RERANK_MODEL=jina-reranker-v3.5
+JINA_API_KEY=Jina の API キー
 ```
 
-モデルを事前ダウンロードします。
+Embedding モデルを事前ダウンロードします。Jina Reranking 用のローカルモデルは不要です。
 
 ```powershell
-python -c "from sentence_transformers import SentenceTransformer, CrossEncoder; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', cache_folder='.cache/huggingface'); CrossEncoder('BAAI/bge-reranker-v2-m3', cache_folder='.cache/huggingface', max_length=2048); print('Models downloaded')"
+python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', cache_folder='.cache/huggingface'); print('Embedding model downloaded')"
 ```
 
 AI Service を起動します。

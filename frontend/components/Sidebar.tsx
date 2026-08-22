@@ -5,6 +5,8 @@ import Link from "next/link";
 import Image from "next/image";
 import { useCallback, useEffect, useState } from "react";
 import { useAuthStore } from "@/store/useAuthStore";
+import { useLanguageStore } from "@/store/useLanguageStore";
+import type { AppLocale } from "@/store/useLanguageStore";
 import api from "@/lib/api";
 import NotificationPanel from "@/components/NotificationPanel";
 import {
@@ -27,27 +29,77 @@ import {
   ScrollText,
   Bell,
   Cable,
-  Headphones,
   SlidersHorizontal,
 } from "lucide-react";
 
 // ─── Nav Config ──────────────────────────────────────────────────────────────
 const AGENTS = [
-  { name: "CEO Agent",       role: "CEO",       emoji: "👔", icon: Bot,        path: "/agents/CEO",       isNew: false },
-  { name: "HR Agent",        role: "HR",        emoji: "🧑‍💼", icon: Users,      path: "/agents/HR",        isNew: false },
-  { name: "Legal Agent",     role: "LEGAL",     emoji: "⚖️",  icon: Scale,      path: "/agents/LEGAL",     isNew: false },
-  { name: "IT Agent",        role: "IT",        emoji: "💻",  icon: Laptop,     path: "/agents/IT",        isNew: false },
-  { name: "Finance Agent",   role: "FINANCE",   emoji: "💰",  icon: DollarSign, path: "/agents/FINANCE",   isNew: true  },
-  { name: "Sales Agent",     role: "SALES",     emoji: "📈",  icon: TrendingUp, path: "/agents/SALES",     isNew: true  },
-  { name: "Knowledge Agent", role: "KNOWLEDGE", emoji: "📚",  icon: BookOpen,   path: "/agents/KNOWLEDGE", isNew: false },
+  { name: { vi: "Trợ lý CEO", ja: "CEOエージェント" }, role: "CEO", emoji: "👔", icon: Bot, path: "/agents/CEO", isNew: false },
+  { name: { vi: "Trợ lý Nhân sự", ja: "人事エージェント" }, role: "HR", emoji: "🧑‍💼", icon: Users, path: "/agents/HR", isNew: false },
+  { name: { vi: "Trợ lý Pháp lý", ja: "法務エージェント" }, role: "LEGAL", emoji: "⚖️", icon: Scale, path: "/agents/LEGAL", isNew: false },
+  { name: { vi: "Trợ lý CNTT", ja: "ITエージェント" }, role: "IT", emoji: "💻", icon: Laptop, path: "/agents/IT", isNew: false },
+  { name: { vi: "Trợ lý Tài chính", ja: "財務エージェント" }, role: "FINANCE", emoji: "💰", icon: DollarSign, path: "/agents/FINANCE", isNew: true },
+  { name: { vi: "Trợ lý Kinh doanh", ja: "営業エージェント" }, role: "SALES", emoji: "📈", icon: TrendingUp, path: "/agents/SALES", isNew: true },
+  { name: { vi: "Trợ lý Tri thức", ja: "ナレッジエージェント" }, role: "KNOWLEDGE", emoji: "📚", icon: BookOpen, path: "/agents/KNOWLEDGE", isNew: false },
 ];
+
+const SIDEBAR_TEXT = {
+  vi: {
+    employee: "Nhân viên",
+    notifications: "Thông báo",
+    menu: "Trình đơn",
+    dashboard: "Bảng điều khiển CEO",
+    analytics: "Phân tích quản trị",
+    costs: "Quản lý Chi phí AI",
+    knowledge: "Kho Tri thức (RAG)",
+    tasks: "Quản lý Task (Kanban)",
+    calendar: "Lịch Công việc",
+    approvals: "Trung tâm Phê duyệt",
+    users: "Nhân viên & Phân quyền",
+    audit: "Nhật ký Kiểm toán",
+    integrations: "Tích hợp Doanh nghiệp",
+    aiEmployees: "Nhân viên AI",
+    configureAgents: "Cấu hình Nhân viên AI",
+    aiAgents: "Trợ lý AI",
+    support: "Hỗ trợ",
+    settings: "Cài đặt Công ty",
+    help: "Trợ giúp",
+    logout: "Đăng xuất",
+    switchToVietnamese: "Chuyển sang tiếng Việt",
+    switchToJapanese: "日本語に切り替える",
+  },
+  ja: {
+    employee: "従業員",
+    notifications: "通知",
+    menu: "メニュー",
+    dashboard: "CEOダッシュボード",
+    analytics: "経営分析",
+    costs: "AIコスト管理",
+    knowledge: "ナレッジベース（RAG）",
+    tasks: "タスク管理（Kanban）",
+    calendar: "業務カレンダー",
+    approvals: "承認センター",
+    users: "従業員・権限管理",
+    audit: "監査ログ",
+    integrations: "企業連携",
+    aiEmployees: "AI従業員",
+    configureAgents: "AI従業員設定",
+    aiAgents: "AIエージェント",
+    support: "サポート",
+    settings: "会社設定",
+    help: "ヘルプ",
+    logout: "ログアウト",
+    switchToVietnamese: "ベトナム語に切り替える",
+    switchToJapanese: "Chuyển sang tiếng Nhật",
+  },
+} as const;
 
 interface SidebarProps {
   agentStatuses?: Record<string, boolean>;
 }
 
 // ─── Badge "NEW" ────────────────────────────────────────────────────────────
-function NewBadge() {
+function NewBadge({ locale }: { locale: AppLocale }) {
   return (
     <span
       style={{
@@ -62,7 +114,7 @@ function NewBadge() {
         flexShrink: 0,
       }}
     >
-      NEW
+      {locale === "ja" ? "新着" : "MỚI"}
     </span>
   );
 }
@@ -83,11 +135,72 @@ function OnlineDot({ online }: { online: boolean }) {
   );
 }
 
+function LanguageToggle({
+  locale,
+  onChange,
+}: {
+  locale: AppLocale;
+  onChange: (locale: AppLocale) => void;
+}) {
+  const text = SIDEBAR_TEXT[locale];
+
+  return (
+    <div
+      role="group"
+      aria-label={locale === "vi" ? "Chọn ngôn ngữ" : "言語を選択"}
+      style={{
+        display: "flex",
+        alignItems: "center",
+        padding: 2,
+        border: "1px solid #E2E8F0",
+        borderRadius: 9,
+        background: "#F8FAFC",
+        flexShrink: 0,
+      }}
+    >
+      {(["JA", "VI"] as const).map((label) => {
+        const value: AppLocale = label === "JA" ? "ja" : "vi";
+        const active = locale === value;
+        const title = value === "ja" ? text.switchToJapanese : text.switchToVietnamese;
+
+        return (
+          <button
+            key={value}
+            type="button"
+            title={title}
+            aria-label={title}
+            aria-pressed={active}
+            onClick={() => onChange(value)}
+            style={{
+              minWidth: 25,
+              height: 24,
+              padding: "0 4px",
+              border: 0,
+              borderRadius: 6,
+              background: active ? "#4F46E5" : "transparent",
+              color: active ? "#FFFFFF" : "#64748B",
+              cursor: "pointer",
+              fontSize: 9,
+              fontWeight: 800,
+              lineHeight: 1,
+              letterSpacing: "0.02em",
+            }}
+          >
+            {label}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
 // ─── Main Sidebar ────────────────────────────────────────────────────────────
 export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
   const router = useRouter();
   const pathname = usePathname();
   const { user, logout } = useAuthStore();
+  const { locale, hydrateLocale, setLocale } = useLanguageStore();
+  const text = SIDEBAR_TEXT[locale];
   const [notificationsOpen, setNotificationsOpen] = useState(false);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const handleUnreadChange = useCallback((count: number) => setUnreadNotifications(count), []);
@@ -104,6 +217,10 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
     await logout();
     router.push("/login");
   };
+
+  useEffect(() => {
+    hydrateLocale();
+  }, [hydrateLocale]);
 
   useEffect(() => {
     if (!user) return;
@@ -160,14 +277,15 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
             </span>
           )}
           <span style={{ minWidth: 0 }}>
-            <strong style={{ display: "block", fontSize: 13, color: "#1C2434", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.full_name || "Nhân viên"}</strong>
+            <strong style={{ display: "block", fontSize: 13, color: "#1C2434", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.full_name || text.employee}</strong>
             <span style={{ display: "block", fontSize: 11, color: "#64748B", marginTop: 2 }}>{user?.role || "Employee"} · {user?.department || "ALL"}</span>
           </span>
         </button>
-        <button onClick={() => setNotificationsOpen((current) => !current)} aria-label="Mở thông báo" title="Thông báo" style={{ width: 36, height: 36, borderRadius: 10, border: "1px solid #E2E8F0", background: notificationsOpen ? "#EEF2FF" : "#fff", color: notificationsOpen ? "#4F46E5" : "#64748B", cursor: "pointer", display: "grid", placeItems: "center", position: "relative", flexShrink: 0 }}>
+        <button onClick={() => setNotificationsOpen((current) => !current)} aria-label={text.notifications} title={text.notifications} style={{ width: 36, height: 36, borderRadius: 10, border: "1px solid #E2E8F0", background: notificationsOpen ? "#EEF2FF" : "#fff", color: notificationsOpen ? "#4F46E5" : "#64748B", cursor: "pointer", display: "grid", placeItems: "center", position: "relative", flexShrink: 0 }}>
           <Bell size={17}/>
           {unreadNotifications > 0 && <span style={{ position: "absolute", right: -5, top: -6, minWidth: 17, height: 17, padding: "0 4px", borderRadius: 9, background: "#EF4444", color: "#fff", fontSize: 9, fontWeight: 800, display: "grid", placeItems: "center", border: "2px solid #fff" }}>{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}
         </button>
+        <LanguageToggle locale={locale} onChange={setLocale} />
       </div>
 
       {/* ── Scrollable Nav ── */}
@@ -190,20 +308,20 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
             marginBottom: "8px",
           }}
         >
-          Menu
+          {text.menu}
         </div>
 
         {/* Dashboard */}
         <NavItem
           icon={<LayoutDashboard size={18} />}
-          label="CEO Dashboard"
+          label={text.dashboard}
           href="/dashboard"
           active={pathname === "/dashboard"}
         />
 
         <NavItem
           icon={<BarChart3 size={18} />}
-          label="Management Analytics"
+          label={text.analytics}
           href="/analytics"
           active={pathname === "/analytics"}
           badge="NEW"
@@ -212,7 +330,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
         {/* Quản Lý Chi Phí AI */}
         <NavItem
           icon={<DollarSign size={18} />}
-          label="Quản Lý Chi Phí AI"
+          label={text.costs}
           href="/costs"
           active={pathname === "/costs"}
           badge="NEW"
@@ -221,46 +339,30 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
         {/* Knowledge Base */}
         <NavItem
           icon={<Database size={18} />}
-          label="Kho Tri Thức (RAG)"
+          label={text.knowledge}
           href="/knowledge"
-          active={pathname === "/knowledge"}
+          active={pathname === "/knowledge" || pathname.startsWith("/knowledge/")}
         />
 
         {/* Quản lý Công Việc Tasks */}
         <NavItem
           icon={<Ticket size={18} />}
-          label="Quản Lý Task (Kanban)"
+          label={text.tasks}
           href="/tasks"
           active={pathname === "/tasks"}
         />
         {/* Lịch Công Việc Calendar */}
         <NavItem
           icon={<Calendar size={18} />}
-          label="Lịch Công Việc"
+          label={text.calendar}
           href="/calendar"
           active={pathname === "/calendar"}
-        />
-
-        {/* Workflow Automation */}
-        <NavItem
-          icon={<Settings size={18} />}
-          label="Workflow Automation"
-          href="/workflows"
-          active={pathname === "/workflows"}
-        />
-
-        <NavItem
-          icon={<Headphones size={18} />}
-          label="Customer Support Ops"
-          href="/customer-support"
-          active={pathname === "/customer-support"}
-          badge="NEW"
         />
 
         {/* Trung Tâm Phê Duyệt */}
         <NavItem
           icon={<Scale size={18} />}
-          label="Trung Tâm Phê Duyệt"
+          label={text.approvals}
           href="/approvals"
           active={pathname === "/approvals"}
         />
@@ -268,21 +370,21 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
         {/* Quản lý Nhân Viên & Phân Quyền */}
         <NavItem
           icon={<Users size={18} />}
-          label="Nhân Viên & Phân Quyền"
+          label={text.users}
           href="/users-mgmt"
           active={pathname === "/users-mgmt"}
         />
 
         <NavItem
           icon={<ScrollText size={18} />}
-          label="Audit Log"
+          label={text.audit}
           href="/audit-logs"
           active={pathname === "/audit-logs"}
         />
 
         <NavItem
           icon={<Cable size={18} />}
-          label="Tích hợp doanh nghiệp"
+          label={text.integrations}
           href="/integrations"
           active={pathname === "/integrations"}
         />
@@ -300,13 +402,13 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
             marginBottom: "8px",
           }}
         >
-          AI Employees
+          {text.aiEmployees}
         </div>
 
         {(["Owner", "Admin", "CEO"].includes(user?.role || "")) && (
           <NavItem
             icon={<SlidersHorizontal size={18} />}
-            label="Cấu hình AI Employees"
+            label={text.configureAgents}
             href="/ai-editor"
             active={pathname === "/ai-editor"}
           />
@@ -355,7 +457,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
                 fontWeight: isAgentsGroupActive ? 600 : 500,
               }}
             >
-              AI Agents
+              {text.aiAgents}
             </span>
 
             {/* Chevron */}
@@ -429,11 +531,11 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
                           whiteSpace: "nowrap",
                         }}
                       >
-                        {agent.name}
+                        {agent.name[locale]}
                       </span>
 
                       {/* NEW badge */}
-                      {agent.isNew && <NewBadge />}
+                      {agent.isNew && <NewBadge locale={locale} />}
 
                       {/* Online dot */}
                       <OnlineDot online={isOnline} />
@@ -458,18 +560,18 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
             marginBottom: "8px",
           }}
         >
-          Support
+          {text.support}
         </div>
 
         <NavItem
           icon={<Settings size={18} />}
-          label="Cài đặt công ty"
+          label={text.settings}
           href="/settings"
           active={pathname === "/settings"}
         />
         <NavItem
           icon={<HelpCircle size={18} />}
-          label="Trợ giúp"
+          label={text.help}
           href="#"
           active={false}
           disabled
@@ -513,7 +615,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           }}
         >
           <LogOut size={15} />
-          <span>Đăng xuất</span>
+          <span>{text.logout}</span>
         </button>
       </div>
     </aside>

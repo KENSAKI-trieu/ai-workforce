@@ -1037,6 +1037,16 @@ class KnowledgeDocument(Base):
     storage_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_url: Mapped[str | None] = mapped_column(Text, nullable=True)
     source_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    chunking_config: Mapped[dict] = mapped_column(
+        JSONB,
+        nullable=False,
+        default=lambda: {
+            "mode": "standard",
+            "chunk_size": 700,
+            "chunk_overlap": 80,
+            "parent_chunk_size": 1024,
+        },
+    )
     chunk_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     embedding_model: Mapped[str | None] = mapped_column(String(255), nullable=True)
     embedding_version: Mapped[str | None] = mapped_column(String(100), nullable=True)

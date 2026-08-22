@@ -8,6 +8,7 @@ import logging
 import math
 import uuid
 import re
+from collections import Counter
 from datetime import date
 from typing import List, Dict, Any
 from sqlalchemy import and_, false, func, or_
@@ -287,6 +288,58 @@ def chunk_document_content(
     return chunks
 
 
+def build_configured_chunks(
+    content: str,
+    *,
+    mode: str = "standard",
+    chunk_size: int = CHUNK_SIZE_TOKENS,
+    chunk_overlap: int = CHUNK_OVERLAP_TOKENS,
+    parent_chunk_size: int = 1024,
+) -> list[dict[str, Any]]:
+    """Build standard or parent-child chunks using the user's saved settings."""
+    normalized_mode = mode.strip().lower()
+    if normalized_mode not in {"standard", "parent_child"}:
+        raise ValueError("mode must be either 'standard' or 'parent_child'")
+    if parent_chunk_size <= 0:
+        raise ValueError("parent_chunk_size must be greater than zero")
+    if normalized_mode == "parent_child" and parent_chunk_size < chunk_size:
+        raise ValueError("parent_chunk_size must be greater than or equal to chunk_size")
+
+    if normalized_mode == "standard":
+        return [
+            {**chunk, "chunking_mode": "standard"}
+            for chunk in chunk_document_content(
+                content,
+                chunk_size=chunk_size,
+                chunk_overlap=chunk_overlap,
+            )
+        ]
+
+    parent_chunks = chunk_document_content(
+        content,
+        chunk_size=parent_chunk_size,
+        chunk_overlap=0,
+    )
+    children: list[dict[str, Any]] = []
+    for parent_index, parent in enumerate(parent_chunks):
+        child_chunks = chunk_document_content(
+            parent["content"],
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+        )
+        for child_index, child in enumerate(child_chunks):
+            children.append({
+                **child,
+                "chunking_mode": "parent_child",
+                "parent_chunk_index": parent_index,
+                "parent_content": parent["content"],
+                "child_chunk_index": child_index,
+                "page": child.get("page") or parent.get("page"),
+                "pages": child.get("pages") or parent.get("pages", []),
+            })
+    return children
+
+
 def generate_embedding(text_content: str, dim: int = 1536) -> list[float]:
     """
     Generates embedding vector (1536 dim). Uses OpenAI/Gemini if API key configured,
@@ -303,6 +356,56 @@ def generate_embedding(text_content: str, dim: int = 1536) -> list[float]:
     if norm > 0:
         vec = [x / norm for x in vec]
     return vec
+
+
+def _rank_sparse_bm25(
+    query_text: str,
+    chunks: list[DocumentChunk],
+    *,
+    limit: int = 30,
+) -> list[tuple[DocumentChunk, float]]:
+    """Rank authorized chunks with a small in-process BM25 fallback."""
+    query_tokens = re.findall(r"\w+", query_text.casefold())
+    if not query_tokens or not chunks:
+        return []
+
+    corpus_tokens: list[list[str]] = []
+    document_frequency: Counter[str] = Counter()
+    for chunk in chunks:
+        searchable = " ".join(filter(None, (
+            chunk.document_title,
+            chunk.document_name,
+            chunk.section_title,
+            chunk.content,
+        )))
+        tokens = re.findall(r"\w+", searchable.casefold())
+        corpus_tokens.append(tokens)
+        document_frequency.update(set(tokens))
+
+    average_length = sum(map(len, corpus_tokens)) / max(len(corpus_tokens), 1)
+    corpus_size = len(corpus_tokens)
+    k1 = 1.5
+    b = 0.75
+    scores: list[tuple[DocumentChunk, float]] = []
+    for chunk, tokens in zip(chunks, corpus_tokens):
+        frequencies = Counter(tokens)
+        length_ratio = len(tokens) / max(average_length, 1.0)
+        score = 0.0
+        for term in query_tokens:
+            frequency = frequencies.get(term, 0)
+            if not frequency:
+                continue
+            inverse_frequency = math.log(
+                1.0 + (corpus_size - document_frequency[term] + 0.5)
+                / (document_frequency[term] + 0.5)
+            )
+            score += inverse_frequency * (
+                frequency * (k1 + 1.0)
+                / (frequency + k1 * (1.0 - b + b * length_ratio))
+            )
+        if score > 0:
+            scores.append((chunk, score))
+    return sorted(scores, key=lambda item: item[1], reverse=True)[:limit]
 
 
 def hybrid_search_documents(
@@ -448,7 +551,6 @@ def hybrid_search_documents(
         logger.warning("Indexed hybrid retrieval failed; using in-process fallback: %s", exc)
         db.rollback()
 
-    query_words = set(re.findall(r"\w+", query_text.lower()))
     if not dense_ranked:
         query_embedding = embedding_service.embed_query(query_text)
         legacy_query_embedding = generate_embedding(query_text)
@@ -469,15 +571,7 @@ def hybrid_search_documents(
         dense_ranked = sorted(fallback_dense, key=lambda item: item[1])[:30]
 
     if not sparse_ranked:
-        fallback_sparse: list[tuple[DocumentChunk, float]] = []
-        for chunk in chunks:
-            content_words = set(re.findall(r"\w+", chunk.content.lower()))
-            overlap = len(query_words.intersection(content_words))
-            if overlap:
-                fallback_sparse.append((chunk, overlap / max(len(query_words), 1)))
-        sparse_ranked = sorted(
-            fallback_sparse, key=lambda item: item[1], reverse=True
-        )[:30]
+        sparse_ranked = _rank_sparse_bm25(query_text, chunks)
 
     dense_scores: dict[uuid.UUID, float] = {}
     for chunk, distance_value in dense_ranked:

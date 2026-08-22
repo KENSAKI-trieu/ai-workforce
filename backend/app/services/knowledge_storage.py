@@ -67,3 +67,29 @@ def read_original_file(storage_key: str) -> bytes:
     if root != target and root not in target.parents:
         raise ValueError("Invalid knowledge storage key")
     return target.read_bytes()
+
+
+def delete_original_file(storage_key: str) -> bool:
+    """Delete one stored original and prune its now-empty version/document folders."""
+    root = _storage_root()
+    target = (root / storage_key).resolve()
+    if root == target or root not in target.parents:
+        raise ValueError("Invalid knowledge storage key")
+    if not target.exists():
+        return False
+    if not target.is_file():
+        raise ValueError("Knowledge storage key does not point to a file")
+
+    target.unlink()
+    current = target.parent
+    # A storage key normally has tenant/document/version/file. Only remove the
+    # two private folders owned by this document version, never the tenant root.
+    for _ in range(2):
+        if current == root or root not in current.parents:
+            break
+        try:
+            current.rmdir()
+        except OSError:
+            break
+        current = current.parent
+    return True

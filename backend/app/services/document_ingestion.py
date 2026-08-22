@@ -17,7 +17,12 @@ from app.services.embedding_service import (
 )
 from app.services.knowledge_storage import read_original_file
 from app.services.notification_service import create_notification
-from app.services.rag_service import chunk_document_content
+from app.services.rag_service import (
+    CHUNK_OVERLAP_TOKENS,
+    CHUNK_SIZE_TOKENS,
+    build_configured_chunks,
+    chunk_document_content,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -39,7 +44,21 @@ def _checkpoint_chunks(db: Session, record: KnowledgeDocument) -> list[DocumentC
         raise RuntimeError("Parsed document text is not available")
 
     embedding_service = get_embedding_service()
-    raw_chunks = chunk_document_content(record.parsed_text)
+    chunking_config = record.chunking_config or {}
+    mode = str(chunking_config.get("mode", "standard"))
+    chunk_size = int(chunking_config.get("chunk_size", CHUNK_SIZE_TOKENS))
+    chunk_overlap = int(chunking_config.get("chunk_overlap", CHUNK_OVERLAP_TOKENS))
+    parent_chunk_size = int(chunking_config.get("parent_chunk_size", 1024))
+    if mode == "standard" and chunk_size == CHUNK_SIZE_TOKENS and chunk_overlap == CHUNK_OVERLAP_TOKENS:
+        raw_chunks = chunk_document_content(record.parsed_text)
+    else:
+        raw_chunks = build_configured_chunks(
+            record.parsed_text,
+            mode=mode,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            parent_chunk_size=parent_chunk_size,
+        )
     prepared: list[dict] = []
     seen_hashes: set[str] = set()
     for chunk_data in raw_chunks:
@@ -138,6 +157,10 @@ def _checkpoint_chunks(db: Session, record: KnowledgeDocument) -> list[DocumentC
                 "page_end": page_end,
                 "pages": chunk_data["pages"],
                 "token_count": chunk_data["token_count"],
+                "chunking_mode": chunk_data.get("chunking_mode", "standard"),
+                "parent_chunk_index": chunk_data.get("parent_chunk_index"),
+                "parent_content": chunk_data.get("parent_content"),
+                "child_chunk_index": chunk_data.get("child_chunk_index"),
                 "embedding_token_count": chunk_data["embedding_token_count"],
                 "content_hash": chunk_data["content_hash"],
                 "embedding_model": embedding_service.model_name,
@@ -172,6 +195,16 @@ def _embed_checkpointed_chunks(
     for chunk in chunks:
         chunk.embedding = None
         chunk.embedding_status = "pending"
+        chunk.embedding_model = embedding_service.model_name
+        chunk.embedding_version = embedding_service.version
+        if chunk.metadata_ is not None:
+            chunk.metadata_ = {
+                **chunk.metadata_,
+                "embedding_model": embedding_service.model_name,
+                "embedding_version": embedding_service.version,
+            }
+    record.embedding_model = embedding_service.model_name
+    record.embedding_version = embedding_service.version
     record.processing_status = "embedding"
     record.processing_progress = 0
     db.commit()

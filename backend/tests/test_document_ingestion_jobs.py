@@ -115,7 +115,19 @@ def test_interrupted_embedding_is_visible_and_resumes_from_saved_chunks(
     assert item["processing_checkpoint"] == "chunked"
     assert item["chunk_count"] == len(saved_chunk_ids)
 
-    monkeypatch.setattr(document_ingestion, "get_embedding_service", lambda: real_service)
+    class RecoveryEmbeddingService:
+        model_name = "recovery-embedding-model"
+        version = "recovery-v1"
+
+        def __getattr__(self, name):
+            return getattr(real_service, name)
+
+    recovery_service = RecoveryEmbeddingService()
+    monkeypatch.setattr(
+        document_ingestion,
+        "get_embedding_service",
+        lambda: recovery_service,
+    )
     resumed = client.post(
         f"/api/v1/documents/{document_id}/retry",
         params={"version": "1.0"},
@@ -131,6 +143,8 @@ def test_interrupted_embedding_is_visible_and_resumes_from_saved_chunks(
     assert [chunk.id for chunk in resumed_chunks] == saved_chunk_ids
     assert all(chunk.embedding is not None for chunk in resumed_chunks)
     assert all(chunk.status == "active" for chunk in resumed_chunks)
+    assert all(chunk.embedding_model == recovery_service.model_name for chunk in resumed_chunks)
+    assert all(chunk.embedding_version == recovery_service.version for chunk in resumed_chunks)
 
 
 def test_interrupted_chunking_resumes_without_parsing_again(

@@ -19,6 +19,9 @@ logging.basicConfig(
     level=logging.DEBUG if settings.APP_DEBUG else logging.INFO,
     format="%(asctime)s | %(levelname)s | %(name)s | %(message)s",
 )
+# SentenceTransformer probes optional architecture-specific config files while
+# resolving a local model. Missing probe files are expected and not actionable.
+logging.getLogger("sentence_transformers.util.file_io").setLevel(logging.WARNING)
 logger = logging.getLogger("ai_workforce")
 
 

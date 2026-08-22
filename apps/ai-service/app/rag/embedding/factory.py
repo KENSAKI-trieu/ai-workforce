@@ -23,6 +23,7 @@ def get_embedding_provider() -> EmbeddingProvider:
             dtype=settings.EMBEDDING_DTYPE,
             cache_folder=settings.EMBEDDING_CACHE_FOLDER,
             local_files_only=settings.EMBEDDING_LOCAL_FILES_ONLY,
+            model_path=settings.EMBEDDING_MODEL_PATH,
         )
     if backend == "openai":
         return OpenAIEmbeddingProvider(

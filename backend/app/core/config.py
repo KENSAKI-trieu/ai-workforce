@@ -74,6 +74,7 @@ class Settings(BaseSettings):
     EMBEDDING_CACHE_FOLDER: Optional[str] = None
     EMBEDDING_LOCAL_FILES_ONLY: bool = False
     EMBEDDING_MAX_RETRIES: int = 3
+    EMBEDDING_ALLOW_DETERMINISTIC_FALLBACK: bool = True
     RAG_CHUNK_MIN_TOKENS: int = 100
     RAG_CHUNK_TARGET_TOKENS: int = 450
     RAG_CHUNK_MAX_TOKENS: int = 700

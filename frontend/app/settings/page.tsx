@@ -137,7 +137,7 @@ export default function SettingsPage() {
             <div className="ops-field"><label>Domain workspace</label><input disabled value={workspace.domain}/></div>
             <div className="ops-field full"><label>Logo URL (HTTPS)</label><input disabled={!canEdit} value={workspace.logo_url || ""} onChange={(e) => update("logo_url", e.target.value || null)} placeholder="https://company.example/logo.png"/></div>
             <div className="ops-field"><label>Múi giờ IANA</label><input disabled={!canEdit} value={workspace.timezone} onChange={(e) => update("timezone", e.target.value)}/></div>
-            <div className="ops-field"><label>Ngôn ngữ</label><select disabled={!canEdit} value={workspace.language} onChange={(e) => update("language", e.target.value)}><option value="vi">Tiếng Việt</option><option value="en">English</option></select></div>
+            <div className="ops-field"><label>Ngôn ngữ</label><select disabled={!canEdit} value={workspace.language} onChange={(e) => update("language", e.target.value)}><option value="vi">Tiếng Việt</option><option value="ja">Tiếng Nhật</option><option value="en">English</option></select></div>
             <div className="ops-field"><label>Billing email</label><input disabled={!canEdit} type="email" value={workspace.billing_email || ""} onChange={(e) => update("billing_email", e.target.value || null)}/></div>
             <div className="ops-field"><label>Model mặc định</label><select disabled={!canEdit} value={workspace.default_model} onChange={(e) => update("default_model", e.target.value)}>{workspace.supported_models.map((model) => <option key={model}>{model}</option>)}</select></div>
           </div>

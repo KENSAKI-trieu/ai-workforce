@@ -64,6 +64,26 @@ rerank window. Check the active runtime with `GET /health/accelerator`. Rerankin
 automatically retries CUDA out-of-memory errors with a smaller batch before using
 the configured fallback.
 
+## Hosted Jina reranking
+
+To avoid loading a reranker into local RAM or VRAM, keep embeddings local and
+route reranking through Jina AI:
+
+```dotenv
+RERANK_BACKEND=jina
+JINA_API_KEY=your-key
+JINA_RERANK_URL=https://api.jina.ai/v1/rerank
+JINA_RERANK_MODEL=jina-reranker-v3.5
+JINA_RERANK_TIMEOUT_SECONDS=30
+JINA_RERANK_SCORE_NORMALIZATION=auto
+RERANK_FALLBACK_ENABLED=true
+```
+
+Candidate text is sent to Jina for scoring. Keep the API key only in `.env` and
+do not commit it. If the hosted request fails, lexical fallback remains active.
+The default `auto` score normalization applies sigmoid conversion to Jina v3
+logits while leaving the already normalized v2 scores unchanged.
+
 run:
 cd C:\Users\admin\Downloads\code_ai\AI-workforce\apps\ai-service
 python -m uvicorn app.main:app --reload --port 8100

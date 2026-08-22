@@ -47,6 +47,11 @@ orchestration_engines = OrchestrationEngineProvider()
 async def lifespan(_: FastAPI):
     orchestration_engines.start()
     try:
+        if settings.EMBEDDING_PRELOAD:
+            # Load and warm up the local model on the main thread. On Windows,
+            # initializing CUDA from FastAPI's worker thread can terminate the
+            # process without producing a Python traceback.
+            get_embedding_provider().embed(["embedding warmup"])
         yield
     finally:
         orchestration_engines.close()
@@ -227,7 +232,7 @@ def chunk_text(request: ChunkRequest) -> ChunkResponse:
 
 
 @app.post("/v1/embeddings", response_model=EmbeddingResponse, dependencies=[Depends(require_internal_token)])
-def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
+async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     provider = get_embedding_provider()
     texts = request.texts
     if request.input_type == "query":

@@ -2,20 +2,32 @@
 Tests for Hybrid RAG Engine, document ingestion, vector search, and Knowledge Agent inline citations.
 """
 
+import sys
+from types import SimpleNamespace
+
+import pytest
+
 from app.services.rag_service import (
     CHUNK_OVERLAP_TOKENS,
     CHUNK_SIZE_TOKENS,
+    build_configured_chunks,
     chunk_document_content,
     clean_document_text,
+    _rank_sparse_bm25,
 )
 from app.models.models import DocumentChunk, KnowledgeDocument
+from app.core.config import settings
 from app.services.embedding_service import (
+    EmbeddingService,
     build_embedding_text,
     calculate_content_hash,
     get_embedding_service,
+    is_embedding_model_unavailable_error,
+    is_embedding_resource_error,
     normalize_embedding_device,
 )
 from app.api.v1.documents import _parse_allowed_roles
+from app.services.knowledge_storage import read_original_file
 
 
 def test_chunking_respects_size_and_overlap():
@@ -36,10 +48,119 @@ def test_chunking_respects_size_and_overlap():
     )
 
 
+def test_sparse_bm25_prioritizes_rare_domain_terms_over_common_words():
+    generic_chunks = [
+        SimpleNamespace(
+            document_title="Quy định nội bộ",
+            document_name=f"policy-{index}.md",
+            section_title="Thiết kế hệ thống",
+            content="Hệ thống được thiết kế để phục vụ một quy trình làm việc trên công ty.",
+        )
+        for index in range(10)
+    ]
+    technical_chunk = SimpleNamespace(
+        document_title="Kiến trúc AI",
+        document_name="gpu-serving.md",
+        section_title="LLM serving",
+        content="Một GPU phục vụ nhiều LLM bằng quantization và dynamic batching.",
+    )
+
+    ranked = _rank_sparse_bm25(
+        "Hệ thống phục vụ LLM trên một GPU được thiết kế như thế nào?",
+        [*generic_chunks, technical_chunk],
+    )
+
+    assert ranked[0][0] is technical_chunk
+    assert ranked[0][1] > ranked[1][1]
+
+
+def test_sparse_bm25_prioritizes_the_specific_query_phrase():
+    unrelated = SimpleNamespace(
+        document_title="Nội quy lao động",
+        document_name="rules.md",
+        section_title="Quy định sử dụng thẻ nhân viên",
+        content="Nhân viên phải tuân thủ quy định ra vào cổng và sử dụng thẻ.",
+    )
+    leave_policy = SimpleNamespace(
+        document_title="Nội quy lao động",
+        document_name="rules.md",
+        section_title="Nghỉ phép năm",
+        content="Nhân viên được nghỉ phép năm và phải gửi yêu cầu đúng quy định.",
+    )
+
+    ranked = _rank_sparse_bm25(
+        "Quy định nghỉ phép của nhân viên là gì?",
+        [unrelated, leave_policy],
+    )
+
+    assert ranked[0][0] is leave_policy
+
+
+def test_configured_standard_chunking_uses_custom_token_limits():
+    content = " ".join(f"token-{index}" for index in range(500))
+
+    chunks = build_configured_chunks(
+        content,
+        mode="standard",
+        chunk_size=120,
+        chunk_overlap=20,
+    )
+
+    assert len(chunks) > 1
+    assert all(chunk["token_count"] <= 120 for chunk in chunks)
+    assert all(chunk["chunking_mode"] == "standard" for chunk in chunks)
+
+
+def test_parent_child_chunking_keeps_parent_context_on_children():
+    content = " ".join(f"token-{index}" for index in range(900))
+
+    chunks = build_configured_chunks(
+        content,
+        mode="parent_child",
+        chunk_size=120,
+        chunk_overlap=20,
+        parent_chunk_size=360,
+    )
+
+    assert len(chunks) > 3
+    assert all(chunk["chunking_mode"] == "parent_child" for chunk in chunks)
+    assert all(chunk["parent_content"] for chunk in chunks)
+    assert len({chunk["parent_chunk_index"] for chunk in chunks}) > 1
+
+
 def test_embedding_gpu_alias_uses_pytorch_cuda_device():
     assert normalize_embedding_device("gpu") == "cuda"
     assert normalize_embedding_device("NVIDIA") == "cuda"
     assert normalize_embedding_device("cuda:0") == "cuda:0"
+
+
+def test_embedding_resource_errors_detect_windows_pagefile_exhaustion():
+    assert is_embedding_resource_error(
+        OSError("The paging file is too small for this operation to complete. (os error 1455)")
+    )
+    assert is_embedding_resource_error(RuntimeError("CUDA out of memory"))
+    assert not is_embedding_resource_error(RuntimeError("Embedding dimension mismatch"))
+    assert is_embedding_model_unavailable_error(
+        OSError("Cannot find the requested files in the disk cache and outgoing traffic has been disabled")
+    )
+
+
+def test_embedding_model_uses_deterministic_fallback_when_pagefile_is_exhausted(monkeypatch):
+    def fail_model_load(*_args, **_kwargs):
+        raise OSError("The paging file is too small for this operation to complete. (os error 1455)")
+
+    monkeypatch.setitem(
+        sys.modules,
+        "sentence_transformers",
+        SimpleNamespace(SentenceTransformer=fail_model_load),
+    )
+    monkeypatch.setattr(settings, "EMBEDDING_ALLOW_DETERMINISTIC_FALLBACK", True)
+    service = EmbeddingService()
+    service.backend = "sentence_transformers"
+
+    assert service._load_model() is None
+    assert service.backend == "deterministic"
+    assert len(service.embed_texts(["nội dung kiểm thử"])[0]) == service.dimension
 
 
 def test_chunking_preserves_markdown_header_context():
@@ -303,6 +424,72 @@ def test_upload_duplicate_chunks_requires_explicit_replace_or_keep_old(
     ).order_by(DocumentChunk.chunk_index).all()
     assert len(replacement_chunks) == len(original_chunks)
     assert [chunk.id for chunk in replacement_chunks] != original_ids
+
+
+def test_delete_document_removes_selected_version_chunks_and_original_file(
+    client, ceo_token_headers, transactional_db_session
+):
+    document_id = "deletion-cascade-policy"
+    for version in ("1.0", "2.0"):
+        uploaded = client.post(
+            "/api/v1/documents/upload",
+            data={
+                "department_access": "ALL",
+                "collection_name": "Deletion Tests",
+                "document_id": document_id,
+                "version": version,
+            },
+            files={
+                "file": (
+                    f"deletion-policy-v{version}.md",
+                    f"# Delete test {version}\nUnique content for version {version}.".encode(),
+                    "text/markdown",
+                )
+            },
+            headers=ceo_token_headers,
+        )
+        assert uploaded.status_code == 201
+
+    transactional_db_session.expire_all()
+    target = transactional_db_session.query(KnowledgeDocument).filter(
+        KnowledgeDocument.document_id == document_id,
+        KnowledgeDocument.version == "2.0",
+    ).one()
+    assert target.storage_key
+    storage_key = target.storage_key
+    assert read_original_file(storage_key)
+
+    deleted = client.delete(
+        f"/api/v1/documents/{document_id}",
+        params={"version": "2.0"},
+        headers=ceo_token_headers,
+    )
+
+    assert deleted.status_code == 200
+    payload = deleted.json()
+    assert payload["document_id"] == document_id
+    assert payload["version"] == "2.0"
+    assert payload["chunks_deleted"] > 0
+    assert payload["file_deleted"] is True
+    transactional_db_session.expire_all()
+    assert transactional_db_session.query(KnowledgeDocument).filter(
+        KnowledgeDocument.document_id == document_id,
+        KnowledgeDocument.version == "2.0",
+    ).count() == 0
+    assert transactional_db_session.query(DocumentChunk).filter(
+        DocumentChunk.document_id == document_id,
+        DocumentChunk.version == "2.0",
+    ).count() == 0
+    assert transactional_db_session.query(KnowledgeDocument).filter(
+        KnowledgeDocument.document_id == document_id,
+        KnowledgeDocument.version == "1.0",
+    ).count() == 1
+    assert transactional_db_session.query(DocumentChunk).filter(
+        DocumentChunk.document_id == document_id,
+        DocumentChunk.version == "1.0",
+    ).count() > 0
+    with pytest.raises(FileNotFoundError):
+        read_original_file(storage_key)
 
 
 def test_hybrid_rag_search(client, ceo_token_headers):

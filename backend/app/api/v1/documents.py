@@ -2,6 +2,7 @@
 
 import ipaddress
 import json
+import logging
 import mimetypes
 import re
 import socket
@@ -15,7 +16,7 @@ from urllib.parse import quote, urljoin, urlparse
 import httpx
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
 from pydantic import AnyHttpUrl, BaseModel, Field
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -26,16 +27,23 @@ from app.services.document_ingestion import (
     resume_document_ingestion,
 )
 from app.services.document_parser import DocumentParseError, extract_file_text
-from app.services.knowledge_storage import read_original_file, save_original_file
+from app.services.knowledge_storage import (
+    delete_original_file,
+    read_original_file,
+    save_original_file,
+)
 from app.services.embedding_service import calculate_content_hash
 from app.services.rag_service import (
-    chunk_document_content,
+    CHUNK_OVERLAP_TOKENS,
+    CHUNK_SIZE_TOKENS,
+    build_configured_chunks,
     hybrid_search_documents,
     ingest_document,
 )
 from app.services.notification_service import create_notification
 
 router = APIRouter(prefix="/documents", tags=["Knowledge Documents"])
+logger = logging.getLogger(__name__)
 KB_MANAGERS = {"Owner", "Admin", "CEO", "Manager"}
 VALID_DEPARTMENTS = {"BOARD", "HR", "LEGAL", "IT", "FINANCE", "SALES", "ALL"}
 VALID_DOCUMENT_STATUSES = {"draft", "active", "inactive", "archived"}
@@ -181,9 +189,17 @@ def _duplicate_chunk_report(
     document_id: str,
     version: str,
     content: str,
+    chunking_config: dict[str, Any] | None = None,
 ) -> tuple[list[dict[str, Any]], int]:
     """Return exact content-hash matches for the same logical document version."""
-    incoming_chunks = chunk_document_content(content)
+    config = chunking_config or {}
+    incoming_chunks = build_configured_chunks(
+        content,
+        mode=str(config.get("mode", "standard")),
+        chunk_size=int(config.get("chunk_size", CHUNK_SIZE_TOKENS)),
+        chunk_overlap=int(config.get("chunk_overlap", CHUNK_OVERLAP_TOKENS)),
+        parent_chunk_size=int(config.get("parent_chunk_size", 1024)),
+    )
     incoming_by_hash: dict[str, list[tuple[int, dict[str, Any]]]] = {}
     for index, chunk in enumerate(incoming_chunks):
         content_hash = calculate_content_hash(chunk["content"])
@@ -255,6 +271,7 @@ def _set_document_processing_status(
     source_hash: str | None = None,
     source_url: str | None = None,
     error_message: str | None = None,
+    chunking_config: dict[str, Any] | None = None,
 ) -> KnowledgeDocument:
     record = db.query(KnowledgeDocument).filter(
         KnowledgeDocument.tenant_id == user.tenant_id,
@@ -289,6 +306,8 @@ def _set_document_processing_status(
     record.storage_key = storage_key or record.storage_key
     record.source_hash = source_hash or record.source_hash
     record.source_url = source_url
+    if chunking_config is not None:
+        record.chunking_config = chunking_config
     record.error_message = error_message
     db.commit()
     return record
@@ -483,6 +502,7 @@ def _download_public_html(initial_url: str) -> tuple[str, str]:
 
 @router.get("/", summary="List visible knowledge documents")
 def list_documents(
+    mine: bool = False,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> list[dict[str, Any]]:
@@ -496,6 +516,8 @@ def list_documents(
     record_query = db.query(KnowledgeDocument).filter(
         KnowledgeDocument.tenant_id == current_user.tenant_id,
     )
+    if mine:
+        record_query = record_query.filter(KnowledgeDocument.created_by_id == current_user.id)
     if current_user.role in KB_MANAGERS:
         record_query = record_query.filter(or_(
             KnowledgeDocument.status == "active",
@@ -533,6 +555,7 @@ def list_documents(
             "source_file": document.file_name,
             "source_url": document.source_url,
             "storage_key": document.storage_key,
+            "chunking_config": document.chunking_config,
             "chunk_count": document.chunk_count,
             "status": document.processing_status.upper(),
             "created_at": document.created_at.isoformat() if document.created_at else None,
@@ -541,6 +564,8 @@ def list_documents(
         for document in records
     }
     record_keys = set(docs)
+    if mine:
+        return list(docs.values())
     for chunk in chunks:
         key = chunk.document_id or chunk.document_name
         item = docs.setdefault(key, {
@@ -606,6 +631,26 @@ def read_document(
         "content": content,
         "character_count": len(content),
         "chunk_count": len(chunks),
+        "processing_status": record.processing_status if record else "ready",
+        "processing_checkpoint": record.processing_checkpoint if record else "ready",
+        "processing_progress": record.processing_progress if record else 100,
+        "error_message": record.error_message if record else None,
+        "chunking_config": record.chunking_config if record else None,
+        "chunks": [
+            {
+                "id": str(chunk.id),
+                "chunk_index": chunk.chunk_index,
+                "section_title": chunk.section_title,
+                "content": chunk.content,
+                "page_start": chunk.page_start or chunk.page,
+                "page_end": chunk.page_end or chunk.page,
+                "token_count": (chunk.metadata_ or {}).get("token_count"),
+                "chunking_mode": (chunk.metadata_ or {}).get("chunking_mode", "standard"),
+                "parent_chunk_index": (chunk.metadata_ or {}).get("parent_chunk_index"),
+                "parent_content": (chunk.metadata_ or {}).get("parent_content"),
+            }
+            for chunk in chunks
+        ],
         "source_url": record.source_url if record else None,
         "download_url": (
             f"/api/v1/documents/{quote(document_id, safe='')}/download?version={quote(version, safe='')}"
@@ -816,6 +861,55 @@ def ingest_text_document(
     }
 
 
+@router.post("/preview-chunks", summary="Preview chunks before indexing")
+def preview_document_chunks(
+    file: UploadFile = File(...),
+    chunking_mode: str = Form("standard"),
+    chunk_size: int = Form(CHUNK_SIZE_TOKENS),
+    chunk_overlap: int = Form(CHUNK_OVERLAP_TOKENS),
+    parent_chunk_size: int = Form(1024),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    if current_user.role not in KB_MANAGERS:
+        raise HTTPException(status_code=403, detail="Insufficient permission to manage knowledge")
+    data = file.file.read(MAX_UPLOAD_BYTES + 1)
+    if len(data) > MAX_UPLOAD_BYTES:
+        raise HTTPException(status_code=413, detail="File exceeds the 10 MB limit")
+    filename = (file.filename or "document").strip()
+    content = _extract_file_text(filename, data).strip()
+    if not content:
+        raise HTTPException(status_code=422, detail="No readable text found in the file")
+    try:
+        chunks = build_configured_chunks(
+            content,
+            mode=chunking_mode,
+            chunk_size=chunk_size,
+            chunk_overlap=chunk_overlap,
+            parent_chunk_size=parent_chunk_size,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return {
+        "document_name": filename,
+        "character_count": len(content),
+        "estimated_chunk_count": len(chunks),
+        "chunks": [
+            {
+                "chunk_index": index,
+                "section_title": chunk["section_title"],
+                "content": chunk["content"],
+                "token_count": chunk["token_count"],
+                "page_start": chunk["page"],
+                "page_end": max(chunk["pages"]) if chunk["pages"] else chunk["page"],
+                "chunking_mode": chunk.get("chunking_mode", "standard"),
+                "parent_chunk_index": chunk.get("parent_chunk_index"),
+                "parent_content": chunk.get("parent_content"),
+            }
+            for index, chunk in enumerate(chunks[:20])
+        ],
+    }
+
+
 @router.post("/upload", status_code=201, summary="Upload PDF, DOCX, TXT or CSV")
 def upload_document(
     response: Response,
@@ -832,6 +926,10 @@ def upload_document(
     confidentiality: str = Form("internal"),
     allowed_roles: str = Form(""),
     duplicate_strategy: str = Form("prompt"),
+    chunking_mode: str = Form("standard"),
+    chunk_size: int = Form(CHUNK_SIZE_TOKENS),
+    chunk_overlap: int = Form(CHUNK_OVERLAP_TOKENS),
+    parent_chunk_size: int = Form(1024),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
@@ -878,6 +976,16 @@ def upload_document(
     content = _extract_file_text(filename, data).strip()
     if not content:
         raise HTTPException(status_code=422, detail="No readable text found in the file")
+    chunking_config = {
+        "mode": chunking_mode.strip().lower(),
+        "chunk_size": chunk_size,
+        "chunk_overlap": chunk_overlap,
+        "parent_chunk_size": parent_chunk_size,
+    }
+    try:
+        build_configured_chunks(content, **chunking_config)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
 
     duplicates, incoming_chunk_count = _duplicate_chunk_report(
         db,
@@ -885,6 +993,7 @@ def upload_document(
         document_id=resolved_document_id,
         version=resolved_version,
         content=content,
+        chunking_config=chunking_config,
     )
     if duplicates and normalized_duplicate_strategy == "prompt":
         raise HTTPException(
@@ -947,6 +1056,7 @@ def upload_document(
         reset_attempts=True,
         storage_key=storage_key,
         source_hash=source_hash,
+        chunking_config=chunking_config,
     )
     chunks = resume_document_ingestion(db, record.id)
     return {
@@ -1144,31 +1254,70 @@ def update_document(
 @router.delete("/{document_id}", summary="Delete a document and all of its chunks")
 def delete_document(
     document_id: str,
+    version: str = "1.0",
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     if current_user.role not in KB_MANAGERS:
         raise HTTPException(status_code=403, detail="Insufficient permission to manage knowledge")
-    chunks = db.query(DocumentChunk).filter(
+
+    record = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.tenant_id == current_user.tenant_id,
+        KnowledgeDocument.document_id == document_id,
+        KnowledgeDocument.version == version,
+    ).first()
+    legacy_identity = (
+        DocumentChunk.knowledge_document_id.is_(None),
         DocumentChunk.tenant_id == current_user.tenant_id,
         or_(
             DocumentChunk.document_id == document_id,
             DocumentChunk.document_name == document_id,
         ),
-    ).all()
-    records = db.query(KnowledgeDocument).filter(
-        KnowledgeDocument.tenant_id == current_user.tenant_id,
-        KnowledgeDocument.document_id == document_id,
-    ).all()
-    if not chunks and not records:
+        DocumentChunk.version == version,
+    )
+    if record:
+        chunk_query = db.query(DocumentChunk).filter(
+            DocumentChunk.tenant_id == current_user.tenant_id,
+            or_(
+                DocumentChunk.knowledge_document_id == record.id,
+                and_(*legacy_identity),
+            ),
+        )
+    else:
+        chunk_query = db.query(DocumentChunk).filter(*legacy_identity)
+
+    chunks = chunk_query.all()
+    if not chunks and not record:
         raise HTTPException(status_code=404, detail="Document not found")
-    if current_user.role == "Manager" and any(
-        chunk.department_access not in {"ALL", current_user.department} for chunk in chunks
-    ):
-        raise HTTPException(status_code=403, detail="Manager cannot delete this document")
+
+    if current_user.role == "Manager":
+        departments = {chunk.department_access for chunk in chunks}
+        if record:
+            departments.add(record.department)
+        if any(department not in {"ALL", current_user.department} for department in departments):
+            raise HTTPException(status_code=403, detail="Manager cannot delete this document")
+
+    storage_key = record.storage_key if record else None
     for chunk in chunks:
         db.delete(chunk)
-    for record in records:
+    if record:
         db.delete(record)
     db.commit()
-    return {"message": "Document deleted successfully", "chunks_deleted": len(chunks)}
+
+    file_deleted = False
+    if storage_key:
+        try:
+            file_deleted = delete_original_file(storage_key)
+        except (OSError, ValueError):
+            logger.warning(
+                "Document metadata was deleted but original-file cleanup failed for %s",
+                storage_key,
+                exc_info=True,
+            )
+    return {
+        "message": "Document deleted successfully",
+        "document_id": document_id,
+        "version": version,
+        "chunks_deleted": len(chunks),
+        "file_deleted": file_deleted,
+    }

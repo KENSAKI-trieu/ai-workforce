@@ -68,6 +68,7 @@ def init_db():
         "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS collection_name VARCHAR(100) NOT NULL DEFAULT 'General Knowledge'",
         "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS processing_checkpoint VARCHAR(20) NOT NULL DEFAULT 'uploaded'",
         "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS parsed_text TEXT",
+        "ALTER TABLE knowledge_documents ADD COLUMN IF NOT EXISTS chunking_config JSONB NOT NULL DEFAULT '{\"mode\": \"standard\", \"chunk_size\": 700, \"chunk_overlap\": 80, \"parent_chunk_size\": 1024}'::jsonb",
         "UPDATE knowledge_documents SET processing_checkpoint = 'ready' WHERE processing_status = 'ready' AND processing_checkpoint = 'uploaded'",
         "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS document_id VARCHAR(100)",
         "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS collection_name VARCHAR(100) DEFAULT 'General Knowledge'",

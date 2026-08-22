@@ -4,6 +4,42 @@ import { useCallback, useEffect, useMemo, useState } from "react";
 import { Bell, BellRing, CheckCheck, Trash2, X } from "lucide-react";
 
 import api from "@/lib/api";
+import { useLanguageStore } from "@/store/useLanguageStore";
+
+const NOTIFICATION_TEXT = {
+  vi: {
+    close: "Đóng thông báo",
+    title: "Thông báo",
+    unreadCount: (count: number) => `${count} thông báo chưa đọc`,
+    all: "Tất cả",
+    unread: "Chưa đọc",
+    markAll: "Đọc tất cả",
+    loading: "Đang tải thông báo...",
+    emptyAll: "Không có thông báo nào.",
+    emptyUnread: "Không có thông báo chưa đọc.",
+    read: "Đã đọc",
+    markRead: "Đánh dấu đã đọc",
+    deleteNotification: "Xóa thông báo",
+    delete: "Xóa",
+    dateLocale: "vi-VN",
+  },
+  ja: {
+    close: "通知を閉じる",
+    title: "通知",
+    unreadCount: (count: number) => `未読の通知 ${count} 件`,
+    all: "すべて",
+    unread: "未読",
+    markAll: "すべて既読にする",
+    loading: "通知を読み込んでいます...",
+    emptyAll: "通知はありません。",
+    emptyUnread: "未読の通知はありません。",
+    read: "既読",
+    markRead: "既読にする",
+    deleteNotification: "通知を削除",
+    delete: "削除",
+    dateLocale: "ja-JP",
+  },
+} as const;
 
 interface NotificationItem {
   id: string;
@@ -22,6 +58,8 @@ interface NotificationPanelProps {
 }
 
 export default function NotificationPanel({ open, onClose, onUnreadChange }: NotificationPanelProps) {
+  const locale = useLanguageStore((state) => state.locale);
+  const text = NOTIFICATION_TEXT[locale];
   const [items, setItems] = useState<NotificationItem[]>([]);
   const [unreadCount, setUnreadCount] = useState(0);
   const [filter, setFilter] = useState<"all" | "unread">("all");
@@ -99,7 +137,7 @@ export default function NotificationPanel({ open, onClose, onUnreadChange }: Not
   return (
     <>
       <button
-        aria-label="Đóng thông báo"
+        aria-label={text.close}
         onClick={onClose}
         style={{ position: "fixed", inset: 0, border: 0, background: "rgba(15,23,42,.08)", zIndex: 59 }}
       />
@@ -111,27 +149,27 @@ export default function NotificationPanel({ open, onClose, onUnreadChange }: Not
         <header style={{ padding: "18px 18px 12px", borderBottom: "1px solid #EEF2F7" }}>
           <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
-              <strong style={{ fontSize: 17, color: "#172033" }}>Thông báo</strong>
-              <div style={{ fontSize: 12, color: "#64748B", marginTop: 2 }}>{unreadCount} thông báo chưa đọc</div>
+              <strong style={{ fontSize: 17, color: "#172033" }}>{text.title}</strong>
+              <div style={{ fontSize: 12, color: "#64748B", marginTop: 2 }}>{text.unreadCount(unreadCount)}</div>
             </div>
             <button className="ta-btn ta-btn-ghost" onClick={onClose} style={{ padding: 7 }}><X size={16}/></button>
           </div>
           <div style={{ display: "flex", alignItems: "center", gap: 8, marginTop: 13 }}>
-            <button className={`ta-btn ${filter === "all" ? "ta-btn-primary" : "ta-btn-ghost"}`} onClick={() => setFilter("all")}>Tất cả</button>
-            <button className={`ta-btn ${filter === "unread" ? "ta-btn-primary" : "ta-btn-ghost"}`} onClick={() => setFilter("unread")}>Chưa đọc</button>
-            {unreadCount > 0 && <button className="ta-btn ta-btn-ghost" onClick={() => void markAll()} style={{ marginLeft: "auto" }}><CheckCheck size={14}/> Đọc tất cả</button>}
+            <button className={`ta-btn ${filter === "all" ? "ta-btn-primary" : "ta-btn-ghost"}`} onClick={() => setFilter("all")}>{text.all}</button>
+            <button className={`ta-btn ${filter === "unread" ? "ta-btn-primary" : "ta-btn-ghost"}`} onClick={() => setFilter("unread")}>{text.unread}</button>
+            {unreadCount > 0 && <button className="ta-btn ta-btn-ghost" onClick={() => void markAll()} style={{ marginLeft: "auto" }}><CheckCheck size={14}/> {text.markAll}</button>}
           </div>
         </header>
 
         <div style={{ flex: 1, overflowY: "auto" }}>
-          {loading && !items.length && <div style={{ padding: 24, color: "#64748B", textAlign: "center" }}>Đang tải thông báo...</div>}
-          {!loading && !visibleItems.length && <div style={{ padding: 32, color: "#64748B", textAlign: "center" }}>Không có thông báo {filter === "unread" ? "chưa đọc" : "nào"}.</div>}
+          {loading && !items.length && <div style={{ padding: 24, color: "#64748B", textAlign: "center" }}>{text.loading}</div>}
+          {!loading && !visibleItems.length && <div style={{ padding: 32, color: "#64748B", textAlign: "center" }}>{filter === "unread" ? text.emptyUnread : text.emptyAll}</div>}
           {visibleItems.map((item) => (
             <div key={item.id} style={{
               display: "flex", gap: 11, padding: "14px 15px", borderBottom: "1px solid #F1F5F9",
               background: item.is_read ? "#fff" : "#F5F7FF",
             }}>
-              <button onClick={() => void markRead(item)} aria-label={item.is_read ? "Đã đọc" : "Đánh dấu đã đọc"} style={{
+              <button onClick={() => void markRead(item)} aria-label={item.is_read ? text.read : text.markRead} style={{
                 width: 34, height: 34, borderRadius: 10, flexShrink: 0, border: 0,
                 background: item.is_read ? "#F1F5F9" : "#E0E7FF", color: item.is_read ? "#64748B" : "#4F46E5", cursor: item.is_read ? "default" : "pointer",
               }}>
@@ -140,11 +178,13 @@ export default function NotificationPanel({ open, onClose, onUnreadChange }: Not
               <button onClick={() => void markRead(item)} style={{ flex: 1, border: 0, background: "transparent", textAlign: "left", padding: 0, cursor: item.is_read ? "default" : "pointer" }}>
                 <strong style={{ display: "block", fontSize: 13, color: "#1E293B" }}>{item.title}</strong>
                 <span style={{ display: "block", fontSize: 12, color: "#64748B", marginTop: 4, lineHeight: 1.45 }}>{item.message}</span>
-                <span style={{ display: "block", fontSize: 10, color: "#94A3B8", marginTop: 6 }}>{new Date(item.created_at).toLocaleString("vi-VN")}</span>
+                <span style={{ display: "block", fontSize: 10, color: "#94A3B8", marginTop: 6 }}>{new Date(item.created_at).toLocaleString(text.dateLocale)}</span>
               </button>
               <div style={{ display: "flex", flexDirection: "column", alignItems: "center", gap: 8 }}>
-                {!item.is_read && <span title="Chưa đọc" style={{ width: 7, height: 7, borderRadius: "50%", background: "#4F46E5" }}/>} 
-                <button onClick={() => void remove(item)} aria-label="Xóa thông báo" title="Xóa" style={{ border: 0, background: "transparent", color: "#94A3B8", cursor: "pointer", padding: 3 }}><Trash2 size={14}/></button>
+                {!item.is_read && (
+                  <span title={text.unread} style={{ width: 7, height: 7, borderRadius: "50%", background: "#4F46E5" }}/>
+                )}
+                <button onClick={() => void remove(item)} aria-label={text.deleteNotification} title={text.delete} style={{ border: 0, background: "transparent", color: "#94A3B8", cursor: "pointer", padding: 3 }}><Trash2 size={14}/></button>
               </div>
             </div>
           ))}

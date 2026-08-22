@@ -12,9 +12,11 @@ class Settings(BaseSettings):
     AI_SERVICE_PORT: int = 8100
     AI_SERVICE_INTERNAL_TOKEN: Optional[str] = None
     BACKEND_TOOL_GATEWAY_URL: str = "http://localhost:8000"
+    MODEL_MEMORY_MODE: Literal["shared", "exclusive"] = "shared"
 
     EMBEDDING_BACKEND: str = "deterministic"
     EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
+    EMBEDDING_MODEL_PATH: Optional[str] = None
     EMBEDDING_VERSION: str = "qwen3-embedding-v1"
     EMBEDDING_DIMENSION: int = 1024
     EMBEDDING_BATCH_SIZE: int = 16
@@ -22,6 +24,7 @@ class Settings(BaseSettings):
     EMBEDDING_DTYPE: str = "float32"
     EMBEDDING_CACHE_FOLDER: Optional[str] = None
     EMBEDDING_LOCAL_FILES_ONLY: bool = False
+    EMBEDDING_PRELOAD: bool = False
     EMBEDDING_MAX_RETRIES: int = 3
 
     RAG_CHUNK_TARGET_TOKENS: int = 450
@@ -32,16 +35,23 @@ class Settings(BaseSettings):
 
     RERANK_BACKEND: str = "bge"
     RERANK_MODEL_NAME: str = "BAAI/bge-reranker-v2-m3"
+    RERANK_MODEL_PATH: Optional[str] = None
     RERANK_DEVICE: str = "cpu"
     RERANK_DTYPE: str = "float32"
     RERANK_CACHE_FOLDER: Optional[str] = None
     RERANK_LOCAL_FILES_ONLY: bool = False
+    RERANK_SAFETENSORS_BACKEND: Literal["mmap", "pread"] = "mmap"
     RERANK_BATCH_SIZE: int = Field(default=4, ge=1, le=128)
     RERANK_MAX_LENGTH: int = Field(default=4096, ge=128, le=32768)
     RERANK_CANDIDATE_LIMIT: int = Field(default=30, ge=1, le=200)
     RERANK_MIN_MODEL_SCORE: float = Field(default=0.15, ge=0.0, le=1.0)
     RERANK_MODEL_WEIGHT: float = Field(default=0.90, ge=0.0, le=1.0)
     RERANK_FALLBACK_ENABLED: bool = True
+    JINA_API_KEY: Optional[str] = None
+    JINA_RERANK_URL: str = "https://api.jina.ai/v1/rerank"
+    JINA_RERANK_MODEL: str = "jina-reranker-v3.5"
+    JINA_RERANK_TIMEOUT_SECONDS: float = Field(default=30.0, gt=0, le=300)
+    JINA_RERANK_SCORE_NORMALIZATION: Literal["auto", "none", "sigmoid"] = "auto"
     RERANK_INSTRUCTION: str = (
         "Truy xuất đoạn tài liệu nội bộ chính xác và đủ căn cứ để trả lời câu hỏi."
     )

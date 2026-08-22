@@ -59,7 +59,7 @@ class Settings(BaseSettings):
     OPENAI_API_KEY: Optional[str] = None
     GOOGLE_AI_API_KEY: Optional[str] = None
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
-    GEMINI_CHAT_MODEL: str = "gemini-2.0-flash"
+    GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
     LLM_TIMEOUT_SECONDS: float = Field(default=90.0, gt=0)
     LLM_MAX_RETRIES: int = Field(default=2, ge=0, le=10)
     AGENT_MAX_MODEL_CALLS: int = Field(default=8, ge=1, le=100)

@@ -46,6 +46,22 @@ validated with the Pydantic models under `app/schemas`. Set
 `LANGCHAIN_ENABLED=true` to enable structured model routing; the registry route
 remains the fallback when no external model is configured or all calls fail.
 
+### HR question/action flow
+
+The Backend sends the HR user's raw message to `POST /v1/llm/generate` for a
+strict `QUESTION` or `ACTION` classification. Questions retrieve tenant- and
+ACL-filtered HR evidence first, then make a second model call to synthesize the
+answer with citations. Actions continue through the governed HR tool router;
+an LLM classification can never invent or bypass a tool permission.
+
+Configure `OPENAI_API_KEY` or `GOOGLE_AI_API_KEY` to enable model classification
+and answer generation. Docker Compose reads these values from `backend/.env`;
+when starting AI Service directly, place the value in `apps/ai-service/.env` or
+export it in the process environment. `JINA_API_KEY` only powers hosted
+reranking and is not a chat-generation credential. Without a chat model
+credential, the HR flow safely falls back to the existing deterministic router
+and retrieved answer.
+
 ## BGE reranking
 
 Docker enables `BAAI/bge-reranker-v2-m3` by default (`RERANK_BACKEND=bge`). The model is lazy-loaded on

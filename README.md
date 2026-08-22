@@ -53,7 +53,7 @@ Docker Compose の既定構成では、次の公開 Hugging Face モデルを使
 チャット LLM はローカルへのインストールが不要です。必要に応じて API キーを設定します。
 
 - OpenAI: 既定値 `gpt-4o-mini`
-- Google Gemini: 既定値 `gemini-2.0-flash`
+- Google Gemini: 既定値 `gemini-3.6-flash`
 - API キーを設定しない場合: 開発・テスト用の `local-deterministic` provider
 
 `local-deterministic` は疎通確認用であり、本番向けの生成 AI モデルではありません。
@@ -109,7 +109,7 @@ AI_RERANK_DTYPE=float16
 OPENAI_API_KEY=
 GOOGLE_AI_API_KEY=
 OPENAI_CHAT_MODEL=gpt-4o-mini
-GEMINI_CHAT_MODEL=gemini-2.0-flash
+GEMINI_CHAT_MODEL=gemini-3.6-flash
 ```
 
 `.env`、API キー、パスワード、token は Git にコミットしないでください。

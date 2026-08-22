@@ -13,6 +13,7 @@ os.environ.setdefault("SECRET_KEY", "test-signing-key-not-for-production")
 os.environ.setdefault("KNOWLEDGE_STORAGE_PATH", "data/test-knowledge")
 os.environ["EMBEDDING_BACKEND"] = "deterministic"
 os.environ["EMBEDDING_LOCAL_FILES_ONLY"] = "false"
+os.environ["AI_SERVICE_URL"] = ""
 # The fixtures below authenticate with this deterministic test-only password.
 # Override ambient values so developer shells and CI cannot make the suite flaky.
 os.environ["SEED_DEFAULT_PASSWORD"] = "Password123!"

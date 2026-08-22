@@ -45,6 +45,11 @@ from app.services.audit_service import log_audit_action
 from app.core.config import settings
 from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.ai_service_client import AIServiceError
+from app.services.agents.hr_llm_flow import (
+    ACTION_INTENTS,
+    classify_hr_request,
+    generate_grounded_hr_answer,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -626,6 +631,68 @@ def execute_agent_chat(
     message: str,
     thread_id: str | None = None,
 ) -> Dict[str, Any]:
+    """Run the HR LLM-first gate, then dispatch to retrieval or governed tools."""
+    if role_code.upper() != "HR":
+        return _execute_agent_chat_core(db, user, role_code, message, thread_id)
+
+    detailed_intent = _classify_hr_intent(message)
+    leave_draft = _load_leave_draft(db, user, thread_id)
+    normalized_message = _normalize_intent_text(message)
+    stateful_leave_action = bool(
+        leave_draft
+        and (
+            _is_leave_draft_continuation(message, leave_draft)
+            or any(marker in normalized_message for marker in (
+                "huy don",
+                "huy yeu cau",
+                "khong xin nua",
+                "khong nghi nua",
+            ))
+        )
+    )
+    if stateful_leave_action:
+        detailed_intent = "ACTION_LEAVE_REQUEST"
+
+    classification = classify_hr_request(
+        message,
+        detailed_intent=detailed_intent,
+    )
+    request_kind = "ACTION" if stateful_leave_action else classification.kind
+
+    routed_intent = detailed_intent
+    if classification.source == "llm" and not stateful_leave_action:
+        if request_kind == "QUESTION" and detailed_intent in ACTION_INTENTS:
+            # A question about an operation must not execute that operation.
+            routed_intent = "POLICY_QUERY"
+        elif request_kind == "QUESTION" and detailed_intent == "UNKNOWN":
+            # The HR agent was explicitly selected, so retrieve governed HR context.
+            routed_intent = "POLICY_QUERY"
+        elif request_kind == "ACTION" and detailed_intent not in ACTION_INTENTS:
+            # The model cannot invent a tool name or arguments. Unknown actions fail closed.
+            routed_intent = "UNKNOWN"
+
+    response = _execute_agent_chat_core(
+        db,
+        user,
+        role_code,
+        message,
+        thread_id,
+        hr_intent_override=routed_intent,
+    )
+    if request_kind == "QUESTION":
+        return generate_grounded_hr_answer(message, response)
+    return response
+
+
+def _execute_agent_chat_core(
+    db: Session,
+    user: User,
+    role_code: str,
+    message: str,
+    thread_id: str | None = None,
+    *,
+    hr_intent_override: str | None = None,
+) -> Dict[str, Any]:
     """
     Main dispatch entry point for processing agent queries.
     Returns structured response containing answer text, citations, tool calls, and specialized card payloads.
@@ -659,7 +726,9 @@ def execute_agent_chat(
         "dag_plan_card": None,
     }
 
-    if settings.LANGGRAPH_ENABLED:
+    # HR has its own LLM-first question/action gate below. Other agents may use
+    # the generic LangGraph orchestration path.
+    if settings.LANGGRAPH_ENABLED and role_code_upper != "HR":
         try:
             return LangGraphEngine().execute(
                 db=db,
@@ -680,7 +749,7 @@ def execute_agent_chat(
     # 1. HR Agent Processing
     # -----------------------------------------------------------------------
     if role_code_upper == "HR":
-        hr_intent = _classify_hr_intent(message)
+        hr_intent = hr_intent_override or _classify_hr_intent(message)
         leave_draft = _load_leave_draft(db, user, thread_id)
         normalized_message = _normalize_intent_text(message)
 

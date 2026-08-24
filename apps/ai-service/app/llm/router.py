@@ -8,7 +8,9 @@ from app.llm.openai_provider import OpenAIProvider
 class LLMRouter:
     def providers(self, name: str | None = None) -> list[LLMProvider]:
         """Return an ordered provider list ending in the custom local fallback."""
-        selected = (name or "").lower()
+        configured_default = settings.LLM_DEFAULT_PROVIDER
+        default_name = "" if configured_default == "auto" else configured_default
+        selected = (name or default_name).lower()
         if selected not in {"", "openai", "gemini", "local"}:
             return [LocalProvider()]
         if selected == "local":

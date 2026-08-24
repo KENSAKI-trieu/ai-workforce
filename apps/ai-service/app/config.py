@@ -58,6 +58,7 @@ class Settings(BaseSettings):
 
     OPENAI_API_KEY: Optional[str] = None
     GOOGLE_AI_API_KEY: Optional[str] = None
+    LLM_DEFAULT_PROVIDER: Literal["auto", "openai", "gemini", "local"] = "auto"
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
     GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
     LLM_TIMEOUT_SECONDS: float = Field(default=90.0, gt=0)

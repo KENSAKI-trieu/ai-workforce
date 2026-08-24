@@ -12,6 +12,7 @@ from app.chains.structured_extraction import (
 from app.llm.base import LLMProvider, LLMResult
 from app.llm.fallback import generate_with_fallback
 from app.llm.openai_provider import OpenAIProvider
+from app.llm.router import LLMRouter
 from app.models.factory import create_chat_model
 from app.schemas.citations import RAGAnswer
 from app.schemas.routing import AgentRoutingDecision
@@ -107,6 +108,18 @@ def test_provider_fallback_uses_each_provider_default_model() -> None:
     assert result.provider == "gemini"
     assert primary.models == ["openai-model"]
     assert secondary.models == [None]
+
+
+def test_router_honors_configured_default_provider(monkeypatch) -> None:
+    monkeypatch.setattr("app.llm.router.settings.LLM_DEFAULT_PROVIDER", "gemini")
+    monkeypatch.setattr("app.llm.router.settings.OPENAI_API_KEY", "openai-key")
+    monkeypatch.setattr("app.llm.router.settings.GOOGLE_AI_API_KEY", "gemini-key")
+
+    assert [provider.name for provider in LLMRouter().providers()] == [
+        "gemini",
+        "openai",
+        "local",
+    ]
 
 
 def test_structured_output_returns_validated_pydantic_model() -> None:

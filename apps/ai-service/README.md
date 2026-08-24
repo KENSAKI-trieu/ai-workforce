@@ -101,5 +101,6 @@ The default `auto` score normalization applies sigmoid conversion to Jina v3
 logits while leaving the already normalized v2 scores unchanged.
 
 run:
-cd C:\Users\admin\Downloads\code_ai\AI-workforce\apps\ai-service
-python -m uvicorn app.main:app --reload --port 8100
+taskkill /PID 22560 /T /F
+cd apps\ai-service
+& ..\..\backend\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100

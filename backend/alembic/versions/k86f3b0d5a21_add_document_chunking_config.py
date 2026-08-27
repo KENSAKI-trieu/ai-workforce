@@ -26,6 +26,12 @@ DEFAULT_CONFIG = {
 
 
 def upgrade() -> None:
+    columns = {
+        column["name"]
+        for column in sa.inspect(op.get_bind()).get_columns("knowledge_documents")
+    }
+    if "chunking_config" in columns:
+        return
     op.add_column(
         "knowledge_documents",
         sa.Column(
@@ -41,4 +47,9 @@ def upgrade() -> None:
 
 
 def downgrade() -> None:
-    op.drop_column("knowledge_documents", "chunking_config")
+    columns = {
+        column["name"]
+        for column in sa.inspect(op.get_bind()).get_columns("knowledge_documents")
+    }
+    if "chunking_config" in columns:
+        op.drop_column("knowledge_documents", "chunking_config")

@@ -10,23 +10,21 @@ Pipeline triển khai cho kho tri thức:
 6. Chỉ section dài mới chia token theo `100/450/700`, overlap `80`.
 7. Tính SHA-256 cho nội dung chuẩn hóa, loại chunk trùng và tái sử dụng vector cùng model/version.
 8. Tạo `embedding_text` từ department, document type/title, section title và content.
-9. Embed theo batch, normalize L2, retry exponential và kiểm tra đúng 1024 chiều.
+9. Gọi Gemini theo batch, normalize L2, retry exponential và kiểm tra đúng 768 chiều.
 10. Lưu chunk, vector, hash, model/version, page range và governance metadata.
 11. Truy xuất dense top 30 qua pgvector và keyword top 30 qua PostgreSQL FTS, hợp nhất bằng RRF rồi rerank. Dùng cosine tuyệt đối và ngưỡng relevance để không trả chunk cho câu hỏi ngoài phạm vi.
 12. ACL tenant/department/role/status/effective date được áp dụng trước candidate retrieval; chunk IDs được lưu trong citation và audit log.
 
-Backend mặc định dùng deterministic embedding để test không cần tải model. Production đặt:
+Backend mặc định dùng deterministic embedding để test không cần gọi API. Production đặt:
 
 ```env
-EMBEDDING_BACKEND=sentence_transformers
-EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
-EMBEDDING_VERSION=qwen3-embedding-0.6b-v1
-EMBEDDING_DIMENSION=1024
-EMBEDDING_DEVICE=cpu
-EMBEDDING_CACHE_FOLDER=data/models/huggingface/hub
-EMBEDDING_LOCAL_FILES_ONLY=true
+EMBEDDING_BACKEND=gemini
+EMBEDDING_MODEL_NAME=gemini-embedding-001
+EMBEDDING_VERSION=gemini-embedding-001-v1
+EMBEDDING_DIMENSION=768
+GOOGLE_AI_API_KEY=Gemini API key
 RAG_MIN_DENSE_SCORE=0.50
 RAG_MIN_RELEVANCE_SCORE=0.50
 ```
 
-và cài `requirements-embeddings.txt` trong embedding worker. Không được tìm kiếm chéo giữa các `embedding_model` hoặc `embedding_version` khác nhau.
+Không được tìm kiếm chéo giữa các `embedding_model` hoặc `embedding_version` khác nhau. API key chỉ được lưu trong `.env` hoặc secret vault và không được commit vào Git.

@@ -82,13 +82,13 @@ class EmbeddingService:
 
     @property
     def model_name(self) -> str:
-        if self.backend == "sentence_transformers":
+        if get_ai_service_client().enabled or self.backend in {"sentence_transformers", "gemini"}:
             return self.configured_model_name
         return f"deterministic-hash-{self.dimension}"
 
     @property
     def version(self) -> str:
-        if self.backend == "sentence_transformers":
+        if get_ai_service_client().enabled or self.backend in {"sentence_transformers", "gemini"}:
             return self.configured_version
         return f"deterministic-hash-{self.dimension}-v1"
 
@@ -195,11 +195,15 @@ class EmbeddingService:
             return []
         ai_client = get_ai_service_client()
         if ai_client.enabled:
-            result = ai_client.count_tokens(texts)
-            self._remote_max_input_tokens = int(result["max_input_tokens"])
-            counts = [int(count) for count in result["token_counts"]]
-            if len(counts) != len(texts):
-                raise RuntimeError("AI service token count does not match input count")
+            counts: list[int] = []
+            for start in range(0, len(texts), self.batch_size):
+                batch = texts[start:start + self.batch_size]
+                result = ai_client.count_tokens(batch)
+                self._remote_max_input_tokens = int(result["max_input_tokens"])
+                batch_counts = [int(count) for count in result["token_counts"]]
+                if len(batch_counts) != len(batch):
+                    raise RuntimeError("AI service token count does not match input count")
+                counts.extend(batch_counts)
             return counts
         tokenizer = self._load_tokenizer()
         if tokenizer is None:
@@ -221,13 +225,72 @@ class EmbeddingService:
         norm = math.sqrt(sum(value * value for value in vector))
         return [value / norm for value in vector] if norm else vector
 
-    def _embed_once(self, texts: list[str]) -> list[list[float]]:
+    def _embed_gemini(
+        self, texts: list[str], *, input_type: str = "document"
+    ) -> list[list[float]]:
+        api_key = settings.GOOGLE_AI_API_KEY
+        if not api_key:
+            raise RuntimeError("GOOGLE_AI_API_KEY is required for Gemini embeddings")
+        model = f"models/{self.configured_model_name.removeprefix('models/')}"
+        task_type = (
+            "RETRIEVAL_QUERY" if input_type == "query" else "RETRIEVAL_DOCUMENT"
+        )
+        vectors: list[list[float]] = []
+        import httpx
+
+        for start in range(0, len(texts), self.batch_size):
+            batch = texts[start : start + self.batch_size]
+            response = httpx.post(
+                f"https://generativelanguage.googleapis.com/v1beta/{model}:batchEmbedContents",
+                headers={
+                    "x-goog-api-key": api_key,
+                    "Content-Type": "application/json",
+                },
+                json={
+                    "requests": [
+                        {
+                            "model": model,
+                            "content": {"parts": [{"text": text}]},
+                            "taskType": task_type,
+                            "outputDimensionality": self.dimension,
+                        }
+                        for text in batch
+                    ]
+                },
+                timeout=60,
+            )
+            response.raise_for_status()
+            embeddings = response.json().get("embeddings", [])
+            if len(embeddings) != len(batch):
+                raise RuntimeError("Gemini embedding result count mismatch")
+            for row in embeddings:
+                raw_vec = row.get("values", [])
+                if len(raw_vec) != self.dimension:
+                    raise RuntimeError(
+                        f"Gemini returned {len(raw_vec)} dimensions; expected {self.dimension}"
+                    )
+                norm = math.sqrt(sum(v * v for v in raw_vec))
+                vectors.append([v / norm for v in raw_vec] if norm else raw_vec)
+        return vectors
+
+    def _embed_once(
+        self, texts: list[str], *, input_type: str = "document"
+    ) -> list[list[float]]:
         ai_client = get_ai_service_client()
         if ai_client.enabled:
-            result = ai_client.embed(texts)
-            if int(result["dimension"]) != self.dimension:
-                raise RuntimeError("AI service embedding dimension mismatch")
-            return list(result["vectors"])
+            vectors: list[list[float]] = []
+            for start in range(0, len(texts), self.batch_size):
+                batch = texts[start:start + self.batch_size]
+                result = ai_client.embed(batch, input_type=input_type)
+                if int(result["dimension"]) != self.dimension:
+                    raise RuntimeError("AI service embedding dimension mismatch")
+                batch_vectors = list(result["vectors"])
+                if len(batch_vectors) != len(batch):
+                    raise RuntimeError("AI service embedding result count does not match input count")
+                vectors.extend(batch_vectors)
+            return vectors
+        if self.backend == "gemini":
+            return self._embed_gemini(texts, input_type=input_type)
         model = self._load_model()
         if model is None:
             return [self._deterministic_embedding(text) for text in texts]
@@ -240,13 +303,15 @@ class EmbeddingService:
         )
         return vectors.tolist()
 
-    def embed_texts(self, texts: list[str]) -> list[list[float]]:
+    def embed_texts(
+        self, texts: list[str], *, input_type: str = "document"
+    ) -> list[list[float]]:
         if not texts:
             return []
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                vectors = self._embed_once(texts)
+                vectors = self._embed_once(texts, input_type=input_type)
                 if len(vectors) != len(texts):
                     raise RuntimeError("Embedding result count does not match input count")
                 if any(len(vector) != self.dimension for vector in vectors):
@@ -267,11 +332,13 @@ class EmbeddingService:
             if int(result["dimension"]) != self.dimension:
                 raise RuntimeError("AI service embedding dimension mismatch")
             return list(result["vectors"][0])
+        if self.backend == "gemini":
+            return self._embed_gemini([question], input_type="query")[0]
         query_text = (
             "Truy xuất tài liệu nội bộ phù hợp để trả lời câu hỏi:\n"
             f"{question.strip()}"
         )
-        return self.embed_texts([query_text])[0]
+        return self.embed_texts([query_text], input_type="query")[0]
 
 
 @lru_cache(maxsize=1)

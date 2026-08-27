@@ -29,9 +29,22 @@ logger = logging.getLogger(__name__)
 _locks_guard = threading.Lock()
 _document_locks: dict[uuid.UUID, threading.Lock] = {}
 
+_FAILED_STAGE_BY_CHECKPOINT = {
+    "uploaded": "parsing",
+    "parsed": "chunking",
+    "chunked": "embedding",
+    "embedded": "indexing",
+    "ready": "ready",
+}
+
 
 class DocumentAlreadyProcessing(RuntimeError):
     """Raised when another request is already advancing this document."""
+
+
+def failed_stage_from_checkpoint(checkpoint: str | None) -> str:
+    """Identify the pipeline stage immediately following a durable checkpoint."""
+    return _FAILED_STAGE_BY_CHECKPOINT.get(checkpoint or "uploaded", "parsing")
 
 
 def _document_lock(record_id: uuid.UUID) -> threading.Lock:
@@ -274,6 +287,7 @@ def resume_document_ingestion(db: Session, record_id: uuid.UUID) -> list[Documen
     lock = _document_lock(record_id)
     if not lock.acquire(blocking=False):
         raise DocumentAlreadyProcessing("Document processing is already running")
+    checkpoint = "uploaded"
     try:
         record = db.query(KnowledgeDocument).filter(
             KnowledgeDocument.id == record_id
@@ -344,7 +358,12 @@ def resume_document_ingestion(db: Session, record_id: uuid.UUID) -> list[Documen
     except DocumentAlreadyProcessing:
         raise
     except Exception as exc:
-        logger.exception("Checkpointed ingestion failed for document %s", record_id)
+        failed_stage = failed_stage_from_checkpoint(checkpoint)
+        logger.exception(
+            "Checkpointed ingestion failed for document %s at stage %s",
+            record_id,
+            failed_stage,
+        )
         db.rollback()
         failed = db.query(KnowledgeDocument).filter(
             KnowledgeDocument.id == record_id

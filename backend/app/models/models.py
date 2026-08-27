@@ -1135,7 +1135,7 @@ class DocumentChunk(Base):
     embedding_version: Mapped[str | None] = mapped_column(String(100), nullable=True)
     embedding_status: Mapped[str] = mapped_column(String(20), default="pending")
     metadata_: Mapped[dict] = mapped_column("metadata", JSONB, default=dict)
-    embedding: Mapped[list[float] | None] = mapped_column(Vector(1024), nullable=True)
+    embedding: Mapped[list[float] | None] = mapped_column(Vector(768), nullable=True)
     dense_embedding: Mapped[list[float] | None] = mapped_column(
         Vector(1536), nullable=True
     )

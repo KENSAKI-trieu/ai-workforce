@@ -6,6 +6,7 @@ import logging
 import mimetypes
 import re
 import socket
+import time
 import uuid
 from datetime import date
 from html.parser import HTMLParser
@@ -14,16 +15,27 @@ from typing import Any, Optional
 from urllib.parse import quote, urljoin, urlparse
 
 import httpx
-from fastapi import APIRouter, Depends, File, Form, HTTPException, Response, UploadFile
+from fastapi import (
+    APIRouter,
+    BackgroundTasks,
+    Depends,
+    File,
+    Form,
+    HTTPException,
+    Response,
+    UploadFile,
+)
+from fastapi.responses import StreamingResponse
 from pydantic import AnyHttpUrl, BaseModel, Field
 from sqlalchemy import and_, or_
 from sqlalchemy.orm import Session
 
-from app.core.database import get_db
+from app.core.database import SyncSessionLocal, get_db
 from app.core.security import get_current_active_user
 from app.models.models import DocumentChunk, KnowledgeDocument, User
 from app.services.document_ingestion import (
     DocumentAlreadyProcessing,
+    failed_stage_from_checkpoint,
     resume_document_ingestion,
 )
 from app.services.document_parser import DocumentParseError, extract_file_text
@@ -50,6 +62,42 @@ VALID_DOCUMENT_STATUSES = {"draft", "active", "inactive", "archived"}
 VALID_CONFIDENTIALITY = {"public", "internal", "confidential", "restricted"}
 MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 VALID_DUPLICATE_STRATEGIES = {"prompt", "replace", "keep_old"}
+
+
+def _resume_document_ingestion_background(record_id: uuid.UUID) -> None:
+    """Run durable ingestion after the upload response has been sent."""
+    with SyncSessionLocal() as background_db:
+        try:
+            resume_document_ingestion(background_db, record_id)
+        except Exception:
+            # resume_document_ingestion persists the failed checkpoint and error.
+            logger.exception("Background ingestion failed for document %s", record_id)
+
+
+def _processing_status_payload(record: KnowledgeDocument) -> dict[str, Any]:
+    failed_stage = (
+        failed_stage_from_checkpoint(record.processing_checkpoint)
+        if record.processing_status == "failed"
+        else None
+    )
+    return {
+        "document_id": record.document_id,
+        "document_name": record.file_name,
+        "version": record.version,
+        "processing_status": record.processing_status,
+        "processing_checkpoint": record.processing_checkpoint,
+        "processing_progress": record.processing_progress,
+        "processing_attempts": record.processing_attempts,
+        "chunk_count": record.chunk_count,
+        "embedding_model": record.embedding_model,
+        "failed_stage": failed_stage,
+        "error_message": record.error_message,
+        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
+    }
+
+
+def _sse_event(event: str, payload: dict[str, Any]) -> str:
+    return f"event: {event}\ndata: {json.dumps(payload, ensure_ascii=False)}\n\n"
 
 
 def _notify_indexed(db: Session, user: User, document_name: str, chunks: int) -> None:
@@ -718,19 +766,87 @@ def get_document_processing_status(
     }:
         raise HTTPException(status_code=404, detail="Document processing status not found")
 
-    return {
-        "document_id": record.document_id,
-        "document_name": record.file_name,
-        "version": record.version,
-        "processing_status": record.processing_status,
-        "processing_checkpoint": record.processing_checkpoint,
-        "processing_progress": record.processing_progress,
-        "processing_attempts": record.processing_attempts,
-        "chunk_count": record.chunk_count,
-        "embedding_model": record.embedding_model,
-        "error_message": record.error_message,
-        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
-    }
+    return _processing_status_payload(record)
+
+
+@router.get(
+    "/processing-events/{document_id}",
+    summary="Stream document processing stages in real time",
+)
+def stream_document_processing_events(
+    document_id: str,
+    version: str = "1.0",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> StreamingResponse:
+    """Stream committed pipeline transitions and terminate at ready or failed."""
+    if current_user.role not in KB_MANAGERS:
+        raise HTTPException(status_code=403, detail="Insufficient permission to manage knowledge")
+
+    initial = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.tenant_id == current_user.tenant_id,
+        KnowledgeDocument.document_id == document_id,
+        KnowledgeDocument.version == version,
+    ).first()
+    if not initial or (
+        current_user.role == "Manager"
+        and initial.department not in {"ALL", current_user.department}
+    ):
+        raise HTTPException(status_code=404, detail="Document processing status not found")
+
+    tenant_id = current_user.tenant_id
+    manager_department = current_user.department if current_user.role == "Manager" else None
+
+    def events():
+        deadline = time.monotonic() + 15 * 60
+        last_payload: str | None = None
+        heartbeat_at = time.monotonic()
+        while time.monotonic() < deadline:
+            with SyncSessionLocal() as event_db:
+                record = event_db.query(KnowledgeDocument).filter(
+                    KnowledgeDocument.tenant_id == tenant_id,
+                    KnowledgeDocument.document_id == document_id,
+                    KnowledgeDocument.version == version,
+                ).first()
+                if not record or (
+                    manager_department is not None
+                    and record.department not in {"ALL", manager_department}
+                ):
+                    yield _sse_event("error", {
+                        "code": "DOCUMENT_NOT_FOUND",
+                        "message": "Document processing status not found",
+                    })
+                    return
+                payload = _processing_status_payload(record)
+
+            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            if serialized != last_payload:
+                status = str(payload["processing_status"])
+                event = status if status in {"ready", "failed"} else "status"
+                yield _sse_event(event, payload)
+                last_payload = serialized
+                heartbeat_at = time.monotonic()
+                if status in {"ready", "failed"}:
+                    return
+            elif time.monotonic() - heartbeat_at >= 10:
+                yield ": keep-alive\n\n"
+                heartbeat_at = time.monotonic()
+            time.sleep(0.5)
+
+        yield _sse_event("error", {
+            "code": "PIPELINE_STREAM_TIMEOUT",
+            "message": "Document processing stream timed out",
+        })
+
+    return StreamingResponse(
+        events(),
+        media_type="text/event-stream",
+        headers={
+            "Cache-Control": "no-cache, no-transform",
+            "X-Accel-Buffering": "no",
+            "Connection": "keep-alive",
+        },
+    )
 
 
 @router.post(
@@ -913,6 +1029,7 @@ def preview_document_chunks(
 @router.post("/upload", status_code=201, summary="Upload PDF, DOCX, TXT or CSV")
 def upload_document(
     response: Response,
+    background_tasks: BackgroundTasks,
     file: UploadFile = File(...),
     department_access: str = Form("ALL"),
     collection_name: str = Form("General Knowledge"),
@@ -930,6 +1047,7 @@ def upload_document(
     chunk_size: int = Form(CHUNK_SIZE_TOKENS),
     chunk_overlap: int = Form(CHUNK_OVERLAP_TOKENS),
     parent_chunk_size: int = Form(1024),
+    async_processing: bool = Form(True),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
@@ -1058,6 +1176,23 @@ def upload_document(
         source_hash=source_hash,
         chunking_config=chunking_config,
     )
+    if async_processing:
+        background_tasks.add_task(_resume_document_ingestion_background, record.id)
+        response.status_code = 202
+        return {
+            "success": True,
+            "document_id": resolved_document_id,
+            "document_name": filename,
+            "version": resolved_version,
+            "status": "ACCEPTED",
+            "processing_status": "uploaded",
+            "processing_checkpoint": "uploaded",
+            "processing_progress": 0,
+            "storage_key": storage_key,
+            "embedding_model": None,
+            "chunks_created": 0,
+        }
+
     chunks = resume_document_ingestion(db, record.id)
     return {
         "success": True,

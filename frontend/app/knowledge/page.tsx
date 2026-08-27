@@ -10,7 +10,7 @@ import KnowledgeShell from "./_components/KnowledgeShell";
 import DeleteDocumentDialog from "./_components/DeleteDocumentDialog";
 import RetrievalTestDialog from "./_components/RetrievalTestDialog";
 import type { KnowledgeDocument } from "./_lib/types";
-import { formatDate, messageFrom } from "./_lib/utils";
+import { formatDate, messageFrom, processingMessage } from "./_lib/utils";
 import styles from "./knowledge.module.css";
 
 const statusLabel: Record<string, string> = {
@@ -153,7 +153,7 @@ export default function KnowledgePage() {
                       </span>
                     </span>
                     <span className={styles.documentDescription}>
-                      {item.error_message || "Tài liệu sẵn sàng để xem trước nội dung và kiểm tra từng chunk đã được tạo."}
+                      {item.error_message ? processingMessage(item.error_message) : "Tài liệu sẵn sàng để xem trước nội dung và kiểm tra từng chunk đã được tạo."}
                     </span>
                     <span className={styles.documentFooter}>
                       <span className={styles.metrics}>

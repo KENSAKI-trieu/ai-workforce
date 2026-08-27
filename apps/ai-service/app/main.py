@@ -235,9 +235,7 @@ def chunk_text(request: ChunkRequest) -> ChunkResponse:
 async def create_embeddings(request: EmbeddingRequest) -> EmbeddingResponse:
     provider = get_embedding_provider()
     texts = request.texts
-    if request.input_type == "query":
-        texts = [provider.prepare_query(text) for text in texts]
-    vectors = provider.embed(texts)
+    vectors = provider.embed_for_type(texts, input_type=request.input_type)
     return EmbeddingResponse(
         vectors=vectors,
         token_counts=[provider.count_tokens(text) for text in texts],

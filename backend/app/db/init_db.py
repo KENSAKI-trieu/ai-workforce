@@ -92,7 +92,7 @@ def init_db():
         "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_model VARCHAR(255)",
         "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_version VARCHAR(100)",
         "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding_status VARCHAR(20) NOT NULL DEFAULT 'pending'",
-        "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector(1024)",
+        "ALTER TABLE document_chunks ADD COLUMN IF NOT EXISTS embedding vector(768)",
         "UPDATE document_chunks SET document_title = COALESCE(document_title, document_name), source_file = COALESCE(source_file, document_name), section_title = COALESCE(section_title, metadata->>'section_title', 'Chunk ' || chunk_index)",
         "ALTER TABLE document_chunks DROP CONSTRAINT IF EXISTS ck_doc_chunks_status",
         "ALTER TABLE document_chunks ADD CONSTRAINT ck_doc_chunks_status CHECK (status IN ('draft', 'active', 'inactive', 'archived'))",

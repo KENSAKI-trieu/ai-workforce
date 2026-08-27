@@ -11,7 +11,7 @@ import { useKnowledgeWorkflowStore } from "@/store/useKnowledgeWorkflowStore";
 import KnowledgeShell from "../_components/KnowledgeShell";
 import WizardHeader from "../_components/WizardHeader";
 import type { PipelineStage, ProcessingStatus } from "../_lib/types";
-import { formatFileSize, messageFrom } from "../_lib/utils";
+import { formatFileSize, messageFrom, processingMessage } from "../_lib/utils";
 import styles from "../knowledge.module.css";
 
 const stages: Array<{ key: Exclude<PipelineStage, "failed">; label: string; description: string }> = [
@@ -36,6 +36,7 @@ export default function KnowledgePipelinePage() {
   const { hasHydrated, isAuthenticated } = useAuthStore();
   const workflow = useKnowledgeWorkflowStore();
   const [stage, setStage] = useState<PipelineStage>("uploading");
+  const [failedStage, setFailedStage] = useState<Exclude<PipelineStage, "failed"> | null>(null);
   const [progress, setProgress] = useState(0);
   const [chunkCount, setChunkCount] = useState<number | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -43,38 +44,117 @@ export default function KnowledgePipelinePage() {
   const [busy, setBusy] = useState(false);
   const started = useRef(false);
   const pollingGeneration = useRef(0);
+  const eventStreamAbort = useRef<AbortController | null>(null);
+
+  const applyStatus = useCallback((data: ProcessingStatus): boolean => {
+    const nextStage = data.processing_status === "uploaded" ? "parsing" : data.processing_status;
+    setProgress(data.processing_progress);
+    setChunkCount(data.chunk_count);
+    if (nextStage === "failed") {
+      const failedAt = data.failed_stage || "uploading";
+      const failedLabel = stages.find((item) => item.key === failedAt)?.label || failedAt;
+      setFailedStage(failedAt);
+      setStage("failed");
+      setError(`${failedLabel}: ${processingMessage(data.error_message)}`);
+      console.error("[Knowledge pipeline failed]", {
+        documentId: data.document_id,
+        stage: failedAt,
+        checkpoint: data.processing_checkpoint,
+        error: data.error_message,
+        updatedAt: data.updated_at,
+      });
+      return true;
+    }
+    setFailedStage(null);
+    setStage(nextStage);
+    return nextStage === "ready";
+  }, []);
 
   const pollStatus = useCallback(async (documentId: string, generation: number) => {
     while (pollingGeneration.current === generation) {
       try {
         const { data } = await api.get<ProcessingStatus>(`/api/v1/documents/processing-status/${encodeURIComponent(documentId)}`, { params: { version: "1.0" }, timeout: 5000 });
         if (pollingGeneration.current !== generation) return;
-        const nextStage = data.processing_status === "uploaded" ? "parsing" : data.processing_status;
-        if (nextStage === "failed") {
-          setStage("failed");
-          setError(data.error_message || "Không thể xử lý tài liệu.");
-          return;
-        }
-        setStage(nextStage);
-        setProgress(data.processing_progress);
-        setChunkCount(data.chunk_count);
-        if (nextStage === "ready") return;
+        if (applyStatus(data)) return;
       } catch {
         // The durable document record may not exist until the upload reaches the server.
       }
       await new Promise((resolve) => window.setTimeout(resolve, 650));
     }
-  }, []);
+  }, [applyStatus]);
+
+  const streamStatus = useCallback(async (
+    documentId: string,
+    version: string,
+    generation: number,
+  ) => {
+    const controller = new AbortController();
+    eventStreamAbort.current?.abort();
+    eventStreamAbort.current = controller;
+    try {
+      const baseUrl = api.defaults.baseURL || window.location.origin;
+      const url = new URL(
+        `/api/v1/documents/processing-events/${encodeURIComponent(documentId)}`,
+        baseUrl,
+      );
+      url.searchParams.set("version", version);
+      const token = localStorage.getItem("access_token");
+      const response = await fetch(url, {
+        credentials: "include",
+        headers: {
+          Accept: "text/event-stream",
+          ...(token ? { Authorization: `Bearer ${token}` } : {}),
+        },
+        signal: controller.signal,
+      });
+      if (!response.ok || !response.body) {
+        throw new Error(`Pipeline event stream returned HTTP ${response.status}`);
+      }
+
+      const reader = response.body.getReader();
+      const decoder = new TextDecoder();
+      let buffer = "";
+      while (pollingGeneration.current === generation) {
+        const { done, value } = await reader.read();
+        if (done) return;
+        buffer += decoder.decode(value, { stream: true });
+        const blocks = buffer.split(/\r?\n\r?\n/);
+        buffer = blocks.pop() || "";
+        for (const block of blocks) {
+          const dataText = block
+            .split(/\r?\n/)
+            .filter((line) => line.startsWith("data:"))
+            .map((line) => line.slice(5).trimStart())
+            .join("\n");
+          if (!dataText) continue;
+          const data = JSON.parse(dataText) as ProcessingStatus | { code: string; message: string };
+          if ("processing_status" in data) {
+            if (applyStatus(data)) return;
+          } else {
+            throw new Error(`${data.code}: ${data.message}`);
+          }
+        }
+      }
+    } catch (reason) {
+      if (controller.signal.aborted || pollingGeneration.current !== generation) return;
+      console.warn("[Knowledge pipeline stream disconnected; falling back to polling]", {
+        documentId,
+        error: reason instanceof Error ? reason.message : String(reason),
+      });
+      void pollStatus(documentId, generation);
+    }
+  }, [applyStatus, pollStatus]);
 
   const upload = useCallback(async (duplicateStrategy: "prompt" | "replace" | "keep_old") => {
     if (!workflow.file) return;
     setBusy(true);
     setError(null);
     setDuplicate(null);
+    setFailedStage(null);
     setStage("uploading");
     setProgress(0);
-    const generation = ++pollingGeneration.current;
-    void pollStatus(workflow.file.name, generation);
+    eventStreamAbort.current?.abort();
+    pollingGeneration.current += 1;
     try {
       const body = new FormData();
       body.append("file", workflow.file);
@@ -85,17 +165,32 @@ export default function KnowledgePipelinePage() {
       body.append("chunk_size", String(workflow.config.chunk_size));
       body.append("chunk_overlap", String(workflow.config.chunk_overlap));
       body.append("parent_chunk_size", String(workflow.config.parent_chunk_size));
-      const { data } = await api.post<{ document_id: string; version?: string; chunks_created?: number }>("/api/v1/documents/upload", body, {
+      body.append("async_processing", "true");
+      const { data } = await api.post<{
+        document_id: string;
+        version?: string;
+        chunks_created?: number;
+        processing_status?: ProcessingStatus["processing_status"];
+        processing_progress?: number;
+      }>("/api/v1/documents/upload", body, {
+        timeout: 60000,
         onUploadProgress: (event) => {
           const total = event.total || workflow.file?.size || 1;
           setProgress(Math.min(100, Math.round((event.loaded / total) * 100)));
         },
       });
-      pollingGeneration.current += 1;
       workflow.setUploadedDocument(data.document_id, data.version || "1.0");
-      setChunkCount(data.chunks_created ?? 0);
-      setStage("ready");
-      setProgress(100);
+      setChunkCount(data.chunks_created ?? null);
+      if (data.processing_status === "ready") {
+        pollingGeneration.current += 1;
+        setStage("ready");
+        setProgress(100);
+      } else {
+        const statusGeneration = ++pollingGeneration.current;
+        setStage(data.processing_status === "uploaded" || !data.processing_status ? "parsing" : data.processing_status);
+        setProgress(data.processing_progress ?? 0);
+        void streamStatus(data.document_id, data.version || "1.0", statusGeneration);
+      }
     } catch (reason) {
       pollingGeneration.current += 1;
       if (axios.isAxiosError(reason) && reason.response?.status === 409) {
@@ -111,7 +206,7 @@ export default function KnowledgePipelinePage() {
     } finally {
       setBusy(false);
     }
-  }, [pollStatus, workflow]);
+  }, [streamStatus, workflow]);
 
   useEffect(() => {
     if (!hasHydrated) return;
@@ -125,6 +220,7 @@ export default function KnowledgePipelinePage() {
     void upload("prompt");
     return () => {
       pollingGeneration.current += 1;
+      eventStreamAbort.current?.abort();
     };
   }, [hasHydrated, isAuthenticated, router, upload, workflow.file]);
 
@@ -138,7 +234,7 @@ export default function KnowledgePipelinePage() {
   if (!workflow.file) return null;
   const failed = stage === "failed";
   const ready = stage === "ready";
-  const currentRank = failed ? 0 : rank[stage];
+  const currentRank = failed ? rank[failedStage || "uploading"] : rank[stage];
 
   return (
     <KnowledgeShell>

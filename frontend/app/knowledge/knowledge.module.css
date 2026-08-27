@@ -30,7 +30,7 @@
 .documentOpen .documentHead { padding-right: 38px; }
 .empty { display: grid; place-items: center; gap: 9px; min-height: 280px; padding: 36px; color: var(--text-muted); text-align: center; }
 .empty strong { color: var(--text-dark); font-size: 16px; }
-.error { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #FCA5A5; border-radius: 10px; color: var(--danger-text); background: var(--danger-bg); font-size: 13px; }
+.error { padding: 12px 14px; margin-bottom: 16px; border: 1px solid #FCA5A5; border-radius: 10px; color: var(--danger-text); background: var(--danger-bg); font-size: 13px; overflow-wrap: anywhere; }
 .loading { display: flex; align-items: center; justify-content: center; gap: 8px; min-height: 240px; color: var(--text-muted); }
 
 .deleteBackdrop { position: fixed; z-index: 1100; inset: 0; display: grid; place-items: center; padding: 24px; background: rgb(15 23 42 / 52%); backdrop-filter: blur(2px); }

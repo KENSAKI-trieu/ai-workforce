@@ -46,16 +46,16 @@ Browser -> Frontend -> Backend -> PostgreSQL / Redis
 
 ## 必要な AI モデルと外部 API
 
-現在のテスト環境では、Embedding はローカルモデル、Reranking は Jina の外部 API を使用します。
+現在のテスト環境では、Embedding は Gemini API、Reranking は Jina の外部 API を使用します。
 
 | 用途 | モデル | 設定 |
 | --- | --- | --- |
-| Embedding | `Qwen/Qwen3-Embedding-0.6B` | 1024 次元、`sentence-transformers` |
+| Embedding | `gemini-embedding-001` | 768 次元、Gemini API |
 | Reranking | `jina-reranker-v3.5` | Jina Rerank API |
 
 現在の Reranking 設定は `RERANK_BACKEND=jina` です。候補文書は AI Service から Jina API に送信され、返されたスコアで並べ替えられます。`BAAI/bge-reranker-v2-m3` はローカル実行へ切り替える場合の代替モデルであり、現在の Reranking では使用していません。
 
-Embedding モデルは初回リクエスト時に自動ダウンロードされます。Docker では `hf_models` volume に保存されるため、コンテナを再作成しても通常は再ダウンロードされません。
+Embedding は AI Service から Gemini API に送信されます。`GOOGLE_AI_API_KEY` は `.env` またはシークレット管理基盤にのみ保存し、Git にコミットしないでください。
 
 チャット LLM はローカルへのインストールが不要です。必要に応じて API キーを設定します。
 
@@ -95,17 +95,15 @@ SEED_DEFAULT_PASSWORD=デモユーザー用の強いパスワード
 
 プロジェクトのルートに `.env` を作成します。これは `backend/.env` とは別のファイルです。Compose の `${...}` 展開に使用されます。
 
-NVIDIA GPU を使用する例:
+Gemini Embedding を使用する例:
 
 ```dotenv
 AI_SERVICE_INTERNAL_TOKEN=十分に長いランダムな内部トークン
 
-AI_EMBEDDING_BACKEND=sentence_transformers
-AI_EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
-AI_EMBEDDING_VERSION=qwen3-embedding-v1
-AI_EMBEDDING_DIMENSION=1024
-AI_EMBEDDING_DEVICE=cuda
-AI_EMBEDDING_DTYPE=float16
+AI_EMBEDDING_BACKEND=gemini
+AI_EMBEDDING_MODEL_NAME=gemini-embedding-001
+AI_EMBEDDING_VERSION=gemini-embedding-001-v1
+AI_EMBEDDING_DIMENSION=768
 
 AI_RERANK_BACKEND=jina
 JINA_RERANK_MODEL=jina-reranker-v3.5
@@ -113,25 +111,23 @@ JINA_API_KEY=Jina の API キー
 
 # 生成 AI を使用する場合のみ設定する
 OPENAI_API_KEY=
-GOOGLE_AI_API_KEY=
+GOOGLE_AI_API_KEY=Gemini の API キー
 OPENAI_CHAT_MODEL=gpt-4o-mini
 GEMINI_CHAT_MODEL=gemini-3.6-flash
 ```
 
 `.env`、API キー、パスワード、token は Git にコミットしないでください。
 
-### 3. CPU のみで実行する場合
+### 3. ローカル GPU を使用しない場合
 
-ルート `.env` のデバイスと dtype を次のように変更します。
+Gemini Embedding と Jina Rerank は外部 API のため、Embedding 用のローカル GPU は不要です。ローカル BGE reranker に切り替える場合のみ、次を設定します。
 
 ```dotenv
-AI_EMBEDDING_DEVICE=cpu
-AI_EMBEDDING_DTYPE=float32
+AI_RERANK_DEVICE=cpu
+AI_RERANK_DTYPE=float32
 ```
 
-Jina Rerank API は外部サービスのため、CPU/GPU の切り替えは不要です。ローカル BGE に切り替える場合のみ `AI_RERANK_DEVICE=cpu` と `AI_RERANK_DTYPE=float32` を設定してください。
-
-さらに、`docker-compose.yml` の `ai-service` にある次の GPU reservation を削除、またはコメントアウトしてください。
+Gemini/Jina のみを使用する場合は、`docker-compose.yml` の `ai-service` にある次の GPU reservation を削除、またはコメントアウトしてください。
 
 ```yaml
 deploy:
@@ -143,7 +139,7 @@ deploy:
           capabilities: [gpu]
 ```
 
-CPU でも動作しますが、Embedding は GPU より時間がかかります。Jina Rerank API の処理速度はローカル GPU の有無に依存しません。
+Gemini Embedding と Jina Rerank の処理速度は、ローカル GPU の有無に依存しません。
 
 ### 4. ビルドして起動する
 
@@ -160,27 +156,9 @@ docker compose ps
 docker compose logs -f ai-service backend worker
 ```
 
-### 5. Embedding モデルを事前ダウンロードする
+### 5. Embedding API を確認する
 
-事前ダウンロードは任意です。実行しない場合も、最初の Embedding リクエスト時に自動ダウンロードされます。現在の Reranking は Jina API を利用するため、BGE モデルのダウンロードは不要です。
-
-```bash
-docker compose exec ai-service python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', cache_folder='/models/huggingface/hub'); print('Embedding model downloaded')"
-```
-
-モデルキャッシュへの書き込み権限エラーが出た場合は、一度だけ次を実行してから再試行します。
-
-```bash
-docker compose run --rm --user root ai-service sh -c "mkdir -p /models/huggingface/hub && chown -R ai:ai /models/huggingface"
-```
-
-ダウンロード完了後、オフライン運用する場合はルート `.env` に次を追加して再起動できます。
-
-```dotenv
-AI_EMBEDDING_LOCAL_FILES_ONLY=true
-```
-
-`AI_RERANK_LOCAL_FILES_ONLY=true` はローカル BGE を使用する場合にのみ必要です。
+Gemini Embedding はモデルの事前ダウンロードを必要としません。`GOOGLE_AI_API_KEY` を設定し、AI Service から Gemini API への外向き HTTPS 通信を許可してください。`AI_RERANK_LOCAL_FILES_ONLY=true` はローカル BGE を使用する場合にのみ必要です。
 
 ```bash
 docker compose up -d
@@ -262,21 +240,17 @@ python -m pip install -e ".[huggingface,test]"
 Copy-Item .env.example .env
 ```
 
-CPU の場合は `apps/ai-service/.env` を次のように変更します。
+`apps/ai-service/.env` を次のように設定します。
 
 ```dotenv
-EMBEDDING_DEVICE=cpu
-EMBEDDING_DTYPE=float32
-EMBEDDING_CACHE_FOLDER=.cache/huggingface
+EMBEDDING_BACKEND=gemini
+EMBEDDING_MODEL_NAME=gemini-embedding-001
+EMBEDDING_VERSION=gemini-embedding-001-v1
+EMBEDDING_DIMENSION=768
+GOOGLE_AI_API_KEY=Gemini の API キー
 RERANK_BACKEND=jina
 JINA_RERANK_MODEL=jina-reranker-v3.5
 JINA_API_KEY=Jina の API キー
-```
-
-Embedding モデルを事前ダウンロードします。Jina Reranking 用のローカルモデルは不要です。
-
-```powershell
-python -c "from sentence_transformers import SentenceTransformer; SentenceTransformer('Qwen/Qwen3-Embedding-0.6B', cache_folder='.cache/huggingface'); print('Embedding model downloaded')"
 ```
 
 AI Service を起動します。
@@ -337,22 +311,21 @@ npm run build
 
 - `nvidia-smi` で GPU が認識されているか確認します。
 - NVIDIA Container Toolkit が設定されているか確認します。
-- CPU 環境では GPU reservation を削除し、device を `cpu`、dtype を `float32` に変更します。
+- Gemini/Jina のみを使用する環境では GPU reservation を削除します。このエラーはローカル BGE を選択した場合にのみ関係します。
 
-### モデルをダウンロードできない
+### Gemini Embedding API に接続できない
 
-- インターネット接続、proxy、firewall を確認します。
-- キャッシュディレクトリの書き込み権限を確認します。
-- 初回ダウンロードが完了するまでは `*_LOCAL_FILES_ONLY=false` にします。
+- `GOOGLE_AI_API_KEY`、インターネット接続、proxy、firewall を確認します。
+- Backend と AI Service の model/version/dimension が一致していることを確認します。
 
 ### Embedding の dimension エラー
 
-`Qwen/Qwen3-Embedding-0.6B` の既定 dimension は `1024` です。次の設定を Backend と AI Service で一致させてください。
+`gemini-embedding-001` はこのプロジェクトで 768 次元を使用します。次の設定を Backend と AI Service で一致させてください。
 
 ```dotenv
-EMBEDDING_MODEL_NAME=Qwen/Qwen3-Embedding-0.6B
-EMBEDDING_VERSION=qwen3-embedding-v1
-EMBEDDING_DIMENSION=1024
+EMBEDDING_MODEL_NAME=gemini-embedding-001
+EMBEDDING_VERSION=gemini-embedding-001-v1
+EMBEDDING_DIMENSION=768
 ```
 
 モデル、version、dimension を変更した場合は、既存文書を新しい embedding space で再インデックスする必要があります。異なるモデルの vector を同じ index に混在させないでください。

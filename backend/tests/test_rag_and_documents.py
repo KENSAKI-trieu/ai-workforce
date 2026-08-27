@@ -289,7 +289,7 @@ def test_embedding_text_hash_and_batch_vectors_are_stable():
     assert "Tên tài liệu: Chính sách nghỉ phép" in embedding_text
     assert calculate_content_hash("a  b\n c") == calculate_content_hash("a b c")
     assert len(vectors) == 2
-    assert len(vectors[0]) == service.dimension == 1024
+    assert len(vectors[0]) == service.dimension
     assert vectors[0] == vectors[1]
 
 

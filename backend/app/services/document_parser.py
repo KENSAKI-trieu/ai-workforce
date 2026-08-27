@@ -20,7 +20,8 @@ def _extract_docx(data: bytes) -> str:
             paragraph_text = paragraph.text.strip()
             if not paragraph_text:
                 continue
-            style_name = (paragraph.style.name or "").lower()
+            style = paragraph.style
+            style_name = (getattr(style, "name", "") or "").lower()
             heading_match = re.match(r"heading\s*(\d+)", style_name)
             if heading_match:
                 level = min(int(heading_match.group(1)), 6)

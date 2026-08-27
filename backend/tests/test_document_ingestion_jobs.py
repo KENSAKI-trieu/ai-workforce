@@ -4,6 +4,7 @@ import uuid
 
 import pytest
 
+from app.api.v1 import documents
 from app.models.models import DocumentChunk, KnowledgeDocument
 from app.services import document_ingestion
 from app.services.embedding_service import get_embedding_service
@@ -42,6 +43,73 @@ def test_upload_runs_without_document_worker(
     assert record.processing_status == "ready"
     assert record.processing_checkpoint == "ready"
     assert record.chunk_count >= 1
+
+
+def test_async_upload_acknowledges_before_ingestion(
+    client, ceo_token_headers, transactional_db_session, monkeypatch
+):
+    document_id = f"checkpoint-async-{uuid.uuid4().hex}"
+    scheduled: list[uuid.UUID] = []
+    monkeypatch.setattr(
+        documents,
+        "_resume_document_ingestion_background",
+        lambda record_id: scheduled.append(record_id),
+    )
+
+    response = client.post(
+        "/api/v1/documents/upload",
+        headers=ceo_token_headers,
+        data={
+            "document_id": document_id,
+            "version": "1.0",
+            "duplicate_strategy": "replace",
+            "async_processing": "true",
+        },
+        files={
+            "file": (
+                f"{document_id}.md",
+                b"# Async ingestion\nAcknowledge the upload before embedding.",
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["status"] == "ACCEPTED"
+    assert response.json()["processing_status"] == "uploaded"
+    record = transactional_db_session.query(KnowledgeDocument).filter(
+        KnowledgeDocument.document_id == document_id,
+    ).one()
+    assert scheduled == [record.id]
+    assert record.processing_status == "uploaded"
+    assert record.processing_checkpoint == "uploaded"
+
+
+def test_processing_event_stream_emits_terminal_status(
+    client, ceo_token_headers, transactional_db_session, monkeypatch
+):
+    document_id = f"checkpoint-events-{uuid.uuid4().hex}"
+    uploaded = _upload(client, ceo_token_headers, document_id)
+    assert uploaded.status_code == 201
+
+    class SharedSession:
+        def __enter__(self):
+            return transactional_db_session
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(documents, "SyncSessionLocal", SharedSession)
+    response = client.get(
+        f"/api/v1/documents/processing-events/{document_id}",
+        params={"version": "1.0"},
+        headers=ceo_token_headers,
+    )
+
+    assert response.status_code == 200
+    assert response.headers["content-type"].startswith("text/event-stream")
+    assert "event: ready" in response.text
+    assert '"processing_status": "ready"' in response.text
 
 
 def test_chunk_checkpoint_accepts_section_titles_longer_than_500_characters(
@@ -106,6 +174,16 @@ def test_interrupted_embedding_is_visible_and_resumes_from_saved_chunks(
     saved_chunk_ids = [chunk.id for chunk in chunks]
     assert saved_chunk_ids
     assert all(chunk.status == "draft" for chunk in chunks)
+
+    status = client.get(
+        f"/api/v1/documents/processing-status/{document_id}",
+        params={"version": "1.0"},
+        headers=ceo_token_headers,
+    )
+    assert status.status_code == 200
+    assert status.json()["processing_status"] == "failed"
+    assert status.json()["failed_stage"] == "embedding"
+    assert "temporary embedding outage" in status.json()["error_message"]
 
     # The Knowledge page must fetch the durable document record even while its
     # checkpoint chunks are still draft and therefore excluded from RAG search.

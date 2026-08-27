@@ -3,6 +3,7 @@ from functools import lru_cache
 from app.config import settings
 from app.rag.embedding.base import EmbeddingProvider
 from app.rag.embedding.deterministic import DeterministicEmbeddingProvider
+from app.rag.embedding.gemini import GeminiEmbeddingProvider
 from app.rag.embedding.huggingface import HuggingFaceEmbeddingProvider
 from app.rag.embedding.openai import OpenAIEmbeddingProvider
 
@@ -29,6 +30,11 @@ def get_embedding_provider() -> EmbeddingProvider:
         return OpenAIEmbeddingProvider(
             **common,
             api_key=settings.OPENAI_API_KEY or "",
+        )
+    if backend in {"gemini", "google"}:
+        return GeminiEmbeddingProvider(
+            **common,
+            api_key=settings.GOOGLE_AI_API_KEY or "",
         )
     return DeterministicEmbeddingProvider(
         dimension=settings.EMBEDDING_DIMENSION,

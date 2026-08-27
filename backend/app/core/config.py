@@ -66,9 +66,9 @@ class Settings(BaseSettings):
 
     # --- Knowledge embeddings ---
     EMBEDDING_BACKEND: str = "deterministic"
-    EMBEDDING_MODEL_NAME: str = "Qwen/Qwen3-Embedding-0.6B"
-    EMBEDDING_VERSION: str = "qwen3-embedding-v1"
-    EMBEDDING_DIMENSION: int = 1024
+    EMBEDDING_MODEL_NAME: str = "gemini-embedding-001"
+    EMBEDDING_VERSION: str = "gemini-embedding-001-v1"
+    EMBEDDING_DIMENSION: int = 768
     EMBEDDING_BATCH_SIZE: int = 16
     EMBEDDING_DEVICE: str = "cpu"
     EMBEDDING_CACHE_FOLDER: Optional[str] = None

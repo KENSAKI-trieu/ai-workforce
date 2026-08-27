@@ -93,7 +93,10 @@ export interface ProcessingStatus {
   document_name: string;
   version: string;
   processing_status: PipelineStage | "uploaded";
+  processing_checkpoint?: "uploaded" | "parsed" | "chunked" | "embedded" | "ready";
   processing_progress: number;
   chunk_count: number;
+  failed_stage?: Exclude<PipelineStage, "failed"> | null;
   error_message: string | null;
+  updated_at?: string | null;
 }

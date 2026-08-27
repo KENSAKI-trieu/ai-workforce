@@ -62,6 +62,14 @@ reranking and is not a chat-generation credential. Without a chat model
 credential, the HR flow safely falls back to the existing deterministic router
 and retrieved answer.
 
+## Gemini embeddings
+
+Knowledge embeddings use `gemini-embedding-001` with 768 output dimensions.
+Configure `EMBEDDING_BACKEND=gemini`, `EMBEDDING_DIMENSION=768`, and
+`GOOGLE_AI_API_KEY`. Document and query calls use the corresponding Gemini
+retrieval task type. Existing vectors from a model with another dimension must
+be removed or re-embedded after applying the database migration.
+
 ## BGE reranking
 
 Docker enables `BAAI/bge-reranker-v2-m3` by default (`RERANK_BACKEND=bge`). The model is lazy-loaded on
@@ -102,5 +110,5 @@ logits while leaving the already normalized v2 scores unchanged.
 
 run:
 taskkill /PID 22560 /T /F
-cd apps\ai-service
-& ..\..\backend\venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100
+cd C:\Users\admin\Downloads\code_ai\AI-workforce\apps\ai-service
+.\.venv\Scripts\python.exe -m uvicorn app.main:app --host 127.0.0.1 --port 8100 --reload

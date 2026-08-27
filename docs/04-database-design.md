@@ -168,7 +168,7 @@ CREATE TABLE document_chunks (
     embedding_version VARCHAR(100),
     embedding_status VARCHAR(20) DEFAULT 'pending',
     metadata JSONB DEFAULT '{}'::jsonb,
-    embedding vector(1024), -- Versioned production embedding
+    embedding vector(768), -- Gemini production embedding
     dense_embedding vector(1536), -- Vector embedding 1536 chiều
     created_at TIMESTAMP WITH TIME ZONE DEFAULT CURRENT_TIMESTAMP
 );

@@ -1,5 +1,10 @@
 # AI WORKFORCE - TECHNICAL DOCUMENTATION (SDD)
 
+## User Manual / Hướng dẫn sử dụng
+
+- [日本語ユーザーマニュアル](USER_MANUAL_JA.md)
+- [Hướng dẫn sử dụng tiếng Việt](USER_MANUAL_VI.md)
+
 Chào mừng bạn đến với bộ tài liệu kỹ thuật chi tiết **Software Design Document (SDD)** cho hệ thống **AI Workforce - Enterprise Multi-Agent Platform**.
 
 ## BỘ CHỈ MỤC TÀI LIỆU (TABLE OF CONTENTS)

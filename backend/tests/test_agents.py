@@ -2,6 +2,7 @@
 Tests for AI Agents Catalog endpoints.
 """
 
+from app.core.hr_capabilities import HR_RETIRED_TOOLS
 from app.models.models import User
 
 
@@ -68,8 +69,12 @@ def test_owner_admin_and_ceo_can_configure_agent(
     )
     assert options.status_code == 200, options.text
     option_data = options.json()
-    assert any(item["name"] == "get_employee_basic_profile" for item in option_data["tools"])
+    assert any(item["name"] == "get_employee_full_profile" for item in option_data["tools"])
+    # Names the executor cannot dispatch must not be offered as toggles, whether they are
+    # the pre-split legacy name or one the capability migration has since retired.
     assert not any(item["name"] == "get_employee_profile" for item in option_data["tools"])
+    offered = {item["name"] for item in option_data["tools"]}
+    assert not HR_RETIRED_TOOLS & offered
 
     response = client.patch("/api/v1/agents/HR/toggle", headers=admin_headers)
     assert response.status_code == 200
@@ -87,8 +92,8 @@ def test_owner_admin_and_ceo_can_configure_agent(
         "/api/v1/agents/HR",
         headers=admin_headers,
         json={
-            "tools_access": ["get_employee_basic_profile", "hybrid_rag_search"],
-            "allowed_actions": ["get_employee_basic_profile", "hybrid_rag_search"],
+            "tools_access": ["get_employee_full_profile", "hybrid_rag_search"],
+            "allowed_actions": ["get_employee_full_profile", "hybrid_rag_search"],
             "disallowed_actions": [],
             "knowledge_access": [document_selector],
         },

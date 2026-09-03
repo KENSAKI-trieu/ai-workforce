@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import DocumentChunk, KnowledgeDocument, User
 from app.services.document_parser import DocumentParseError, extract_file_text
+from app.services.document_processing_events import publish_processing_status
 from app.services.embedding_service import (
     build_embedding_text,
     calculate_content_hash,
@@ -52,9 +53,28 @@ def _document_lock(record_id: uuid.UUID) -> threading.Lock:
         return _document_locks.setdefault(record_id, threading.Lock())
 
 
-def _checkpoint_chunks(db: Session, record: KnowledgeDocument) -> list[DocumentChunk]:
+def _commit_progress(
+    db: Session,
+    record: KnowledgeDocument,
+    **progress_details: int,
+) -> None:
+    """Commit a progress snapshot and immediately notify live SSE listeners."""
+    db.commit()
+    publish_processing_status(record, **progress_details)
+
+
+def _checkpoint_chunks(
+    db: Session,
+    record: KnowledgeDocument,
+    *,
+    progress_stream_id: str | None = None,
+) -> list[DocumentChunk]:
     if not record.parsed_text:
         raise RuntimeError("Parsed document text is not available")
+
+    record.processing_status = "chunking"
+    record.processing_progress = 0
+    _commit_progress(db, record)
 
     embedding_service = get_embedding_service()
     chunking_config = record.chunking_config or {}
@@ -62,8 +82,33 @@ def _checkpoint_chunks(db: Session, record: KnowledgeDocument) -> list[DocumentC
     chunk_size = int(chunking_config.get("chunk_size", CHUNK_SIZE_TOKENS))
     chunk_overlap = int(chunking_config.get("chunk_overlap", CHUNK_OVERLAP_TOKENS))
     parent_chunk_size = int(chunking_config.get("parent_chunk_size", 1024))
+    latest_chunk_progress: dict[str, int] = {}
+
+    def report_chunk_progress(update: dict[str, int]) -> None:
+        latest_chunk_progress.update(update)
+        total_segments = update["total_segments"]
+        processed_segments = update["processed_segments"]
+        record.processing_progress = (
+            round((processed_segments / total_segments) * 100)
+            if total_segments
+            else 100
+        )
+        record.chunk_count = update["chunks_created"]
+        _commit_progress(
+            db,
+            record,
+            chunk_segments_processed=processed_segments,
+            chunk_segments_total=total_segments,
+            chunk_segments_remaining=update["remaining_segments"],
+            chunks_created=update["chunks_created"],
+        )
+
     if mode == "standard" and chunk_size == CHUNK_SIZE_TOKENS and chunk_overlap == CHUNK_OVERLAP_TOKENS:
-        raw_chunks = chunk_document_content(record.parsed_text)
+        raw_chunks = chunk_document_content(
+            record.parsed_text,
+            progress_callback=report_chunk_progress,
+            progress_stream_id=progress_stream_id,
+        )
     else:
         raw_chunks = build_configured_chunks(
             record.parsed_text,
@@ -71,7 +116,18 @@ def _checkpoint_chunks(db: Session, record: KnowledgeDocument) -> list[DocumentC
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             parent_chunk_size=parent_chunk_size,
+            progress_callback=report_chunk_progress,
+            progress_stream_id=progress_stream_id,
         )
+
+    if not latest_chunk_progress:
+        report_chunk_progress({
+            "processed_segments": 0,
+            "total_segments": 0,
+            "remaining_segments": 0,
+            "chunks_created": len(raw_chunks),
+        })
+
     prepared: list[dict] = []
     seen_hashes: set[str] = set()
     for chunk_data in raw_chunks:
@@ -186,15 +242,35 @@ def _checkpoint_chunks(db: Session, record: KnowledgeDocument) -> list[DocumentC
     record.embedding_model = embedding_service.model_name
     record.embedding_version = embedding_service.version
     record.chunk_count = len(chunks)
+    record.processing_progress = 100
+    _commit_progress(
+        db,
+        record,
+        chunk_segments_processed=latest_chunk_progress.get("processed_segments", 0),
+        chunk_segments_total=latest_chunk_progress.get("total_segments", 0),
+        chunk_segments_remaining=0,
+        chunks_created=len(chunks),
+    )
+
     record.processing_checkpoint = "chunked"
     record.processing_status = "embedding"
     record.processing_progress = 0
-    db.commit()
+    _commit_progress(
+        db,
+        record,
+        embedded_chunks=0,
+        embedding_total_chunks=len(chunks),
+        embedding_remaining_chunks=len(chunks),
+        embedding_batch_count=0,
+    )
     return chunks
 
 
 def _embed_checkpointed_chunks(
-    db: Session, record: KnowledgeDocument
+    db: Session,
+    record: KnowledgeDocument,
+    *,
+    progress_stream_id: str | None = None,
 ) -> list[DocumentChunk]:
     embedding_service = get_embedding_service()
     chunks = db.query(DocumentChunk).filter(
@@ -220,27 +296,64 @@ def _embed_checkpointed_chunks(
     record.embedding_version = embedding_service.version
     record.processing_status = "embedding"
     record.processing_progress = 0
-    db.commit()
+    _commit_progress(
+        db,
+        record,
+        embedded_chunks=0,
+        embedding_total_chunks=len(chunks),
+        embedding_remaining_chunks=len(chunks),
+        embedding_batch_count=0,
+    )
 
     total = len(chunks)
+
+    def report_embedding_progress(update: dict[str, int]) -> None:
+        embedded_count = update["embedded_count"]
+        total_count = update["total_count"]
+        record.processing_progress = (
+            round((embedded_count / total_count) * 100)
+            if total_count
+            else 100
+        )
+        _commit_progress(
+            db,
+            record,
+            embedded_chunks=embedded_count,
+            embedding_total_chunks=total_count,
+            embedding_remaining_chunks=update["remaining_count"],
+            embedding_batch_count=update["batch_count"],
+        )
+
     for batch_start in range(0, total, embedding_service.batch_size):
         batch = chunks[batch_start:batch_start + embedding_service.batch_size]
-        vectors = embedding_service.embed_texts([
-            chunk.embedding_text or chunk.content for chunk in batch
-        ])
+        vectors = embedding_service.embed_texts(
+            [chunk.embedding_text or chunk.content for chunk in batch],
+            completed_before=batch_start,
+            total_count=total,
+            progress_callback=report_embedding_progress,
+            progress_stream_id=progress_stream_id,
+        )
         if len(vectors) != len(batch):
             raise RuntimeError("Embedding provider returned an unexpected vector count")
         for chunk, vector in zip(batch, vectors):
             chunk.embedding = vector
             chunk.embedding_status = "embedded"
-        completed = min(batch_start + len(batch), total)
-        record.processing_progress = round((completed / total) * 100)
         db.commit()
+
+    record.processing_progress = 100
+    _commit_progress(
+        db,
+        record,
+        embedded_chunks=total,
+        embedding_total_chunks=total,
+        embedding_remaining_chunks=0,
+        embedding_batch_count=0,
+    )
 
     record.processing_checkpoint = "embedded"
     record.processing_status = "indexing"
     record.processing_progress = 0
-    db.commit()
+    _commit_progress(db, record)
     return chunks
 
 
@@ -250,6 +363,10 @@ def _index_checkpointed_chunks(
     record = db.query(KnowledgeDocument).filter(
         KnowledgeDocument.id == record.id
     ).populate_existing().with_for_update().one()
+    record.processing_status = "indexing"
+    record.processing_progress = 0
+    _commit_progress(db, record)
+
     chunks = db.query(DocumentChunk).filter(
         DocumentChunk.knowledge_document_id == record.id,
     ).order_by(DocumentChunk.chunk_index).all()
@@ -273,16 +390,25 @@ def _index_checkpointed_chunks(
     for chunk in chunks:
         chunk.status = record.status
         chunk.embedding_status = "embedded"
+
+    record.processing_progress = 100
+    _commit_progress(db, record)
+
     record.processing_checkpoint = "ready"
     record.processing_status = "ready"
     record.processing_progress = 100
     record.error_message = None
     record.parsed_text = None
-    db.commit()
+    _commit_progress(db, record)
     return chunks
 
 
-def resume_document_ingestion(db: Session, record_id: uuid.UUID) -> list[DocumentChunk]:
+def resume_document_ingestion(
+    db: Session,
+    record_id: uuid.UUID,
+    *,
+    progress_stream_id: str | None = None,
+) -> list[DocumentChunk]:
     """Advance a document from its last durable checkpoint to `ready`."""
     lock = _document_lock(record_id)
     if not lock.acquire(blocking=False):
@@ -309,24 +435,26 @@ def resume_document_ingestion(db: Session, record_id: uuid.UUID) -> list[Documen
         if checkpoint == "uploaded":
             record.processing_status = "parsing"
             record.processing_progress = 0
-            db.commit()
+            _commit_progress(db, record)
             original = read_original_file(record.storage_key)
             parsed_text = extract_file_text(record.file_name, original).strip()
             if not parsed_text:
                 raise DocumentParseError("No readable text found in the file")
             record.parsed_text = parsed_text
+            record.processing_progress = 100
+            _commit_progress(db, record)
             record.processing_checkpoint = "parsed"
             record.processing_status = "chunking"
             record.processing_progress = 0
-            db.commit()
+            _commit_progress(db, record)
             checkpoint = "parsed"
 
         if checkpoint == "parsed":
-            _checkpoint_chunks(db, record)
+            _checkpoint_chunks(db, record, progress_stream_id=progress_stream_id)
             checkpoint = "chunked"
 
         if checkpoint == "chunked":
-            _embed_checkpointed_chunks(db, record)
+            _embed_checkpointed_chunks(db, record, progress_stream_id=progress_stream_id)
             checkpoint = "embedded"
 
         if checkpoint == "embedded":
@@ -371,7 +499,7 @@ def resume_document_ingestion(db: Session, record_id: uuid.UUID) -> list[Documen
         if failed:
             failed.processing_status = "failed"
             failed.error_message = str(exc)[:2000]
-            db.commit()
+            _commit_progress(db, failed)
         raise
     finally:
         lock.release()

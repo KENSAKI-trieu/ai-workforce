@@ -18,7 +18,11 @@ from app.models.models import (
     User,
     WorkflowApproval,
 )
-from app.services.ai_service_client import AIServiceClient, get_ai_service_client
+from app.services.ai_service_client import (
+    AIServiceClient,
+    AIServiceError,
+    get_ai_service_client,
+)
 from app.services.langgraph_approvals import (
     GRAPH_APPROVAL_KIND,
     GRAPH_WORKFLOW_KIND,

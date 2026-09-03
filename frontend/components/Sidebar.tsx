@@ -29,6 +29,7 @@ import {
   ScrollText,
   Bell,
   Cable,
+  Network,
   SlidersHorizontal,
 } from "lucide-react";
 
@@ -56,6 +57,7 @@ const SIDEBAR_TEXT = {
     calendar: "Lịch Công việc",
     approvals: "Trung tâm Phê duyệt",
     users: "Nhân viên & Phân quyền",
+    orgStructure: "Cơ cấu Chức vụ",
     audit: "Nhật ký Kiểm toán",
     integrations: "Tích hợp Doanh nghiệp",
     aiEmployees: "Nhân viên AI",
@@ -80,6 +82,7 @@ const SIDEBAR_TEXT = {
     calendar: "業務カレンダー",
     approvals: "承認センター",
     users: "従業員・権限管理",
+    orgStructure: "組織・役職構成",
     audit: "監査ログ",
     integrations: "企業連携",
     aiEmployees: "AI従業員",
@@ -373,6 +376,16 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           label={text.users}
           href="/users-mgmt"
           active={pathname === "/users-mgmt"}
+        />
+
+        {/* Cơ cấu chức vụ do công ty tự định nghĩa. Không giới hạn theo vai trò: sơ đồ
+            tổ chức ai cũng xem được, chỉ thao tác sửa mới cần quyền, và trang tự ẩn các
+            nút đó khi thiếu quyền. */}
+        <NavItem
+          icon={<Network size={18} />}
+          label={text.orgStructure}
+          href="/org-structure"
+          active={pathname === "/org-structure"}
         />
 
         <NavItem

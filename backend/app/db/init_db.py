@@ -13,6 +13,12 @@ from sqlalchemy import text
 from app.core.database import sync_engine, Base, SyncSessionLocal
 from app.core.config import settings
 from app.core.security import get_password_hash
+from app.core.hr_capabilities import (
+    HR_CONFIGURATION_VERSION,
+    HR_RETIRED_TOOLS,
+    default_hr_tools,
+)
+from app.services.position_service import backfill_tenant_user_positions
 from app.models.models import Tenant, User, AIAgent, Department, DocumentChunk, UserMemory, AgentWorkflow, WorkflowApproval, AuditLog, LLMCostLog, Task, TaskComment, LeaveBalance
 
 logging.basicConfig(level=logging.INFO)
@@ -115,8 +121,10 @@ def init_db():
         "ALTER TABLE audit_logs ADD COLUMN IF NOT EXISTS execution_time_ms INTEGER",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS department VARCHAR(50) DEFAULT 'ALL'",
         "ALTER TABLE users ADD COLUMN IF NOT EXISTS avatar_url TEXT",
+        # Both vocabularies are tenant data now: departments have their own table, and
+        # roles are position slugs the company defines. Re-adding either CHECK here would
+        # undo the migration on the next boot.
         "ALTER TABLE users DROP CONSTRAINT IF EXISTS ck_users_role",
-        "ALTER TABLE users ADD CONSTRAINT ck_users_role CHECK (role IN ('Owner', 'Admin', 'Manager', 'Employee', 'CEO', 'Guest'))",
         "ALTER TABLE users DROP CONSTRAINT IF EXISTS ck_users_department",
         "ALTER TABLE ai_agents ADD COLUMN IF NOT EXISTS configuration_version INTEGER NOT NULL DEFAULT 1",
         "ALTER TABLE llm_cost_logs ADD COLUMN IF NOT EXISTS cached_prompt_tokens INTEGER NOT NULL DEFAULT 0",
@@ -334,29 +342,11 @@ def init_db():
                 "generate_and_execute_ceo_dag", "rag_search", "create_task",
                 "expense_lookup", "generate_legal_document", "submit_approval_request",
             ],
-            "HR": [
-                "query_leave_balance",
-                "request_leave",
-                "hybrid_rag_search",
-                "get_employee_basic_profile",
-                "get_employee_private_profile",
-                "get_employee_contract_summary",
-                "get_employee_compensation_summary",
-                "get_employee_leave_summary",
-                "get_employee_full_profile",
-                "query_company_users_sql",
-                "create_onboarding_workflow",
-                "get_contract_expiry",
-                "list_pending_hr_approvals",
-                "create_hr_task",
-                "send_hr_notification",
-                "export_hr_directory",
-                "rag_search",
-                "employee_lookup",
-                "leave_lookup",
-                "create_task",
-                "submit_approval_request",
-            ],
+            # Derived from the executor's capability list. The gateway names that used to
+            # be appended here (rag_search, employee_lookup, leave_lookup, create_task,
+            # submit_approval_request) were never usable: HR is routed around the
+            # LangGraph tool gateway, so those grants only widened the configuration UI.
+            "HR": default_hr_tools(),
             "KNOWLEDGE": ["hybrid_search_documents", "rag_search"],
             "LEGAL": [
                 "audit_contract_risk",
@@ -391,20 +381,30 @@ def init_db():
                     is_active=True,
                     tools_access=default_agent_tools[adata["role_code"]],
                     allowed_actions=default_agent_tools[adata["role_code"]],
-                    configuration_version=6,
+                    configuration_version=HR_CONFIGURATION_VERSION,
                 )
                 db.add(agent)
                 logger.info(f"Seeded AI Agent: {adata['role_code']} ({adata['name']})")
             elif agent.tools_access == legacy_tools and adata["role_code"] != "HR":
                 agent.tools_access = default_agent_tools[adata["role_code"]]
                 agent.allowed_actions = default_agent_tools[adata["role_code"]]
-                agent.configuration_version = 6
-            elif (agent.configuration_version or 1) < 6:
+                agent.configuration_version = HR_CONFIGURATION_VERSION
+            elif (agent.configuration_version or 1) < HR_CONFIGURATION_VERSION:
                 denied = set(agent.disallowed_actions or [])
                 additions = set(default_agent_tools[adata["role_code"]]) - denied
-                agent.tools_access = sorted(set(agent.tools_access or []) | additions)
-                agent.allowed_actions = sorted(set(agent.allowed_actions or []) | additions)
-                agent.configuration_version = 6
+                tools = set(agent.tools_access or []) | additions
+                allowed = set(agent.allowed_actions or []) | additions
+                if adata["role_code"] == "HR":
+                    # Stamping the current version here tells the executor's capability
+                    # migration it has nothing left to do, so the retired names have to be
+                    # swept now or they would survive forever on this row.
+                    tools -= HR_RETIRED_TOOLS
+                    allowed -= HR_RETIRED_TOOLS
+                    denied -= HR_RETIRED_TOOLS
+                    agent.disallowed_actions = sorted(denied)
+                agent.tools_access = sorted(tools)
+                agent.allowed_actions = sorted(allowed)
+                agent.configuration_version = HR_CONFIGURATION_VERSION
         db.commit()
 
         # 4. Seed Knowledge Base Documents & Vector Chunks
@@ -505,7 +505,14 @@ def init_db():
         it_manager = db.query(User).filter(User.email == "it.lead@company.com").first()
         if employee_user and it_manager and employee_user.manager_id != it_manager.id:
             employee_user.manager_id = it_manager.id
+            # Seeded by hand, so a later position assignment must not overwrite it.
+            employee_user.manager_is_manual = True
             db.commit()
+
+        # Give the tenant its org tree and place every seeded user in it. Idempotent, so
+        # re-running init_db leaves an already-built tree alone.
+        backfill_tenant_user_positions(db, tenant.id)
+        db.commit()
 
         # 6. Seed Sample Workflows, Approvals, & Audit Logs across past 7 days
         all_users = db.query(User).filter(User.tenant_id == tenant.id).all()

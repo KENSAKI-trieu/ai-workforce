@@ -196,7 +196,11 @@ def get_current_active_user(current_user=Depends(get_current_user)):
 # RBAC Role Checker
 # ---------------------------------------------------------------------------
 class RoleRequired:
-    """Dependency factory to restrict access by role."""
+    """Dependency factory to restrict access by role.
+
+    Legacy. New guards should use PermissionRequired, which asks what the user may do
+    rather than what their job is called, so a company can rename its own positions.
+    """
 
     def __init__(self, *allowed_roles: str):
         self.allowed_roles = set(allowed_roles)
@@ -206,5 +210,31 @@ class RoleRequired:
             raise HTTPException(
                 status_code=status.HTTP_403_FORBIDDEN,
                 detail=f"Access denied. Required roles: {', '.join(self.allowed_roles)}",
+            )
+        return current_user
+
+
+class PermissionRequired:
+    """Dependency factory to restrict access by position permission.
+
+    Holding ANY of the supplied codes is enough, matching how the role sets it replaces
+    behaved (membership in any listed role granted access).
+    """
+
+    def __init__(self, *codes: str):
+        self.codes = tuple(codes)
+
+    async def __call__(
+        self,
+        current_user=Depends(get_current_active_user),
+        db: Session = Depends(get_db),
+    ):
+        from app.services.position_service import user_permissions
+
+        granted = user_permissions(db, current_user)
+        if not any(code in granted for code in self.codes):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Access denied. Required permission: {', '.join(self.codes)}",
             )
         return current_user

@@ -164,3 +164,35 @@ def test_orchestration_stream_parses_sse_without_exposing_transport_fields(monke
         {"event": "token", "delta": "Done"},
         {"event": "result", "status": "COMPLETED", "state": {}, "interrupts": []},
     ]
+
+
+def test_chunk_client_forwards_each_ai_progress_response(monkeypatch) -> None:
+    captured = {}
+
+    def fake_stream(method, url, *, json, headers, timeout):
+        captured.update(json=json)
+        return _StreamResponse([
+            "event: progress",
+            'data: {"processed_segments":1,"total_segments":2,"remaining_segments":1,"chunks_created":1,"chunks":[{"content":"one"}]}',
+            "",
+            "event: progress",
+            'data: {"processed_segments":2,"total_segments":2,"remaining_segments":0,"chunks_created":2,"chunks":[{"content":"two"}]}',
+            "",
+            "event: result",
+            'data: {"processed_segments":2,"total_segments":2,"remaining_segments":0,"chunks_created":2}',
+            "",
+        ])
+
+    monkeypatch.setattr(httpx, "stream", fake_stream)
+    updates = []
+    chunks = _client(monkeypatch).chunk_document(
+        "content",
+        chunk_size=100,
+        chunk_overlap=10,
+        on_progress=updates.append,
+        progress_stream_id="browser-stream-contract",
+    )
+
+    assert chunks == [{"content": "one"}, {"content": "two"}]
+    assert [update["remaining_segments"] for update in updates] == [1, 0]
+    assert captured["json"]["progress_stream_id"] == "browser-stream-contract"

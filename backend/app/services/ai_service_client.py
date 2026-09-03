@@ -2,6 +2,7 @@
 
 from functools import lru_cache
 import json
+from collections.abc import Callable
 from typing import Any, Iterator
 
 import httpx
@@ -110,7 +111,33 @@ class AIServiceClient:
         *,
         chunk_size: int,
         chunk_overlap: int,
+        on_progress: Callable[[dict[str, int]], None] | None = None,
+        progress_stream_id: str | None = None,
+        progress_completed_before: int = 0,
+        progress_total_count: int | None = None,
+        progress_chunks_before: int = 0,
     ) -> list[dict[str, Any]]:
+        if on_progress is not None:
+            chunks: list[dict[str, Any]] = []
+            for event in self._stream_post("/v1/rag/chunk/stream", {
+                "content": content,
+                "chunk_size": chunk_size,
+                "chunk_overlap": chunk_overlap,
+                "progress_stream_id": progress_stream_id,
+                "progress_completed_before": progress_completed_before,
+                "progress_total_count": progress_total_count,
+                "progress_chunks_before": progress_chunks_before,
+            }):
+                if event["event"] != "progress":
+                    continue
+                chunks.extend(event.get("chunks", []))
+                on_progress({
+                    "processed_segments": int(event["processed_segments"]),
+                    "total_segments": int(event["total_segments"]),
+                    "remaining_segments": int(event["remaining_segments"]),
+                    "chunks_created": int(event["chunks_created"]),
+                })
+            return chunks
         result = self._post("/v1/rag/chunk", {
             "content": content,
             "chunk_size": chunk_size,
@@ -118,8 +145,22 @@ class AIServiceClient:
         })
         return list(result["chunks"])
 
-    def embed(self, texts: list[str], *, input_type: str = "document") -> dict[str, Any]:
-        return self._post("/v1/embeddings", {"texts": texts, "input_type": input_type})
+    def embed(
+        self,
+        texts: list[str],
+        *,
+        input_type: str = "document",
+        completed_before: int = 0,
+        total_count: int | None = None,
+        progress_stream_id: str | None = None,
+    ) -> dict[str, Any]:
+        return self._post("/v1/embeddings", {
+            "texts": texts,
+            "input_type": input_type,
+            "completed_before": completed_before,
+            "total_count": total_count or len(texts),
+            "progress_stream_id": progress_stream_id,
+        })
 
     def count_tokens(self, texts: list[str]) -> dict[str, Any]:
         return self._post("/v1/token-count", {"texts": texts})

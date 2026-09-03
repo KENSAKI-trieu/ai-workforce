@@ -27,24 +27,34 @@ from app.models.models import (
 )
 from app.services.audit_events import add_audit_event
 from app.services.notification_service import create_notification
+from app.services.position_service import has_permission
 
-HR_COMPANY_SCOPE_ROLES = {"Owner", "CEO"}
-HR_HIERARCHY_ROLES = {"Admin", "Manager"}
 LEAVE_TYPES_WITH_BALANCE = {"ANNUAL", "SICK"}
 ACTIVE_LEAVE_STATUSES = {"WAITING", "APPROVED"}
 
 
 def is_hr_user(user: User) -> bool:
-    return user.department == "HR" and user.role in {"Manager", "Admin"}
+    """Whether this person runs HR operations.
+
+    Used to be "sits in the department literally coded HR and is a Manager or Admin",
+    which meant a company that coded its HR department differently had no HR back office
+    at all. It is now a permission the company grants to whichever position it likes.
+    """
+    return has_permission(None, user, "hr.employee.manage")
 
 
 def can_manage_hr(user: User) -> bool:
-    return user.role in HR_COMPANY_SCOPE_ROLES or is_hr_user(user)
+    return has_company_hr_scope(user) or is_hr_user(user)
 
 
 def has_company_hr_scope(user: User) -> bool:
-    """CEO and tenant Owner can read the complete tenant HR directory."""
-    return user.role in HR_COMPANY_SCOPE_ROLES
+    """Whether this person reads the whole tenant directory rather than their own branch."""
+    return has_permission(None, user, "hr.scope.company")
+
+
+def has_reporting_hr_scope(user: User) -> bool:
+    """Whether this person reads the branch of the org tree below them."""
+    return has_permission(None, user, "hr.scope.reports")
 
 
 def authorized_employee_ids(db: Session, current_user: User) -> set[uuid.UUID]:
@@ -56,7 +66,7 @@ def authorized_employee_ids(db: Session, current_user: User) -> set[uuid.UUID]:
             ).all()
         }
     allowed = {current_user.id}
-    if current_user.role not in HR_HIERARCHY_ROLES:
+    if not has_reporting_hr_scope(current_user):
         return allowed
 
     employees = db.query(User.id, User.manager_id).filter(
@@ -79,7 +89,7 @@ def authorized_employee_ids(db: Session, current_user: User) -> set[uuid.UUID]:
 def hr_scope_label(user: User) -> str:
     if has_company_hr_scope(user):
         return "COMPANY"
-    if user.role in HR_HIERARCHY_ROLES:
+    if has_reporting_hr_scope(user):
         return "REPORTING_TREE"
     return "SELF"
 
@@ -89,7 +99,7 @@ def can_view_employee(db: Session, current_user: User, target: User) -> bool:
         return False
     if current_user.id == target.id or has_company_hr_scope(current_user):
         return True
-    if current_user.role not in HR_HIERARCHY_ROLES:
+    if not has_reporting_hr_scope(current_user):
         return False
     return target.id in authorized_employee_ids(db, current_user)
 
@@ -106,7 +116,7 @@ def can_approve_hr_request(db: Session, current_user: User, approval: WorkflowAp
     if approval.approver_id == current_user.id or has_company_hr_scope(current_user):
         return True
     requester_id = (approval.payload or {}).get("requester_id")
-    if not requester_id or current_user.role not in HR_HIERARCHY_ROLES:
+    if not requester_id or not has_reporting_hr_scope(current_user):
         return False
     try:
         requester_uuid = uuid.UUID(str(requester_id))

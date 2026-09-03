@@ -10,6 +10,7 @@ import uuid
 import logging
 from app.core.database import sync_engine, Base, SyncSessionLocal
 from app.core.security import get_password_hash
+from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
 from app.models.models import Tenant, User, AIAgent, UserMemory
 import json
 
@@ -137,16 +138,16 @@ def seed():
                     description=f"{adata['name']} cho Test Company",
                     system_prompt=f"You are the {adata['name']} AI Agent.",
                     is_active=True,
+                    # Derived from the executor's capability list rather than copied: this
+                    # list still granted the pre-split `get_employee_profile` name and two
+                    # capabilities the migration revokes on the first chat turn.
                     tools_access=(
-                        [
-                            "hybrid_rag_search", "get_employee_profile", "query_company_users_sql", "query_leave_balance",
-                            "request_leave", "create_onboarding_workflow", "get_contract_expiry",
-                            "list_pending_hr_approvals", "create_hr_task", "send_hr_notification",
-                            "export_hr_directory",
-                        ]
-                        if adata["role_code"] == "HR"
-                        else []
+                        default_hr_tools() if adata["role_code"] == "HR" else []
                     ),
+                    allowed_actions=(
+                        default_hr_tools() if adata["role_code"] == "HR" else []
+                    ),
+                    configuration_version=HR_CONFIGURATION_VERSION,
                 )
                 db.add(agent)
                 logger.info(f"  ✅ Agent: {adata['role_code']}")

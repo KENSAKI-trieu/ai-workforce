@@ -12,6 +12,7 @@ class Settings(BaseSettings):
     AI_SERVICE_PORT: int = 8100
     AI_SERVICE_INTERNAL_TOKEN: Optional[str] = None
     BACKEND_TOOL_GATEWAY_URL: str = "http://localhost:8000"
+    FRONTEND_URL: str = "http://localhost:3000"
     MODEL_MEMORY_MODE: Literal["shared", "exclusive"] = "shared"
 
     EMBEDDING_BACKEND: str = "deterministic"

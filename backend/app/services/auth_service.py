@@ -17,8 +17,11 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
 )
+from app.core.hr_capabilities import default_hr_tools
+from app.core.permissions import ROOT_POSITION_SLUG
 from app.models.models import Tenant, User, AIAgent, Department
 from app.schemas.auth import RegisterRequest, LoginRequest, LoginResponse, UserInToken
+from app.services.position_service import ensure_tenant_positions
 
 
 DEFAULT_AGENTS = [
@@ -33,24 +36,9 @@ DEFAULT_AGENTS = [
 
 DEFAULT_AGENT_TOOLS = {
     "CEO": ["generate_and_execute_ceo_dag"],
-    "HR": [
-        "hybrid_rag_search",
-        "get_employee_basic_profile",
-        "get_employee_private_profile",
-        "get_employee_contract_summary",
-        "get_employee_compensation_summary",
-        "get_employee_leave_summary",
-        "get_employee_full_profile",
-        "query_company_users_sql",
-        "query_leave_balance",
-        "request_leave",
-        "create_onboarding_workflow",
-        "get_contract_expiry",
-        "list_pending_hr_approvals",
-        "create_hr_task",
-        "send_hr_notification",
-        "export_hr_directory",
-    ],
+    # Derived, not copied: a hand-maintained list drifted from the executor's dispatch and
+    # kept granting names no branch could reach.
+    "HR": default_hr_tools(),
     "LEGAL": [
         "audit_contract_risk",
         "compare_contract_versions",
@@ -127,13 +115,23 @@ def register_user(db: Session, data: RegisterRequest) -> LoginResponse:
         )
         db.add(agent)
 
+    # The company gets its own org tree from the first moment, so the founder has
+    # something to rename and build on rather than a fixed vocabulary.
+    positions = ensure_tenant_positions(db, tenant.id)
+    root = positions[ROOT_POSITION_SLUG]
+
     user = User(
         tenant_id=tenant.id,
         email=data.email,
         full_name=data.full_name,
         password_hash=get_password_hash(data.password),
+        # The founder holds the root position, which grants every permission this build
+        # defines. `role` keeps the legacy "Owner" label because guards that have not
+        # moved to permissions yet still read it, including the Owner-only workspace
+        # deletion check -- writing anything else here would lock the founder out of it.
         role="Owner",
         department="BOARD",
+        position_id=root.id,
     )
     db.add(user)
     db.flush()

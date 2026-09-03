@@ -7,6 +7,10 @@ class ChunkRequest(BaseModel):
     content: str = Field(min_length=1)
     chunk_size: int | None = Field(default=None, ge=1)
     chunk_overlap: int | None = Field(default=None, ge=0)
+    progress_stream_id: str | None = Field(default=None, min_length=16, max_length=128)
+    progress_completed_before: int = Field(default=0, ge=0)
+    progress_total_count: int | None = Field(default=None, ge=1)
+    progress_chunks_before: int = Field(default=0, ge=0)
 
 
 class ChunkResponse(BaseModel):
@@ -16,6 +20,9 @@ class ChunkResponse(BaseModel):
 class EmbeddingRequest(BaseModel):
     texts: list[str] = Field(min_length=1, max_length=128)
     input_type: Literal["document", "query"] = "document"
+    completed_before: int = Field(default=0, ge=0)
+    total_count: int | None = Field(default=None, ge=1)
+    progress_stream_id: str | None = Field(default=None, min_length=16, max_length=128)
 
 
 class EmbeddingResponse(BaseModel):
@@ -25,6 +32,10 @@ class EmbeddingResponse(BaseModel):
     version: str
     dimension: int
     max_input_tokens: int
+    batch_count: int
+    embedded_count: int
+    total_count: int
+    remaining_count: int
 
 
 class TokenCountRequest(BaseModel):

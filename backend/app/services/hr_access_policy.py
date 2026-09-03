@@ -7,8 +7,9 @@ from typing import Iterable
 
 from sqlalchemy.orm import Session
 
+from app.core.permissions import HR_SECTION_PERMISSIONS
 from app.models.models import User
-from app.services.hr_service import authorized_employee_ids
+from app.services.hr_service import authorized_employee_ids, has_company_hr_scope
 
 HR_DATA_SECTIONS = {
     "BASIC",
@@ -76,27 +77,39 @@ def _scope_for_employee(db: Session, actor: User, target: User) -> tuple[bool, s
         return False, "NONE", "CROSS_TENANT"
     if actor.id == target.id:
         return True, "SELF", None
-    if actor.role in {"Owner", "CEO"}:
+    if has_company_hr_scope(actor):
         return True, "COMPANY", None
     if target.id in authorized_employee_ids(db, actor):
         return True, "REPORTING_TREE", None
     return False, "NONE", "OUTSIDE_SCOPE"
 
 
-def _role_sections(actor: User, target: User) -> set[str]:
+SELF_SERVICE_SECTIONS: frozenset[str] = frozenset(
+    {"BASIC", "PRIVATE", "CONTRACT", "COMPENSATION", "LEAVE"}
+)
+
+
+def _role_sections(actor: User, target: User, db: Session | None = None) -> set[str]:
+    """Sections the actor may read about the target, from their position's permissions.
+
+    This used to be a role x department ladder with department codes like "FINANCE"
+    written into it. Departments are tenant-defined data, so a company that named its
+    finance department anything else silently lost salary access. The rule now asks what
+    the actor is permitted to do, and each department-specialised job is a real position.
+
+    Reading your own record is a floor that no job title can take away.
+    """
     if actor.id == target.id:
-        return {"BASIC", "PRIVATE", "CONTRACT", "COMPENSATION", "LEAVE"}
-    if actor.role in {"Owner", "CEO"}:
-        return set(HR_DATA_SECTIONS)
-    if actor.role == "Admin" and actor.department == "HR":
-        return set(HR_DATA_SECTIONS)
-    if actor.department == "HR" and actor.role == "Manager":
-        return {"BASIC", "PRIVATE", "CONTRACT", "LEAVE", "PERFORMANCE", "DOCUMENTS"}
-    if actor.department == "FINANCE" and actor.role in {"Admin", "Manager"}:
-        return {"BASIC", "COMPENSATION"}
-    if actor.role in {"Admin", "Manager"}:
-        return {"BASIC", "CONTRACT", "LEAVE", "PERFORMANCE"}
-    return set()
+        return set(SELF_SERVICE_SECTIONS)
+
+    from app.services.position_service import user_permissions
+
+    granted = user_permissions(db, actor) if db is not None else frozenset()
+    return {
+        section
+        for section, permission in HR_SECTION_PERMISSIONS.items()
+        if permission in granted
+    }
 
 
 def authorize_employee_access(
@@ -129,7 +142,7 @@ def authorize_employee_access(
             denial_reasons={section: scope_denial or "OUTSIDE_SCOPE" for section in requested},
         )
 
-    role_sections = _role_sections(actor, target)
+    role_sections = _role_sections(actor, target, db)
     purpose_sections = PURPOSE_SECTIONS[normalized_purpose]
     allowed_sections: list[str] = []
     denied_sections: list[str] = []

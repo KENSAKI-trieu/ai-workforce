@@ -8,6 +8,7 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.hr_capabilities import HR_RETIRED_TOOLS
 from app.core.security import RoleRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
@@ -16,8 +17,7 @@ from app.services.auth_service import DEFAULT_AGENT_TOOLS, ensure_tenant_default
 router = APIRouter(prefix="/agents", tags=["AI Agents"])
 AGENT_CONFIG_ROLES = {"Owner", "Admin", "CEO"}
 TOOL_DESCRIPTIONS = {
-    "hybrid_rag_search": "Tìm và trích dẫn chính sách trong kho tri thức.",
-    "get_employee_basic_profile": "Đọc riêng thông tin công việc cơ bản qua Policy Engine.",
+    "hybrid_rag_search": "Tìm và trích dẫn chính sách trong kho tri thức (HR, Legal).",
     "get_employee_private_profile": "Đọc thông tin cá nhân được lọc và masking theo quyền.",
     "get_employee_contract_summary": "Đọc tóm tắt hợp đồng, không trả tài liệu gốc.",
     "get_employee_compensation_summary": "Đọc dữ liệu lương theo quyền và mục đích nghiệp vụ.",
@@ -29,11 +29,9 @@ TOOL_DESCRIPTIONS = {
     "create_onboarding_workflow": "Khởi tạo workflow onboarding liên phòng ban.",
     "get_contract_expiry": "Theo dõi hợp đồng và thời gian thử việc.",
     "list_pending_hr_approvals": "Liệt kê card chờ duyệt theo phạm vi quản lý.",
-    "create_hr_task": "Tạo task nghiệp vụ HR.",
-    "send_hr_notification": "Gửi thông báo nghiệp vụ HR.",
     "export_hr_directory": "Xuất danh bạ HR theo quyền ra Excel, PDF hoặc JSON.",
     "generate_and_execute_ceo_dag": "Lập và thực thi kế hoạch đa agent.",
-    "hybrid_search_documents": "Tìm kiếm kho tri thức dùng chung.",
+    "hybrid_search_documents": "Tìm kiếm kho tri thức dùng chung (Knowledge). Cùng cơ chế với hybrid_rag_search nhưng là quyền riêng — cấm một tên không cấm tên còn lại.",
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
     "compare_contract_versions": "So sánh điều khoản giữa hai phiên bản hợp đồng.",
     "check_sensitive_data": "Phát hiện dữ liệu cá nhân và dữ liệu hạn chế.",
@@ -193,12 +191,16 @@ def get_agent_configuration_options(
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
     agent = _get_tenant_agent(db, current_user.tenant_id, role_code)
+    # A legacy row can still carry a name the executor cannot dispatch. Hide those here as
+    # well as revoking them in the migration, so the configuration UI never offers a
+    # toggle that does nothing.
+    retired = {"get_employee_profile"} | HR_RETIRED_TOOLS
     tool_names = sorted((
         set(DEFAULT_AGENT_TOOLS.get(agent.role_code, []))
         | set(agent.tools_access or [])
         | set(agent.allowed_actions or [])
         | set(agent.disallowed_actions or [])
-    ) - {"get_employee_profile"})
+    ) - retired)
     chunks = db.query(DocumentChunk).filter(
         DocumentChunk.tenant_id == current_user.tenant_id
     ).order_by(DocumentChunk.document_name, DocumentChunk.chunk_index).all()

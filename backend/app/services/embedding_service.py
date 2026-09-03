@@ -8,6 +8,7 @@ import re
 import time
 from functools import lru_cache
 from pathlib import Path
+from collections.abc import Callable
 from typing import Any
 
 from app.core.config import settings
@@ -274,44 +275,104 @@ class EmbeddingService:
         return vectors
 
     def _embed_once(
-        self, texts: list[str], *, input_type: str = "document"
+        self,
+        texts: list[str],
+        *,
+        input_type: str = "document",
+        completed_before: int = 0,
+        total_count: int | None = None,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
+        progress_stream_id: str | None = None,
     ) -> list[list[float]]:
         ai_client = get_ai_service_client()
         if ai_client.enabled:
             vectors: list[list[float]] = []
             for start in range(0, len(texts), self.batch_size):
                 batch = texts[start:start + self.batch_size]
-                result = ai_client.embed(batch, input_type=input_type)
+                progress_options = (
+                    {"progress_stream_id": progress_stream_id}
+                    if progress_stream_id
+                    else {}
+                )
+                result = ai_client.embed(
+                    batch,
+                    input_type=input_type,
+                    completed_before=completed_before + start,
+                    total_count=total_count or completed_before + len(texts),
+                    **progress_options,
+                )
                 if int(result["dimension"]) != self.dimension:
                     raise RuntimeError("AI service embedding dimension mismatch")
                 batch_vectors = list(result["vectors"])
                 if len(batch_vectors) != len(batch):
                     raise RuntimeError("AI service embedding result count does not match input count")
                 vectors.extend(batch_vectors)
+                if progress_callback is not None:
+                    progress_callback({
+                        "batch_count": int(result.get("batch_count", len(batch_vectors))),
+                        "embedded_count": int(
+                            result.get("embedded_count", completed_before + len(vectors))
+                        ),
+                        "total_count": int(
+                            result.get("total_count", total_count or completed_before + len(texts))
+                        ),
+                        "remaining_count": int(
+                            result.get(
+                                "remaining_count",
+                                max((total_count or completed_before + len(texts)) - completed_before - len(vectors), 0),
+                            )
+                        ),
+                    })
             return vectors
         if self.backend == "gemini":
-            return self._embed_gemini(texts, input_type=input_type)
-        model = self._load_model()
-        if model is None:
-            return [self._deterministic_embedding(text) for text in texts]
-        vectors = model.encode(
-            texts,
-            batch_size=self.batch_size,
-            normalize_embeddings=True,
-            show_progress_bar=False,
-            convert_to_numpy=True,
-        )
-        return vectors.tolist()
+            vectors = self._embed_gemini(texts, input_type=input_type)
+        else:
+            model = self._load_model()
+            if model is None:
+                vectors = [self._deterministic_embedding(text) for text in texts]
+            else:
+                encoded = model.encode(
+                    texts,
+                    batch_size=self.batch_size,
+                    normalize_embeddings=True,
+                    show_progress_bar=False,
+                    convert_to_numpy=True,
+                )
+                vectors = encoded.tolist()
+        if progress_callback is not None:
+            resolved_total = total_count or completed_before + len(vectors)
+            embedded_count = min(completed_before + len(vectors), resolved_total)
+            progress_callback({
+                "batch_count": len(vectors),
+                "embedded_count": embedded_count,
+                "total_count": resolved_total,
+                "remaining_count": max(resolved_total - embedded_count, 0),
+            })
+        return vectors
 
     def embed_texts(
-        self, texts: list[str], *, input_type: str = "document"
+        self,
+        texts: list[str],
+        *,
+        input_type: str = "document",
+        completed_before: int = 0,
+        total_count: int | None = None,
+        progress_callback: Callable[[dict[str, int]], None] | None = None,
+        progress_stream_id: str | None = None,
     ) -> list[list[float]]:
         if not texts:
             return []
         last_error: Exception | None = None
         for attempt in range(self.max_retries):
             try:
-                vectors = self._embed_once(texts, input_type=input_type)
+                vectors = self._embed_once(
+                    texts,
+                    input_type=input_type,
+                    completed_before=completed_before,
+                    total_count=total_count,
+                    progress_callback=progress_callback,
+                    progress_stream_id=progress_stream_id,
+                )
                 if len(vectors) != len(texts):
                     raise RuntimeError("Embedding result count does not match input count")
                 if any(len(vector) != self.dimension for vector in vectors):

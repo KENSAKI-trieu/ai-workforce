@@ -1,5 +1,6 @@
 """Durability tests for checkpointed knowledge-document ingestion."""
 
+import json
 import uuid
 
 import pytest
@@ -49,11 +50,13 @@ def test_async_upload_acknowledges_before_ingestion(
     client, ceo_token_headers, transactional_db_session, monkeypatch
 ):
     document_id = f"checkpoint-async-{uuid.uuid4().hex}"
-    scheduled: list[uuid.UUID] = []
+    scheduled: list[tuple[uuid.UUID, str]] = []
     monkeypatch.setattr(
         documents,
         "_resume_document_ingestion_background",
-        lambda record_id: scheduled.append(record_id),
+        lambda record_id, progress_stream_id: scheduled.append(
+            (record_id, progress_stream_id)
+        ),
     )
 
     response = client.post(
@@ -80,9 +83,93 @@ def test_async_upload_acknowledges_before_ingestion(
     record = transactional_db_session.query(KnowledgeDocument).filter(
         KnowledgeDocument.document_id == document_id,
     ).one()
-    assert scheduled == [record.id]
+    assert response.json()["processing_stream_id"]
+    assert scheduled == [(record.id, response.json()["processing_stream_id"])]
     assert record.processing_status == "uploaded"
     assert record.processing_checkpoint == "uploaded"
+
+
+def test_async_replace_skips_ai_duplicate_chunk_preflight(
+    client, ceo_token_headers, monkeypatch
+):
+    document_id = f"async-replace-{uuid.uuid4().hex}"
+    first = _upload(client, ceo_token_headers, document_id)
+    assert first.status_code == 201
+
+    def unexpected_duplicate_preflight(*args, **kwargs):
+        raise AssertionError("async upload must not chunk before returning 202")
+
+    scheduled: list[tuple[uuid.UUID, str]] = []
+    monkeypatch.setattr(
+        documents,
+        "_duplicate_chunk_report",
+        unexpected_duplicate_preflight,
+    )
+    monkeypatch.setattr(
+        documents,
+        "_resume_document_ingestion_background",
+        lambda record_id, progress_stream_id: scheduled.append(
+            (record_id, progress_stream_id)
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/documents/upload",
+        headers=ceo_token_headers,
+        data={
+            "document_id": document_id,
+            "version": "1.0",
+            "duplicate_strategy": "replace",
+            "async_processing": "true",
+        },
+        files={
+            "file": (
+                f"{document_id}.md",
+                b"# Durable ingestion\nCheckpoint this document before embedding.",
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 202
+    assert response.json()["processing_stream_id"]
+    assert scheduled
+
+
+def test_async_exact_duplicate_prompt_uses_source_hash_without_ai_preflight(
+    client, ceo_token_headers, monkeypatch
+):
+    document_id = f"async-duplicate-{uuid.uuid4().hex}"
+    first = _upload(client, ceo_token_headers, document_id)
+    assert first.status_code == 201
+    monkeypatch.setattr(
+        documents,
+        "_duplicate_chunk_report",
+        lambda *args, **kwargs: (_ for _ in ()).throw(
+            AssertionError("exact async duplicate must use source hash")
+        ),
+    )
+
+    response = client.post(
+        "/api/v1/documents/upload",
+        headers=ceo_token_headers,
+        data={
+            "document_id": document_id,
+            "version": "1.0",
+            "duplicate_strategy": "prompt",
+            "async_processing": "true",
+        },
+        files={
+            "file": (
+                f"{document_id}.md",
+                b"# Durable ingestion\nCheckpoint this document before embedding.",
+                "text/markdown",
+            )
+        },
+    )
+
+    assert response.status_code == 409
+    assert response.json()["detail"]["code"] == "DUPLICATE_CHUNKS"
 
 
 def test_processing_event_stream_emits_terminal_status(
@@ -109,7 +196,29 @@ def test_processing_event_stream_emits_terminal_status(
     assert response.status_code == 200
     assert response.headers["content-type"].startswith("text/event-stream")
     assert "event: ready" in response.text
-    assert '"processing_status": "ready"' in response.text
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    statuses = [payload["processing_status"] for payload in payloads]
+    assert statuses.index("parsing") < statuses.index("chunking")
+    assert statuses.index("chunking") < statuses.index("embedding")
+    assert statuses.index("embedding") < statuses.index("indexing")
+    assert statuses.index("indexing") < statuses.index("ready")
+    assert any(
+        payload["processing_status"] == "chunking"
+        and payload.get("chunk_segments_processed") == 1
+        and payload.get("chunk_segments_remaining") == 0
+        and payload.get("chunks_created") == 1
+        for payload in payloads
+    )
+    assert any(
+        payload["processing_status"] == "embedding"
+        and payload.get("embedded_chunks") == 1
+        and payload.get("embedding_remaining_chunks") == 0
+        for payload in payloads
+    )
 
 
 def test_chunk_checkpoint_accepts_section_titles_longer_than_500_characters(
@@ -152,7 +261,7 @@ def test_interrupted_embedding_is_visible_and_resumes_from_saved_chunks(
         def __getattr__(self, name):
             return getattr(real_service, name)
 
-        def embed_texts(self, _texts):
+        def embed_texts(self, _texts, **_kwargs):
             raise RuntimeError("temporary embedding outage")
 
     monkeypatch.setattr(
@@ -231,7 +340,7 @@ def test_interrupted_chunking_resumes_without_parsing_again(
     document_id = f"checkpoint-chunking-{uuid.uuid4().hex}"
     real_chunker = document_ingestion.chunk_document_content
 
-    def fail_chunking(_content):
+    def fail_chunking(_content, **_kwargs):
         raise RuntimeError("chunker interrupted")
 
     monkeypatch.setattr(document_ingestion, "chunk_document_content", fail_chunking)

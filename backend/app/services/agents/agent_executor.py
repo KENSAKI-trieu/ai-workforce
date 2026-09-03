@@ -7,8 +7,9 @@ These deterministic tool flows emit audit logs but do not claim provider token u
 import logging
 import re
 import unicodedata
-from datetime import date
-from typing import Dict, Any, List
+from datetime import date, datetime
+from typing import Dict, Any, Iterator, List
+from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
 from sqlalchemy.orm import Session, joinedload
 
@@ -17,10 +18,15 @@ from app.models.models import (
     AgentWorkflow,
     ChatConversation,
     ChatMessage,
+    Tenant,
     User,
     WorkflowApproval,
 )
-from app.services.audit_events import add_audit_event
+from app.core.hr_capabilities import (
+    HR_CONFIGURATION_VERSION,
+    HR_CORE_TOOLS,
+    HR_RETIRED_TOOLS,
+)
 from app.services.hr_service import (
     can_manage_hr,
     can_approve_hr_request,
@@ -28,7 +34,6 @@ from app.services.hr_service import (
     hr_scope_label,
     query_leave_balance,
     request_leave,
-    scoped_employee_query,
 )
 from app.services.hr_employee_tools import (
     get_employee_sections,
@@ -47,30 +52,19 @@ from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.ai_service_client import AIServiceError
 from app.services.agents.hr_llm_flow import (
     ACTION_INTENTS,
+    SYNTHESIZABLE_INTENTS,
     classify_hr_request,
+    extract_leave_request_slots,
     generate_grounded_hr_answer,
 )
 
 logger = logging.getLogger(__name__)
 
-HR_CORE_TOOLS = {
-    "hybrid_rag_search",
-    "get_employee_basic_profile",
-    "get_employee_private_profile",
-    "get_employee_contract_summary",
-    "get_employee_compensation_summary",
-    "get_employee_leave_summary",
-    "get_employee_full_profile",
-    "query_company_users_sql",
-    "query_leave_balance",
-    "request_leave",
-    "create_onboarding_workflow",
-    "get_contract_expiry",
-    "list_pending_hr_approvals",
-    "create_hr_task",
-    "send_hr_notification",
-    "export_hr_directory",
-}
+# The approval visibility rule runs in Python, so the queue is walked in bounded batches
+# instead of being loaded whole.
+PENDING_APPROVAL_BATCH = 100
+PENDING_APPROVAL_SCAN_LIMIT = 1000
+PENDING_APPROVAL_CARD_SIZE = 20
 
 
 def _repair_hr_agent_capabilities(agent: AIAgent) -> None:
@@ -78,6 +72,10 @@ def _repair_hr_agent_capabilities(agent: AIAgent) -> None:
     if agent.role_code != "HR":
         return
     version = agent.configuration_version or 1
+    if version >= HR_CONFIGURATION_VERSION:
+        # Every _require_tool call lands here. Re-sorting the three JSON columns when no
+        # migration has to run would mark the agent row dirty on every single chat turn.
+        return
     denied = set(agent.disallowed_actions or [])
     tools = set(agent.tools_access or [])
     allowed = set(agent.allowed_actions or [])
@@ -105,7 +103,11 @@ def _repair_hr_agent_capabilities(agent: AIAgent) -> None:
         elif legacy_denied:
             denied |= profile_tools
     if version < 4:
-        if "get_employee_basic_profile" in tools and "get_employee_basic_profile" not in denied:
+        # Directory access follows profile access. This asked about
+        # `get_employee_basic_profile` until version 7 retired that name; the full-profile
+        # grant is set and cleared by exactly the same paths above, so the outcome of this
+        # historical step is unchanged for every starting version.
+        if "get_employee_full_profile" in tools and "get_employee_full_profile" not in denied:
             tools.add("query_company_users_sql")
             allowed.add("query_company_users_sql")
         else:
@@ -114,7 +116,14 @@ def _repair_hr_agent_capabilities(agent: AIAgent) -> None:
         if "export_hr_directory" not in denied:
             tools.add("export_hr_directory")
             allowed.add("export_hr_directory")
-        agent.configuration_version = 5
+    if version < 7:
+        # Version 6 stripped the first two retired names; version 7 adds
+        # `get_employee_basic_profile` to that set. Agents already stamped 6 still need the
+        # sweep, so the whole set is subtracted here rather than per version.
+        tools -= HR_RETIRED_TOOLS
+        allowed -= HR_RETIRED_TOOLS
+        denied -= HR_RETIRED_TOOLS
+    agent.configuration_version = HR_CONFIGURATION_VERSION
     agent.tools_access = sorted(tools)
     agent.allowed_actions = sorted(allowed)
     agent.disallowed_actions = sorted(denied)
@@ -186,6 +195,21 @@ def _employee_profile_payload(
     }
 
 
+def _access_result(profile_payload: dict[str, Any]) -> dict[str, Any]:
+    """What the policy engine actually released, for the tools_executed trace.
+
+    Every profile branch reports this instead of a per-branch constant string, so the
+    trace records which sections were allowed, denied and masked rather than restating
+    the tool name.
+    """
+    access = profile_payload["access"]
+    return {
+        "allowed_sections": access["allowed_sections"],
+        "denied_sections": access["denied_sections"],
+        "masked_fields": access["masked_fields"],
+    }
+
+
 def _sql_directory_item(employee: dict[str, Any], *, scope: str) -> dict[str, Any]:
     return {
         "type": "EMPLOYEE_PROFILE",
@@ -243,6 +267,41 @@ def _normalize_intent_text(message: str) -> str:
     normalized = unicodedata.normalize("NFD", message.lower().replace("đ", "d"))
     return " ".join(
         "".join(char for char in normalized if unicodedata.category(char) != "Mn").split()
+    )
+
+
+# Phrases that make a turn a question about how something works, wherever it appears.
+# Shared by the intent classifier and by the leave-draft guard so the two cannot drift:
+# a phrasing the classifier treats as a policy question must never be recorded as the
+# reason on an open leave draft.
+_INFORMATIONAL_MARKERS = (
+    "bao nhieu",
+    "cach ",
+    "can gi",
+    "can nhung",
+    "chinh sach",
+    "co can",
+    "co duoc",
+    "dieu kien",
+    "huong dan",
+    "la gi",
+    "lam sao",
+    "may ngay",
+    "nhu the nao",
+    "quy dinh",
+    "quy trinh",
+    "ra sao",
+    "the nao",
+    "thu tuc",
+    "yeu cau gi",
+)
+
+
+def _is_informational_message(message: str) -> bool:
+    """Return whether the turn reads as a question rather than a slot-filling answer."""
+    normalized = _normalize_intent_text(message)
+    return "?" in message or any(
+        marker in normalized for marker in _INFORMATIONAL_MARKERS
     )
 
 
@@ -360,25 +419,7 @@ def _classify_hr_intent(message: str) -> str:
     )):
         return "EMPLOYEE_SEARCH"
 
-    informational_markers = (
-        "chinh sach",
-        "quy dinh",
-        "thu tuc",
-        "quy trinh",
-        "dieu kien",
-        "cach ",
-        "lam sao",
-        "la gi",
-        "nhu the nao",
-        "co duoc",
-        "co can",
-        "bao nhieu",
-        "can gi",
-        "can nhung",
-        "yeu cau gi",
-        "huong dan",
-    )
-    if leave_context and any(marker in normalized for marker in informational_markers):
+    if leave_context and any(marker in normalized for marker in _INFORMATIONAL_MARKERS):
         return "POLICY_QUERY"
 
     leave_action_markers = (
@@ -396,9 +437,59 @@ def _classify_hr_intent(message: str) -> str:
     )
     if any(marker in normalized for marker in leave_action_markers):
         return "ACTION_LEAVE_REQUEST"
-    if any(marker in normalized for marker in informational_markers):
+    if any(marker in normalized for marker in _INFORMATIONAL_MARKERS):
         return "POLICY_QUERY"
     return "UNKNOWN"
+
+
+_LEAVE_BALANCE_MARKERS = (
+    "con bao nhieu ngay phep",
+    "so ngay phep",
+    "phep con lai",
+    "quy phep",
+)
+
+# Words that can surround a leave-balance question without naming anyone: polite lead-ins,
+# first-person pronouns, role words that only qualify a following name, and question
+# tails. Whatever is left after removing them is a subject.
+_SUBJECT_NOISE = frozenset({
+    # lead-ins
+    "a", "ah", "biet", "cho", "hay", "hoi", "kiem", "lam", "long", "oi", "on",
+    "tra", "vui", "xem",
+    # first person
+    "em", "minh", "t", "toi", "tui",
+    # role words that qualify a name rather than being one
+    "anh", "ba", "bac", "ban", "chi", "chu", "co", "nhan", "ong", "su", "vien",
+    # question tails
+    "bao", "con", "gi", "ha", "khong", "la", "lai", "nao", "nhieu", "roi", "the", "va",
+})
+
+
+def _has_named_subject(segment: str) -> bool:
+    return any(token not in _SUBJECT_NOISE for token in segment.split())
+
+
+def _leave_balance_names_another_person(message: str) -> bool:
+    """Return whether a leave-balance question is aimed at somebody other than the asker.
+
+    ``query_leave_balance`` only ever reads the requester's own quota, so a question
+    about a colleague must be refused rather than answered with the requester's figures
+    under the colleague's name. Vietnamese puts the subject on either side of the
+    phrase — "An còn bao nhiêu ngày phép" and "quỹ phép của An" — so both are checked.
+    """
+    if re.search(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", message):
+        return True
+    normalized = _normalize_intent_text(message)
+    for marker in _LEAVE_BALANCE_MARKERS:
+        head, separator, tail = normalized.partition(marker)
+        if not separator:
+            continue
+        if _has_named_subject(head):
+            return True
+        # Only a possessive tail names an owner; "... là bao nhiêu" names nobody.
+        _before, possessive, owner = tail.partition("cua ")
+        return bool(possessive) and _has_named_subject(owner)
+    return False
 
 
 def _parse_hr_export_request(message: str) -> tuple[str | None, str | None]:
@@ -527,6 +618,12 @@ def _extract_leave_slots(
             slots["start_date"] = parsed_value
         elif not slots["end_date"]:
             slots["end_date"] = parsed_value
+        elif (existing or {}).get("validation_error"):
+            # Both dates are already filled, so neither branch above can take this one.
+            # The previous turn rejected the pair and asked for the end date again, so a
+            # bare date now is that correction. Without this the deterministic parser
+            # drops it and the draft loops forever whenever the LLM extractor is off.
+            slots["end_date"] = parsed_value
 
     reason_match = re.search(
         r"(?:vì|lý\s*do(?:\s+là)?|ly\s*do(?:\s+la)?)\s*[:\-]?\s*(.+)$",
@@ -541,20 +638,49 @@ def _extract_leave_slots(
         # In an active slot-filling turn, a short plain answer can be the reason
         # even when the user chooses to provide that field before the dates.
         previous_missing = existing.get("missing_fields") or []
-        informational_answer = "?" in message or any(marker in normalized for marker in (
-            "chinh sach",
-            "quy dinh",
-            "thu tuc",
-            "quy trinh",
-            "bao nhieu",
-            "la gi",
-            "nhu the nao",
-        ))
-        if "reason" in previous_missing and not informational_answer:
+        if "reason" in previous_missing and not _is_informational_message(message):
             reason = message.strip(" .")
             if reason:
                 slots["reason"] = reason
     return slots
+
+
+def _extract_leave_slots_with_llm(
+    message: str,
+    existing: dict[str, Any] | None,
+    *,
+    reference_date: date,
+    timezone_name: str,
+) -> dict[str, Any]:
+
+    """Merge semantic LLM extraction over the safe deterministic parser fallback."""
+    slots = _extract_leave_slots(message, existing)
+    extracted = extract_leave_request_slots(
+        message,
+        existing=existing,
+        reference_date=reference_date,
+        timezone_name=timezone_name,
+    )
+    for field in ("start_date", "end_date", "reason"):
+        if extracted.get(field):
+            slots[field] = extracted[field]
+    return slots
+
+
+def _leave_date_context(db: Session, user: User) -> tuple[date, str]:
+    # Streaming responses begin after the request transaction commits, so the
+    # User relationship may already be detached. Read the tenant timezone
+    # explicitly through the active stream session instead of lazy-loading it.
+    timezone_name = str(
+        db.query(Tenant.timezone).filter(Tenant.id == user.tenant_id).scalar()
+        or "Asia/Ho_Chi_Minh"
+    )
+    try:
+        local_timezone = ZoneInfo(timezone_name)
+    except (ZoneInfoNotFoundError, ValueError):
+        timezone_name = "Asia/Ho_Chi_Minh"
+        local_timezone = ZoneInfo(timezone_name)
+    return datetime.now(local_timezone).date(), timezone_name
 
 
 def _leave_missing_fields(slots: dict[str, Any]) -> list[str]:
@@ -566,22 +692,35 @@ def _leave_missing_fields(slots: dict[str, Any]) -> list[str]:
 
 
 def _is_leave_draft_continuation(message: str, draft: dict[str, Any]) -> bool:
+    # A question keeps its own route even mid-draft. A policy question that happens to
+    # mention a date is not an answer to the slot the assistant last asked for, so this
+    # guard runs before the date and weekday markers rather than after them.
+    if _is_informational_message(message):
+        return False
     normalized = _normalize_intent_text(message)
     if _LEAVE_DATE_PATTERN.search(message):
         return True
+    if any(marker in normalized for marker in (
+        "hom nay",
+        "ngay mai",
+        "ngay kia",
+        "ngay mot",
+        "tuan sau",
+        "thang sau",
+        "thu hai",
+        "thu ba",
+        "thu tu",
+        "thu nam",
+        "thu sau",
+        "thu bay",
+        "chu nhat",
+    )):
+        return True
     if re.search(r"(?:vì|lý\s*do|ly\s*do)\s*[:\-]?", message, re.IGNORECASE):
         return True
-    if "reason" in (draft.get("missing_fields") or []):
-        return "?" not in message and not any(marker in normalized for marker in (
-            "chinh sach",
-            "quy dinh",
-            "thu tuc",
-            "quy trinh",
-            "bao nhieu",
-            "la gi",
-            "nhu the nao",
-        ))
-    return False
+    # The informational guard above already ran, so a plain reply while the draft is
+    # still missing its reason is that reason.
+    return "reason" in (draft.get("missing_fields") or [])
 
 
 def _leave_draft_card(
@@ -635,21 +774,61 @@ def execute_agent_chat(
     if role_code.upper() != "HR":
         return _execute_agent_chat_core(db, user, role_code, message, thread_id)
 
+    response: Dict[str, Any] | None = None
+    for event in stream_hr_chat_events(db, user, role_code, message, thread_id):
+        if event["event"] == "complete":
+            response = event["response"]
+    if response is None:
+        raise RuntimeError("HR chat flow ended without a response")
+    return response
+
+
+LEAVE_CANCEL_MARKERS = (
+    "huy don",
+    "huy yeu cau",
+    "khong xin nua",
+    "khong nghi nua",
+)
+
+# "hủy" on its own is a cancellation, but as a substring it also matches the name Huy and
+# any reason containing it, so only the whole message counts.
+LEAVE_CANCEL_MESSAGES = frozenset({"huy", "huy bo", "thoi huy", "huy nhe"})
+
+
+def _is_leave_cancel_message(normalized_message: str) -> bool:
+    return (
+        normalized_message.strip(" .!?") in LEAVE_CANCEL_MESSAGES
+        or any(marker in normalized_message for marker in LEAVE_CANCEL_MARKERS)
+    )
+
+
+def stream_hr_chat_events(
+    db: Session,
+    user: User,
+    role_code: str,
+    message: str,
+    thread_id: str | None = None,
+) -> Iterator[Dict[str, Any]]:
+    """Run the HR gate, yielding a phase before each blocking step.
+
+    Every step here is slow enough to be worth announcing: intent routing and answer
+    synthesis each call the LLM, and dispatch may hit retrieval. Callers that only want
+    the answer drain the generator; the SSE endpoint forwards the phases as they arrive.
+    """
+    yield {"event": "status", "phase": "ANALYZING"}
+
     detailed_intent = _classify_hr_intent(message)
     leave_draft = _load_leave_draft(db, user, thread_id)
     normalized_message = _normalize_intent_text(message)
-    stateful_leave_action = bool(
-        leave_draft
-        and (
-            _is_leave_draft_continuation(message, leave_draft)
-            or any(marker in normalized_message for marker in (
-                "huy don",
-                "huy yeu cau",
-                "khong xin nua",
-                "khong nghi nua",
-            ))
-        )
+    leave_cancel_request = bool(
+        leave_draft and _is_leave_cancel_message(normalized_message)
     )
+    leave_continuation = bool(
+        leave_draft
+        and not leave_cancel_request
+        and _is_leave_draft_continuation(message, leave_draft)
+    )
+    stateful_leave_action = leave_cancel_request or leave_continuation
     if stateful_leave_action:
         detailed_intent = "ACTION_LEAVE_REQUEST"
 
@@ -657,20 +836,39 @@ def execute_agent_chat(
         message,
         detailed_intent=detailed_intent,
     )
+
+    # A slot-filling turn stays an action, but the router still gets to say that this
+    # particular turn is a question. Cancelling a draft is never ambiguous, so only a
+    # continuation may be reinterpreted this way.
+    if (
+        leave_continuation
+        and classification.source == "llm"
+        and classification.kind == "QUESTION"
+        and classification.intent is not None
+        and classification.intent not in ACTION_INTENTS
+    ):
+        stateful_leave_action = False
+
     request_kind = "ACTION" if stateful_leave_action else classification.kind
 
     routed_intent = detailed_intent
     if classification.source == "llm" and not stateful_leave_action:
-        if request_kind == "QUESTION" and detailed_intent in ACTION_INTENTS:
+        # The router understands paraphrases the keyword rules cannot cover. Its label
+        # is already restricted to HR_INTENT_LABELS, and the branch it selects still
+        # enforces tool permissions and purpose limitation.
+        if classification.intent:
+            routed_intent = classification.intent
+        if request_kind == "QUESTION" and routed_intent in ACTION_INTENTS:
             # A question about an operation must not execute that operation.
             routed_intent = "POLICY_QUERY"
-        elif request_kind == "QUESTION" and detailed_intent == "UNKNOWN":
+        elif request_kind == "QUESTION" and routed_intent == "UNKNOWN":
             # The HR agent was explicitly selected, so retrieve governed HR context.
             routed_intent = "POLICY_QUERY"
-        elif request_kind == "ACTION" and detailed_intent not in ACTION_INTENTS:
+        elif request_kind == "ACTION" and routed_intent not in ACTION_INTENTS:
             # The model cannot invent a tool name or arguments. Unknown actions fail closed.
             routed_intent = "UNKNOWN"
 
+    yield {"event": "status", "phase": "SEARCHING"}
     response = _execute_agent_chat_core(
         db,
         user,
@@ -678,10 +876,20 @@ def execute_agent_chat(
         message,
         thread_id,
         hr_intent_override=routed_intent,
+        leave_draft=leave_draft,
+        leave_cancel_request=leave_cancel_request,
     )
-    if request_kind == "QUESTION":
-        return generate_grounded_hr_answer(message, response)
-    return response
+    if response.get("tools_executed"):
+        yield {"event": "status", "phase": "TOOL_CALLING"}
+
+    if request_kind == "QUESTION" and routed_intent in SYNTHESIZABLE_INTENTS:
+        # Self-service profile, compensation and leave-balance answers are already exact
+        # and already contain personal data; they are neither improved nor safely
+        # rewritten by a generative pass.
+        response = generate_grounded_hr_answer(message, response)
+
+    yield {"event": "status", "phase": "COMPLETED"}
+    yield {"event": "complete", "response": response}
 
 
 def _execute_agent_chat_core(
@@ -692,6 +900,8 @@ def _execute_agent_chat_core(
     thread_id: str | None = None,
     *,
     hr_intent_override: str | None = None,
+    leave_draft: dict[str, Any] | None = None,
+    leave_cancel_request: bool = False,
 ) -> Dict[str, Any]:
     """
     Main dispatch entry point for processing agent queries.
@@ -749,16 +959,15 @@ def _execute_agent_chat_core(
     # 1. HR Agent Processing
     # -----------------------------------------------------------------------
     if role_code_upper == "HR":
+        # stream_hr_chat_events already loaded the draft and resolved both the intent and
+        # the cancel decision. Re-deriving them here would cost four extra queries a turn
+        # and let the two copies of the rule drift apart.
         hr_intent = hr_intent_override or _classify_hr_intent(message)
-        leave_draft = _load_leave_draft(db, user, thread_id)
+        if leave_draft is None and hr_intent_override is None:
+            leave_draft = _load_leave_draft(db, user, thread_id)
         normalized_message = _normalize_intent_text(message)
 
-        if leave_draft and any(marker in normalized_message for marker in (
-            "huy don",
-            "huy yeu cau",
-            "khong xin nua",
-            "khong nghi nua",
-        )):
+        if leave_draft and leave_cancel_request:
             cancelled_slots = _extract_leave_slots("", leave_draft)
             response_data["reply"] = (
                 "Tôi đã hủy bản nháp xin nghỉ. Chưa có đơn nào được tạo hoặc gửi cho cấp trên."
@@ -770,7 +979,11 @@ def _execute_agent_chat_core(
             )
             return response_data
 
-        if leave_draft and _is_leave_draft_continuation(message, leave_draft):
+        if (
+            hr_intent_override is None
+            and leave_draft
+            and _is_leave_draft_continuation(message, leave_draft)
+        ):
             hr_intent = "ACTION_LEAVE_REQUEST"
 
         if hr_intent == "ACTION_ONBOARDING":
@@ -866,11 +1079,7 @@ def _execute_agent_chat_core(
                     "requested_sections": requested_sections,
                     "purpose": purpose,
                 },
-                "result": {
-                    "allowed_sections": profile_payload["access"]["allowed_sections"],
-                    "denied_sections": profile_payload["access"]["denied_sections"],
-                    "masked_fields": profile_payload["access"]["masked_fields"],
-                },
+                "result": _access_result(profile_payload),
             })
             response_data["reply"] = _employee_profile_reply(profile_payload)
             response_data["hr_card"] = profile_payload
@@ -893,7 +1102,7 @@ def _execute_agent_chat_core(
                     "requested_sections": ["BASIC", "COMPENSATION"],
                     "purpose": "SELF_SERVICE",
                 },
-                "result": "authorized_self_compensation",
+                "result": _access_result(profile_payload),
             })
             response_data["reply"] = _employee_profile_reply(profile_payload)
             response_data["hr_card"] = profile_payload
@@ -916,7 +1125,7 @@ def _execute_agent_chat_core(
                     "requested_sections": ["BASIC", "PRIVATE"],
                     "purpose": "SELF_SERVICE",
                 },
-                "result": "authorized_self_private_profile",
+                "result": _access_result(profile_payload),
             })
             response_data["reply"] = _employee_profile_reply(profile_payload)
             response_data["hr_card"] = profile_payload
@@ -924,11 +1133,16 @@ def _execute_agent_chat_core(
 
         if hr_intent == "SELF_PROFILE":
             _require_tool(agent, "get_employee_full_profile")
+            # The leave quota is a separate grant. Drop that one section when Admin has
+            # withheld it, rather than failing the whole self-service lookup.
+            self_sections = ["BASIC"]
+            if _can_use_tool(agent, "get_employee_leave_summary"):
+                self_sections.append("LEAVE")
             profile_payload = _employee_profile_payload(
                 db,
                 user,
                 user,
-                requested_sections=["BASIC", "LEAVE"],
+                requested_sections=self_sections,
                 purpose="SELF_SERVICE",
                 tool_name="get_employee_full_profile",
             )
@@ -936,16 +1150,20 @@ def _execute_agent_chat_core(
                 "tool_name": "get_employee_full_profile",
                 "input": {
                     "employee_id": str(user.id),
-                    "requested_sections": ["BASIC", "LEAVE"],
+                    "requested_sections": self_sections,
                     "purpose": "SELF_SERVICE",
                 },
-                "result": "authorized_self_profile",
+                "result": _access_result(profile_payload),
             })
             response_data["reply"] = _employee_profile_reply(profile_payload)
             response_data["hr_card"] = profile_payload
             return response_data
 
         if hr_intent == "ACTION_EXPORT":
+            # Permission first, conversation second — as in every other branch. Asking for
+            # a format before checking the grant both wastes a turn and confirms the
+            # feature exists to somebody who may not use it.
+            _require_tool(agent, "export_hr_directory")
             export_format, directory_type = _parse_hr_export_request(message)
             missing = []
             if not directory_type:
@@ -960,7 +1178,6 @@ def _execute_agent_chat_core(
                 )
                 return response_data
 
-            _require_tool(agent, "export_hr_directory")
             directory_label = (
                 "danh sách quản lý" if directory_type == "managers" else "danh sách nhân viên"
             )
@@ -969,6 +1186,11 @@ def _execute_agent_chat_core(
                 f"/api/v1/hr/employees/export?format={export_format}"
                 f"&directory={directory_type}"
             )
+            # This branch reads no employee data and writes no audit row: it only hands
+            # back a link. The dataset is built, scoped and audited later by
+            # GET /hr/employees/export, which re-derives the actor's own scope. Withholding
+            # the export_hr_directory grant therefore removes the affordance from chat, not
+            # access to the endpoint -- the human's permissions are what gate the download.
             response_data["tools_executed"].append({
                 "tool_name": "export_hr_directory",
                 "input": {
@@ -976,7 +1198,7 @@ def _execute_agent_chat_core(
                     "directory": directory_type,
                     "purpose": "DIRECTORY_EXPORT",
                 },
-                "result": "download_ready",
+                "result": {"download_link_issued": True},
             })
             response_data["reply"] = (
                 f"File **{format_label}** cho **{directory_label}** đã sẵn sàng. "
@@ -1172,17 +1394,44 @@ def _execute_agent_chat_core(
 
         if hr_intent == "PENDING_APPROVALS":
             _require_tool(agent, "list_pending_hr_approvals")
-            approvals = db.query(WorkflowApproval).join(AgentWorkflow).filter(
+            # The approval rule is not expressible as SQL, so filtering stays in Python.
+            # Walk the tenant's queue newest-first in bounded batches rather than loading
+            # every WAITING approval at once. The scan does not stop at the card size
+            # because the reply states a total count, which needs the whole scan window.
+            approval_query = db.query(WorkflowApproval).join(AgentWorkflow).options(
+                joinedload(WorkflowApproval.workflow)
+            ).filter(
                 AgentWorkflow.tenant_id == user.tenant_id,
                 WorkflowApproval.status == "WAITING",
-            ).order_by(WorkflowApproval.updated_at.desc()).all()
-            visible = [item for item in approvals if can_approve_hr_request(db, user, item)]
+            ).order_by(WorkflowApproval.updated_at.desc())
+            visible: list[WorkflowApproval] = []
+            scanned = 0
+            while scanned < PENDING_APPROVAL_SCAN_LIMIT:
+                batch = approval_query.offset(scanned).limit(PENDING_APPROVAL_BATCH).all()
+                visible.extend(
+                    item for item in batch if can_approve_hr_request(db, user, item)
+                )
+                scanned += len(batch)
+                if len(batch) < PENDING_APPROVAL_BATCH:
+                    break
+            # Exhausting the scan window is not the same as leaving rows behind: a queue of
+            # exactly PENDING_APPROVAL_SCAN_LIMIT rows is fully counted. Probe for one more
+            # row instead of inferring truncation from how the loop ended.
+            truncated = (
+                scanned >= PENDING_APPROVAL_SCAN_LIMIT
+                and approval_query.offset(scanned).limit(1).first() is not None
+            )
+            count_text = (
+                f"ít nhất **{len(visible)} yêu cầu**"
+                if truncated else f"**{len(visible)} yêu cầu**"
+            )
             response_data["reply"] = (
-                f"Bạn có **{len(visible)} yêu cầu** đang chờ xử lý."
+                f"Bạn có {count_text} đang chờ xử lý."
                 if visible else "Hiện không có yêu cầu nào đang chờ bạn phê duyệt."
             )
             response_data["hr_card"] = {
                 "type": "PENDING_APPROVALS",
+                "truncated": truncated,
                 "items": [
                     {
                         "id": str(item.id),
@@ -1193,14 +1442,20 @@ def _execute_agent_chat_core(
                         "status": item.status,
                         "expires_at": item.expires_at.isoformat() if item.expires_at else None,
                     }
-                    for item in visible[:20]
+                    for item in visible[:PENDING_APPROVAL_CARD_SIZE]
                 ],
             }
             return response_data
 
         if hr_intent == "ACTION_LEAVE_REQUEST":
             _require_tool(agent, "request_leave")
-            slots = _extract_leave_slots(message, leave_draft)
+            reference_date, timezone_name = _leave_date_context(db, user)
+            slots = _extract_leave_slots_with_llm(
+                message,
+                leave_draft,
+                reference_date=reference_date,
+                timezone_name=timezone_name,
+            )
             missing_fields = _leave_missing_fields(slots)
             if missing_fields:
                 response_data["reply"] = _leave_follow_up_reply(slots, missing_fields)
@@ -1237,7 +1492,7 @@ def _execute_agent_chat_core(
                     "end_date": slots["end_date"],
                     "reason": slots["reason"],
                 },
-                "result": "Success" if req_result["success"] else "Failed",
+                "result": {"success": bool(req_result["success"])},
             })
 
             log_audit_action(
@@ -1273,6 +1528,15 @@ def _execute_agent_chat_core(
 
         if hr_intent == "QUERY_LEAVE_BALANCE":
             _require_tool(agent, "query_leave_balance")
+            # Guard the branch rather than the classifier, so the check also covers the
+            # paraphrases the LLM router sends here.
+            if _leave_balance_names_another_person(message):
+                response_data["reply"] = (
+                    "Tôi chỉ tra được quỹ phép của **chính bạn**. Để xem dữ liệu phép của "
+                    "nhân viên khác, bạn cần yêu cầu **hồ sơ đầy đủ** kèm **email công ty** "
+                    "và **mục đích nghiệp vụ** hợp lệ."
+                )
+                return response_data
             bal = query_leave_balance(db, user)
             response_data["tools_executed"].append({
                 "tool_name": "query_leave_balance",
@@ -1290,13 +1554,17 @@ def _execute_agent_chat_core(
             response_data["hr_card"] = {"type": "LEAVE_BALANCE", "balance": bal}
             return response_data
 
+        policy_notice = ""
         if hr_intent == "EMPLOYEE_LEAVE_STATUS_COUNT":
-            response_data["reply"] = (
-                "Tôi nhận ra đây là yêu cầu thống kê **nhân viên đang nghỉ phép**, "
-                "nhưng HR Agent hiện chưa có tool lịch nghỉ theo ngày để trả lời chính xác. "
-                "Tôi chưa chuyển câu hỏi này sang kho chính sách."
+            # There is no day-by-day leave calendar tool yet. Say so, then still search the
+            # governed HR knowledge base rather than ending the turn with nothing: both the
+            # keyword rules and the router can land here, and neither has an alternative.
+            policy_notice = (
+                "HR Agent chưa có tool lịch nghỉ theo ngày nên chưa thể đếm chính xác số "
+                "nhân viên đang nghỉ. Dưới đây là thông tin liên quan trong kho tài liệu HR:"
+                "\n\n"
             )
-            return response_data
+            hr_intent = "POLICY_QUERY"
 
         if hr_intent == "UNKNOWN":
             response_data["reply"] = (
@@ -1356,6 +1624,7 @@ def _execute_agent_chat_core(
                     if policy_dates else ""
                 )
                 response_data["reply"] = (
+                    f"{policy_notice}"
                     f"Dựa trên quy định HR của công ty:\n\n"
                     f"{top_result['content']}\n\n"
                     f"{top_result['citation_tag']}"
@@ -1363,11 +1632,16 @@ def _execute_agent_chat_core(
                 )
             else:
                 response_data["reply"] = (
+                    f"{policy_notice}"
                     "Tôi chưa tìm thấy chính sách còn hiệu lực và phù hợp trong kho tài liệu HR. "
                     "Tôi sẽ không tự suy diễn quy định; vui lòng liên hệ HR để được xác nhận."
                 )
             return response_data
 
+        # Unreachable today: every label in HR_INTENT_LABELS has a branch above, and the
+        # router drops anything outside that set. Kept as a net so a label added later
+        # without a branch degrades to a refusal instead of falling through to whatever
+        # follows. Do not read it as evidence of a missing intent.
         response_data["reply"] = (
             "Tôi chưa thể xử lý yêu cầu HR này. Vui lòng mô tả rõ hành động và đối tượng cần tra cứu."
         )

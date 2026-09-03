@@ -10,6 +10,7 @@ import uuid
 import re
 from collections import Counter
 from datetime import date
+from collections.abc import Callable
 from typing import List, Dict, Any
 from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm import Session
@@ -226,6 +227,11 @@ def chunk_document_content(
     content: str,
     chunk_size: int = CHUNK_SIZE_TOKENS,
     chunk_overlap: int = CHUNK_OVERLAP_TOKENS,
+    progress_callback: Callable[[dict[str, int]], None] | None = None,
+    progress_stream_id: str | None = None,
+    progress_completed_before: int = 0,
+    progress_total_count: int | None = None,
+    progress_chunks_before: int = 0,
 ) -> list[dict[str, Any]]:
     """
     Create header-aware chunks bounded by lexical-token count.
@@ -241,48 +247,75 @@ def chunk_document_content(
 
     ai_client = get_ai_service_client()
     if ai_client.enabled:
+        progress_options: dict[str, Any] = {}
+        if progress_stream_id:
+            progress_options = {
+                "progress_stream_id": progress_stream_id,
+                "progress_completed_before": progress_completed_before,
+                "progress_total_count": progress_total_count,
+                "progress_chunks_before": progress_chunks_before,
+            }
         return ai_client.chunk_document(
             content,
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            on_progress=progress_callback,
+            **progress_options,
         )
 
     chunks: list[dict[str, Any]] = []
     cleaned_content = clean_document_text(content)
-    for section_index, section in enumerate(_semantic_sections(cleaned_content)):
+    sections = _semantic_sections(cleaned_content)
+    planned_segments: list[tuple[int, dict[str, Any], int, tuple[str, int, int, int]]] = []
+    for section_index, section in enumerate(sections):
         windows = _split_token_windows(
             section["content"],
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
             target_size=min(CHUNK_TARGET_TOKENS, chunk_size),
         )
-        for section_chunk_index, (
-            chunk_content,
-            token_count,
-            start_char,
-            end_char,
-        ) in enumerate(windows):
-            window_pages: list[int] = []
-            page_offsets = section["page_offsets"]
-            for offset_index, (page_start, page_number) in enumerate(page_offsets):
-                page_end = (
-                    page_offsets[offset_index + 1][0]
-                    if offset_index + 1 < len(page_offsets)
-                    else len(section["content"])
-                )
-                if page_start < end_char and page_end > start_char:
-                    window_pages.append(page_number)
-            chunks.append({
-                "content": chunk_content,
-                "section_title": section["section_title"],
-                "section_type": section["section_type"],
-                "section_index": section_index,
-                "section_chunk_index": section_chunk_index,
-                "header_level": section["header_level"],
-                "header_path": section["header_path"],
-                "page": window_pages[0] if window_pages else section["page"],
-                "pages": window_pages or section["pages"],
-                "token_count": token_count,
+        planned_segments.extend(
+            (section_index, section, section_chunk_index, window)
+            for section_chunk_index, window in enumerate(windows)
+        )
+
+    total_segments = len(planned_segments)
+    for segment_index, (
+        section_index,
+        section,
+        section_chunk_index,
+        window,
+    ) in enumerate(planned_segments):
+        chunk_content, token_count, start_char, end_char = window
+        window_pages: list[int] = []
+        page_offsets = section["page_offsets"]
+        for offset_index, (page_start, page_number) in enumerate(page_offsets):
+            page_end = (
+                page_offsets[offset_index + 1][0]
+                if offset_index + 1 < len(page_offsets)
+                else len(section["content"])
+            )
+            if page_start < end_char and page_end > start_char:
+                window_pages.append(page_number)
+        chunks.append({
+            "content": chunk_content,
+            "section_title": section["section_title"],
+            "section_type": section["section_type"],
+            "section_index": section_index,
+            "section_chunk_index": section_chunk_index,
+            "header_level": section["header_level"],
+            "header_path": section["header_path"],
+            "page": window_pages[0] if window_pages else section["page"],
+            "pages": window_pages or section["pages"],
+            "token_count": token_count,
+        })
+        if progress_callback is not None:
+            processed_segments = segment_index + 1
+            progress_callback({
+                "processed_segments": processed_segments,
+                "total_segments": total_segments,
+                "remaining_segments": total_segments - processed_segments,
+                "chunks_created": len(chunks),
             })
 
     return chunks
@@ -295,6 +328,8 @@ def build_configured_chunks(
     chunk_size: int = CHUNK_SIZE_TOKENS,
     chunk_overlap: int = CHUNK_OVERLAP_TOKENS,
     parent_chunk_size: int = 1024,
+    progress_callback: Callable[[dict[str, int]], None] | None = None,
+    progress_stream_id: str | None = None,
 ) -> list[dict[str, Any]]:
     """Build standard or parent-child chunks using the user's saved settings."""
     normalized_mode = mode.strip().lower()
@@ -312,6 +347,8 @@ def build_configured_chunks(
                 content,
                 chunk_size=chunk_size,
                 chunk_overlap=chunk_overlap,
+                progress_callback=progress_callback,
+                progress_stream_id=progress_stream_id,
             )
         ]
 
@@ -322,10 +359,31 @@ def build_configured_chunks(
     )
     children: list[dict[str, Any]] = []
     for parent_index, parent in enumerate(parent_chunks):
+        def report_child_progress(
+            update: dict[str, int],
+            *,
+            current_parent_index: int = parent_index,
+        ) -> None:
+            if progress_callback is None:
+                return
+            parent_completed = update["remaining_segments"] == 0
+            processed_parents = current_parent_index + int(parent_completed)
+            progress_callback({
+                "processed_segments": processed_parents,
+                "total_segments": len(parent_chunks),
+                "remaining_segments": len(parent_chunks) - processed_parents,
+                "chunks_created": len(children) + update["chunks_created"],
+            })
+
         child_chunks = chunk_document_content(
             parent["content"],
             chunk_size=chunk_size,
             chunk_overlap=chunk_overlap,
+            progress_callback=report_child_progress if progress_callback else None,
+            progress_stream_id=progress_stream_id,
+            progress_completed_before=parent_index,
+            progress_total_count=len(parent_chunks),
+            progress_chunks_before=len(children),
         )
         for child_index, child in enumerate(child_chunks):
             children.append({

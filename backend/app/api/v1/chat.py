@@ -17,7 +17,7 @@ from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
-from app.services.agents.agent_executor import execute_agent_chat
+from app.services.agents.agent_executor import execute_agent_chat, stream_hr_chat_events
 from app.services.agents.langgraph_engine import LangGraphEngine
 
 router = APIRouter(prefix="/agent", tags=["Agent Chat"])
@@ -252,7 +252,8 @@ def stream_chat_with_agent(
     def event_stream():
         try:
             result: dict[str, Any] | None = None
-            if settings.LANGGRAPH_ENABLED:
+            # HR uses its governed LLM-first flow, including contextual leave-slot extraction.
+            if settings.LANGGRAPH_ENABLED and role_code != "HR":
                 for item in LangGraphEngine().execute_stream(
                     db=db,
                     user=current_user,
@@ -268,6 +269,27 @@ def stream_chat_with_agent(
                             event,
                             {key: value for key, value in item.items() if key != "event"},
                         )
+            elif role_code == "HR":
+                # The HR flow reports a phase before each blocking step — intent routing,
+                # dispatch, answer synthesis — so the client is not left on ANALYZING for
+                # the whole round trip.
+                for item in stream_hr_chat_events(
+                    db,
+                    current_user,
+                    role_code,
+                    req.message,
+                    str(conversation.id),
+                ):
+                    if item["event"] == "complete":
+                        result = dict(item["response"])
+                    elif item["phase"] != "COMPLETED":
+                        yield _encode_sse("status", {"phase": item["phase"]})
+                if result is not None and result.get("approval_card"):
+                    yield _encode_sse("status", {"phase": "WAITING_APPROVAL"})
+                elif result is not None:
+                    for token in re.findall(r"\S+\s*|\s+", str(result.get("reply") or "")):
+                        yield _encode_sse("token", {"delta": token})
+                yield _encode_sse("status", {"phase": "COMPLETED"})
             else:
                 yield _encode_sse("status", {"phase": "ANALYZING"})
                 result = execute_agent_chat(
@@ -284,7 +306,7 @@ def stream_chat_with_agent(
                 else:
                     for token in re.findall(r"\S+\s*|\s+", str(result.get("reply") or "")):
                         yield _encode_sse("token", {"delta": token})
-                    yield _encode_sse("status", {"phase": "COMPLETED"})
+                yield _encode_sse("status", {"phase": "COMPLETED"})
 
             if result is None:
                 raise RuntimeError("Chat stream ended without a response")
@@ -293,6 +315,15 @@ def stream_chat_with_agent(
                 "conversation_id": str(conversation.id),
                 "message_id": str(assistant_message.id),
                 **result,
+            })
+        except HTTPException as exc:
+            # A permission or state refusal is an answer, not a crash. The non-streaming
+            # endpoint returns its detail, so the stream must not flatten it into a
+            # generic failure.
+            db.rollback()
+            yield _encode_sse("error", {
+                "message": str(exc.detail),
+                "status_code": exc.status_code,
             })
         except Exception:
             db.rollback()

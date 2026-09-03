@@ -665,56 +665,8 @@ def get_employee_sections(
     }
 
 
-def get_employee_basic_profile(db: Session, *, actor: User, employee_id: uuid.UUID | str, purpose: str) -> dict[str, Any]:
-    return get_employee_sections(
-        db,
-        actor=actor,
-        employee_id=employee_id,
-        requested_sections=["BASIC"],
-        purpose=purpose,
-        tool_name="get_employee_basic_profile",
-    )
-
-
-def get_employee_private_profile(db: Session, *, actor: User, employee_id: uuid.UUID | str, purpose: str) -> dict[str, Any]:
-    return get_employee_sections(
-        db,
-        actor=actor,
-        employee_id=employee_id,
-        requested_sections=["PRIVATE"],
-        purpose=purpose,
-        tool_name="get_employee_private_profile",
-    )
-
-
-def get_employee_contract_summary(db: Session, *, actor: User, employee_id: uuid.UUID | str, purpose: str) -> dict[str, Any]:
-    return get_employee_sections(
-        db,
-        actor=actor,
-        employee_id=employee_id,
-        requested_sections=["CONTRACT"],
-        purpose=purpose,
-        tool_name="get_employee_contract_summary",
-    )
-
-
-def get_employee_compensation_summary(db: Session, *, actor: User, employee_id: uuid.UUID | str, purpose: str) -> dict[str, Any]:
-    return get_employee_sections(
-        db,
-        actor=actor,
-        employee_id=employee_id,
-        requested_sections=["COMPENSATION"],
-        purpose=purpose,
-        tool_name="get_employee_compensation_summary",
-    )
-
-
-def get_employee_leave_summary(db: Session, *, actor: User, employee_id: uuid.UUID | str, purpose: str) -> dict[str, Any]:
-    return get_employee_sections(
-        db,
-        actor=actor,
-        employee_id=employee_id,
-        requested_sections=["LEAVE"],
-        purpose=purpose,
-        tool_name="get_employee_leave_summary",
-    )
+# Five single-section wrappers around get_employee_sections used to live here, one per
+# capability name. Nothing imported them: the executor calls get_employee_sections
+# directly with the section list and the tool_name it wants recorded in the audit trail,
+# and the policy tests do the same. They were removed rather than left as a second way to
+# spell the same call, which would let the two drift.

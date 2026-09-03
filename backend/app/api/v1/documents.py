@@ -1,5 +1,6 @@
 """Enterprise Knowledge Base with document ACL, collections and file ingestion."""
 
+import hashlib
 import ipaddress
 import json
 import logging
@@ -35,8 +36,14 @@ from app.core.security import get_current_active_user
 from app.models.models import DocumentChunk, KnowledgeDocument, User
 from app.services.document_ingestion import (
     DocumentAlreadyProcessing,
-    failed_stage_from_checkpoint,
     resume_document_ingestion,
+)
+from app.services.document_processing_events import (
+    processing_events_after,
+    processing_status_payload,
+    publish_processing_status,
+    reset_processing_events,
+    wait_for_processing_event,
 )
 from app.services.document_parser import DocumentParseError, extract_file_text
 from app.services.knowledge_storage import (
@@ -64,36 +71,25 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 VALID_DUPLICATE_STRATEGIES = {"prompt", "replace", "keep_old"}
 
 
-def _resume_document_ingestion_background(record_id: uuid.UUID) -> None:
+def _resume_document_ingestion_background(
+    record_id: uuid.UUID,
+    progress_stream_id: str | None = None,
+) -> None:
     """Run durable ingestion after the upload response has been sent."""
     with SyncSessionLocal() as background_db:
         try:
-            resume_document_ingestion(background_db, record_id)
+            resume_document_ingestion(
+                background_db,
+                record_id,
+                progress_stream_id=progress_stream_id,
+            )
         except Exception:
             # resume_document_ingestion persists the failed checkpoint and error.
             logger.exception("Background ingestion failed for document %s", record_id)
 
 
 def _processing_status_payload(record: KnowledgeDocument) -> dict[str, Any]:
-    failed_stage = (
-        failed_stage_from_checkpoint(record.processing_checkpoint)
-        if record.processing_status == "failed"
-        else None
-    )
-    return {
-        "document_id": record.document_id,
-        "document_name": record.file_name,
-        "version": record.version,
-        "processing_status": record.processing_status,
-        "processing_checkpoint": record.processing_checkpoint,
-        "processing_progress": record.processing_progress,
-        "processing_attempts": record.processing_attempts,
-        "chunk_count": record.chunk_count,
-        "embedding_model": record.embedding_model,
-        "failed_stage": failed_stage,
-        "error_message": record.error_message,
-        "updated_at": record.updated_at.isoformat() if record.updated_at else None,
-    }
+    return processing_status_payload(record)
 
 
 def _sse_event(event: str, payload: dict[str, Any]) -> str:
@@ -358,6 +354,9 @@ def _set_document_processing_status(
         record.chunking_config = chunking_config
     record.error_message = error_message
     db.commit()
+    if reset_attempts:
+        reset_processing_events(record.id)
+    publish_processing_status(record)
     return record
 
 
@@ -795,13 +794,32 @@ def stream_document_processing_events(
         raise HTTPException(status_code=404, detail="Document processing status not found")
 
     tenant_id = current_user.tenant_id
+    record_id = initial.id
     manager_department = current_user.department if current_user.role == "Manager" else None
 
     def events():
         deadline = time.monotonic() + 15 * 60
         last_payload: str | None = None
         heartbeat_at = time.monotonic()
+        event_sequence = 0
         while time.monotonic() < deadline:
+            queued_events = processing_events_after(record_id, event_sequence)
+            if queued_events:
+                for event_sequence, payload in queued_events:
+                    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                    if serialized == last_payload:
+                        continue
+                    status = str(payload["processing_status"])
+                    event = status if status in {"ready", "failed"} else "status"
+                    yield _sse_event(event, payload)
+                    last_payload = serialized
+                    heartbeat_at = time.monotonic()
+                    if status in {"ready", "failed"}:
+                        return
+                continue
+
+            # Database polling remains a cross-process/restart fallback. Live
+            # ingestion in this process is delivered by the ordered queue above.
             with SyncSessionLocal() as event_db:
                 record = event_db.query(KnowledgeDocument).filter(
                     KnowledgeDocument.tenant_id == tenant_id,
@@ -831,7 +849,7 @@ def stream_document_processing_events(
             elif time.monotonic() - heartbeat_at >= 10:
                 yield ": keep-alive\n\n"
                 heartbeat_at = time.monotonic()
-            time.sleep(0.5)
+            wait_for_processing_event(record_id, event_sequence, timeout=0.5)
 
         yield _sse_event("error", {
             "code": "PIPELINE_STREAM_TIMEOUT",
@@ -886,6 +904,7 @@ def retry_document_ingestion(
         raise HTTPException(status_code=409, detail="Original document is not available")
 
     try:
+        reset_processing_events(record.id)
         chunks = resume_document_ingestion(db, record.id)
     except DocumentAlreadyProcessing as exc:
         raise HTTPException(status_code=409, detail=str(exc)) from exc
@@ -1047,7 +1066,7 @@ def upload_document(
     chunk_size: int = Form(CHUNK_SIZE_TOKENS),
     chunk_overlap: int = Form(CHUNK_OVERLAP_TOKENS),
     parent_chunk_size: int = Form(1024),
-    async_processing: bool = Form(True),
+    async_processing: bool = Form(False),
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> dict:
@@ -1100,20 +1119,79 @@ def upload_document(
         "chunk_overlap": chunk_overlap,
         "parent_chunk_size": parent_chunk_size,
     }
-    try:
-        build_configured_chunks(content, **chunking_config)
-    except ValueError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if chunking_config["mode"] not in {"standard", "parent_child"}:
+        raise HTTPException(
+            status_code=422,
+            detail="mode must be either 'standard' or 'parent_child'",
+        )
+    if chunk_size <= 0:
+        raise HTTPException(status_code=422, detail="chunk_size must be greater than zero")
+    if chunk_overlap < 0 or chunk_overlap >= chunk_size:
+        raise HTTPException(
+            status_code=422,
+            detail="chunk_overlap must be between zero and chunk_size - 1",
+        )
+    if parent_chunk_size <= 0:
+        raise HTTPException(
+            status_code=422,
+            detail="parent_chunk_size must be greater than zero",
+        )
+    if chunking_config["mode"] == "parent_child" and parent_chunk_size < chunk_size:
+        raise HTTPException(
+            status_code=422,
+            detail="parent_chunk_size must be greater than or equal to chunk_size",
+        )
 
-    duplicates, incoming_chunk_count = _duplicate_chunk_report(
-        db,
-        tenant_id=current_user.tenant_id,
-        document_id=resolved_document_id,
-        version=resolved_version,
-        content=content,
-        chunking_config=chunking_config,
+    # A new logical version cannot contain duplicate stored chunks. Avoid
+    # calling the AI chunk endpoint during the upload acknowledgement; the
+    # background ingestion will make the single authoritative call and expose
+    # its response through processing-events.
+    has_existing_chunks = db.query(DocumentChunk.id).filter(
+        DocumentChunk.tenant_id == current_user.tenant_id,
+        DocumentChunk.document_id == resolved_document_id,
+        DocumentChunk.version == resolved_version,
+    ).first() is not None
+    existing_record = db.query(KnowledgeDocument).filter(
+        KnowledgeDocument.tenant_id == current_user.tenant_id,
+        KnowledgeDocument.document_id == resolved_document_id,
+        KnowledgeDocument.version == resolved_version,
+    ).first()
+    existing_chunk_count = (
+        db.query(DocumentChunk.id).filter(
+            DocumentChunk.tenant_id == current_user.tenant_id,
+            DocumentChunk.document_id == resolved_document_id,
+            DocumentChunk.version == resolved_version,
+        ).count()
+        if has_existing_chunks
+        else 0
     )
-    if duplicates and normalized_duplicate_strategy == "prompt":
+    exact_source_duplicate = bool(
+        async_processing
+        and existing_record
+        and existing_record.source_hash
+        and existing_record.source_hash == hashlib.sha256(data).hexdigest()
+    )
+    duplicates: list[dict[str, Any]] = []
+    incoming_chunk_count = existing_chunk_count if exact_source_duplicate else 0
+    # Async uploads must acknowledge before invoking the AI service. Exact
+    # re-uploads are detected from the durable source hash; partial chunk
+    # comparison remains available to the synchronous management endpoint.
+    if has_existing_chunks and not async_processing:
+        try:
+            duplicates, incoming_chunk_count = _duplicate_chunk_report(
+                db,
+                tenant_id=current_user.tenant_id,
+                document_id=resolved_document_id,
+                version=resolved_version,
+                content=content,
+                chunking_config=chunking_config,
+            )
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+    if (
+        (duplicates or exact_source_duplicate)
+        and normalized_duplicate_strategy == "prompt"
+    ):
         raise HTTPException(
             status_code=409,
             detail={
@@ -1122,18 +1200,17 @@ def upload_document(
                 "document_id": resolved_document_id,
                 "document_name": filename,
                 "version": resolved_version,
-                "duplicate_count": len(duplicates),
+                "duplicate_count": len(duplicates) or existing_chunk_count,
                 "incoming_chunk_count": incoming_chunk_count,
                 "duplicates": duplicates,
                 "actions": ["replace", "keep_old"],
             },
         )
-    if duplicates and normalized_duplicate_strategy == "keep_old":
-        existing_record = db.query(KnowledgeDocument).filter(
-            KnowledgeDocument.tenant_id == current_user.tenant_id,
-            KnowledgeDocument.document_id == resolved_document_id,
-            KnowledgeDocument.version == resolved_version,
-        ).first()
+    if (
+        has_existing_chunks
+        and normalized_duplicate_strategy == "keep_old"
+        and (duplicates or exact_source_duplicate)
+    ):
         response.status_code = 200
         return {
             "success": True,
@@ -1145,7 +1222,7 @@ def upload_document(
             ),
             "processing_progress": 100,
             "chunks_created": 0,
-            "duplicate_count": len(duplicates),
+            "duplicate_count": len(duplicates) or existing_chunk_count,
         }
 
     try:
@@ -1177,7 +1254,12 @@ def upload_document(
         chunking_config=chunking_config,
     )
     if async_processing:
-        background_tasks.add_task(_resume_document_ingestion_background, record.id)
+        progress_stream_id = uuid.uuid4().hex
+        background_tasks.add_task(
+            _resume_document_ingestion_background,
+            record.id,
+            progress_stream_id,
+        )
         response.status_code = 202
         return {
             "success": True,
@@ -1191,6 +1273,7 @@ def upload_document(
             "storage_key": storage_key,
             "embedding_model": None,
             "chunks_created": 0,
+            "processing_stream_id": progress_stream_id,
         }
 
     chunks = resume_document_ingestion(db, record.id)

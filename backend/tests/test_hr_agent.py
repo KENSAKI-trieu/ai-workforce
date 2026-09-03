@@ -7,14 +7,19 @@ from datetime import date, timedelta
 from io import BytesIO
 
 import pytest
+from fastapi import HTTPException
 from openpyxl import load_workbook
 from pypdf import PdfReader
 
 from app.core.database import SyncSessionLocal
 from app.models.models import AIAgent, AuditLog, User, UserMemory
 from app.services.agents.agent_executor import (
+    HR_CONFIGURATION_VERSION,
+    HR_RETIRED_TOOLS,
     _classify_hr_intent,
+    _leave_balance_names_another_person,
     _repair_hr_agent_capabilities,
+    _require_tool,
 )
 
 
@@ -59,11 +64,17 @@ def test_stale_hr_agent_capabilities_are_split_into_narrow_profile_tools(
     transactional_db_session.commit()
 
     assert "get_employee_profile" not in agent.tools_access
-    assert "get_employee_basic_profile" in agent.tools_access
     assert "get_employee_full_profile" in agent.tools_access
+    # Directory access follows profile access. This used to key off the basic-profile
+    # grant, which version 7 retired; the outcome for a version 1 row is unchanged.
     assert "query_company_users_sql" in agent.tools_access
     assert "export_hr_directory" in agent.tools_access
-    assert agent.configuration_version == 5
+    # Tools no branch dispatches and the tool gateway does not define are revoked, not
+    # left as grants with nothing behind them.
+    assert not HR_RETIRED_TOOLS & set(agent.tools_access)
+    assert not HR_RETIRED_TOOLS & set(agent.allowed_actions)
+    assert not HR_RETIRED_TOOLS & set(agent.disallowed_actions)
+    assert agent.configuration_version == HR_CONFIGURATION_VERSION
 
     response = client.post(
         "/api/v1/agent/chat",
@@ -72,6 +83,54 @@ def test_stale_hr_agent_capabilities_are_split_into_narrow_profile_tools(
     )
     assert response.status_code == 200, response.text
     assert response.json()["hr_card"]["type"] == "EMPLOYEE_PROFILE"
+
+
+def test_version_seven_revokes_the_unreachable_basic_profile_grant(
+    transactional_db_session,
+):
+    """An agent already stamped at version 6 still carries the name; 7 has to sweep it."""
+    agent = transactional_db_session.query(AIAgent).filter(
+        AIAgent.role_code == "HR"
+    ).first()
+    # Set the grants explicitly: this module shares one session, so whatever an earlier
+    # test left on the row must not decide what this one is starting from.
+    agent.tools_access = [
+        "get_employee_basic_profile",
+        "get_employee_full_profile",
+        "query_leave_balance",
+    ]
+    agent.allowed_actions = list(agent.tools_access)
+    agent.disallowed_actions = []
+    agent.configuration_version = 6
+
+    _repair_hr_agent_capabilities(agent)
+
+    assert "get_employee_basic_profile" not in agent.tools_access
+    assert "get_employee_basic_profile" not in agent.allowed_actions
+    assert agent.configuration_version == HR_CONFIGURATION_VERSION
+    # The sweep must not cost the agent a capability it can still dispatch.
+    assert "get_employee_full_profile" in agent.tools_access
+
+
+def test_a_denied_profile_grant_still_denies_the_directory_tool():
+    """Version 4 keyed off the basic-profile name until 7 retired it; both legacy paths
+    have to keep reaching the same verdict."""
+    class _Agent:
+        role_code = "HR"
+        configuration_version = 1
+        tools_access = ["query_leave_balance", "get_employee_profile"]
+        allowed_actions = ["query_leave_balance", "get_employee_profile"]
+        disallowed_actions = ["get_employee_profile"]
+
+    agent = _Agent()
+    _repair_hr_agent_capabilities(agent)
+
+    # The grant survives in tools_access because version 2 hands out the whole core set;
+    # the explicit denial is what has to win, and _require_tool checks it first.
+    assert "query_company_users_sql" in agent.disallowed_actions
+    with pytest.raises(HTTPException) as denied:
+        _require_tool(agent, "query_company_users_sql")
+    assert denied.value.status_code == 403
 
 
 def test_hr_company_user_sql_tool_respects_chat_actor_scope(
@@ -123,7 +182,7 @@ def test_hr_manager_directory_phrase_from_chat_routes_to_sql(
     } <= {"Admin", "Manager"}
 
 
-def test_hr_unknown_and_unsupported_operational_queries_do_not_fall_back_to_policy(
+def test_hr_unknown_query_does_not_fall_back_to_policy(
     client,
     ceo_token_headers,
 ):
@@ -136,14 +195,25 @@ def test_hr_unknown_and_unsupported_operational_queries_do_not_fall_back_to_poli
     assert unknown.json()["tools_executed"] == []
     assert "chưa xác định rõ" in unknown.json()["reply"].lower()
 
+
+def test_hr_unsupported_leave_statistics_states_the_gap_then_still_searches(
+    client,
+    ceo_token_headers,
+):
+    """There is no day-by-day leave calendar tool, but the question is still answerable.
+
+    Both the keyword rules and the LLM router can land on this intent, and neither has
+    an alternative label to fall back to, so the branch must not end the turn empty.
+    """
     unsupported = client.post(
         "/api/v1/agent/chat",
         json={"agent_role": "HR", "message": "có bao nhiêu nhân viên đang nghỉ phép"},
         headers=ceo_token_headers,
     )
     assert unsupported.status_code == 200, unsupported.text
-    assert unsupported.json()["tools_executed"] == []
-    assert "chưa có tool" in unsupported.json()["reply"].lower()
+    data = unsupported.json()
+    assert "chưa có tool" in data["reply"].lower()
+    assert [item["tool_name"] for item in data["tools_executed"]] == ["hybrid_rag_search"]
 
 
 def test_hr_export_intent_requires_scope_and_format(
@@ -299,3 +369,109 @@ def test_hr_leave_request_creates_approval_card(client, employee_token_headers):
     assert card["action_type"] == "XIN NGHỈ PHÉP"
     assert card["status"] == "WAITING"
     assert "id" in card
+
+
+@pytest.mark.parametrize(
+    ("message", "expected_other"),
+    [
+        ("Tôi còn bao nhiêu ngày phép?", False),
+        ("còn bao nhiêu ngày phép", False),
+        ("Cho tôi biết số ngày phép", False),
+        ("Kiểm tra quỹ phép của tôi", False),
+        ("An còn bao nhiêu ngày phép?", True),
+        ("Nguyễn Văn A còn bao nhiêu ngày phép", True),
+        ("quỹ phép của an.nguyen@company.com", True),
+    ],
+)
+def test_leave_balance_subject_detection(message, expected_other):
+    assert _leave_balance_names_another_person(message) is expected_other
+
+
+def test_hr_leave_balance_refuses_a_question_about_somebody_else(
+    client,
+    employee_token_headers,
+):
+    """query_leave_balance only reads the asker's own quota, so it must not answer
+    a question about a colleague with the asker's figures under the colleague's name."""
+    response = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": "An còn bao nhiêu ngày phép?"},
+        headers=employee_token_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["tools_executed"] == []
+    assert data["hr_card"] is None
+    assert "chính bạn" in data["reply"]
+
+
+def test_hr_export_checks_the_grant_before_asking_for_a_format(
+    client,
+    ceo_token_headers,
+    transactional_db_session,
+):
+    """H4: permission first, conversation second — as in every other HR branch."""
+    actor = transactional_db_session.query(User).filter(
+        User.email == "admin@company.com"
+    ).one()
+    agent = transactional_db_session.query(AIAgent).filter(
+        AIAgent.tenant_id == actor.tenant_id,
+        AIAgent.role_code == "HR",
+    ).one()
+    agent.disallowed_actions = sorted(
+        set(agent.disallowed_actions or []) | {"export_hr_directory"}
+    )
+    transactional_db_session.commit()
+
+    response = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": "Xuất file"},
+        headers=ceo_token_headers,
+    )
+
+    assert response.status_code == 403, response.text
+    assert "export_hr_directory" in response.json()["detail"]
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        # Vietnamese puts the subject on either side of the phrase.
+        "quỹ phép của An",
+        "quỹ phép của nhân viên An",
+        "Cho tôi biết quỹ phép của bạn An",
+        "số ngày phép của An là bao nhiêu",
+        "số ngày phép còn lại của chị Lan",
+        "xem quỹ phép của team tôi",
+    ],
+)
+def test_leave_balance_detects_a_subject_after_the_phrase(message):
+    assert _leave_balance_names_another_person(message) is True
+
+
+@pytest.mark.parametrize(
+    "message",
+    [
+        "quỹ phép của tôi",
+        "số ngày phép của mình",
+        "quỹ phép của em",
+        "cho em hỏi số ngày phép",
+    ],
+)
+def test_leave_balance_first_person_possessives_stay_self_service(message):
+    assert _leave_balance_names_another_person(message) is False
+
+
+def test_hr_leave_balance_refuses_a_possessive_question_about_a_colleague(
+    client,
+    employee_token_headers,
+):
+    data = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": "quỹ phép của An"},
+        headers=employee_token_headers,
+    ).json()
+
+    assert data["tools_executed"] == []
+    assert "chính bạn" in data["reply"]

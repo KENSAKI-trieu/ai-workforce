@@ -23,6 +23,7 @@ from app.api.v1.notifications import router as notifications_router
 from app.api.v1.integrations import router as integrations_router
 from app.api.v1.customer_support import router as customer_support_router
 from app.api.v1.hr import router as hr_router
+from app.api.v1.positions import router as positions_router
 from app.api.v1.tool_gateway import router as tool_gateway_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -48,4 +49,5 @@ api_router.include_router(notifications_router)
 api_router.include_router(integrations_router)
 api_router.include_router(customer_support_router)
 api_router.include_router(hr_router)
+api_router.include_router(positions_router)
 api_router.include_router(tool_gateway_router)

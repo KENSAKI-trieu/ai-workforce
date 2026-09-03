@@ -1,3 +1,4 @@
+import json
 import math
 
 from fastapi.testclient import TestClient
@@ -100,10 +101,29 @@ def test_chunk_endpoint_contract() -> None:
     assert chunk["token_count"] == 5
 
 
+def test_chunk_stream_reports_remaining_segments_and_created_chunks() -> None:
+    response = client.post("/v1/rag/chunk/stream", json={
+        "content": "# Phần một\nNội dung một.\n# Phần hai\nNội dung hai.",
+    })
+
+    assert response.status_code == 200
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    progress = payloads[:-1]
+    assert [item["processed_segments"] for item in progress] == [1, 2]
+    assert [item["remaining_segments"] for item in progress] == [1, 0]
+    assert progress[-1]["chunks_created"] == 2
+
+
 def test_embedding_endpoint_contract() -> None:
     response = client.post("/v1/embeddings", json={
         "texts": ["chính sách nghỉ phép", "quy trình phê duyệt"],
         "input_type": "query",
+        "completed_before": 2,
+        "total_count": 5,
     })
     assert response.status_code == 200
     payload = response.json()
@@ -112,6 +132,46 @@ def test_embedding_endpoint_contract() -> None:
     assert len(payload["token_counts"]) == 2
     assert payload["model"]
     assert payload["version"]
+    assert payload["batch_count"] == 2
+    assert payload["embedded_count"] == 4
+    assert payload["total_count"] == 5
+    assert payload["remaining_count"] == 1
+
+
+def test_browser_pipeline_stream_replays_chunk_and_embedding_progress() -> None:
+    stream_id = "browser-progress-contract-001"
+    chunk_response = client.post("/v1/rag/chunk/stream", json={
+        "content": "# One\nFirst section.\n# Two\nSecond section.",
+        "progress_stream_id": stream_id,
+    })
+    assert chunk_response.status_code == 200
+    embedding_response = client.post("/v1/embeddings", json={
+        "texts": ["first", "second"],
+        "completed_before": 0,
+        "total_count": 2,
+        "progress_stream_id": stream_id,
+    })
+    assert embedding_response.status_code == 200
+
+    response = client.get(
+        f"/v1/pipeline/events/{stream_id}",
+        headers={"Origin": "http://localhost:3000"},
+    )
+
+    assert response.status_code == 200
+    assert response.headers["access-control-allow-origin"] == "http://localhost:3000"
+    payloads = [
+        json.loads(line.removeprefix("data: "))
+        for line in response.text.splitlines()
+        if line.startswith("data: ")
+    ]
+    assert payloads[0]["processing_status"] == "chunking"
+    assert payloads[-1]["processing_status"] == "embedding"
+    assert payloads[-1]["embedded_chunks"] == 2
+    assert payloads[-1]["embedding_remaining_chunks"] == 0
+    assert [item["event_sequence"] for item in payloads] == list(
+        range(1, len(payloads) + 1)
+    )
 
 
 def test_token_count_endpoint_contract() -> None:

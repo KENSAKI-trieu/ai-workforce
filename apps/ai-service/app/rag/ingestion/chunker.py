@@ -1,4 +1,5 @@
 import re
+from collections.abc import Iterator
 from typing import Any
 
 from app.config import settings
@@ -149,12 +150,13 @@ def _semantic_sections(content: str) -> list[dict[str, Any]]:
     return sections
 
 
-def chunk_document(
+def iter_chunk_document(
     content: str,
     *,
     chunk_size: int | None = None,
     chunk_overlap: int | None = None,
-) -> list[dict[str, Any]]:
+) -> Iterator[dict[str, Any]]:
+    """Yield chunks and exact section counters after every processed section."""
     size = chunk_size or settings.RAG_CHUNK_MAX_TOKENS
     overlap = settings.RAG_CHUNK_OVERLAP_TOKENS if chunk_overlap is None else chunk_overlap
     if size <= 0:
@@ -162,31 +164,71 @@ def chunk_document(
     if overlap < 0 or overlap >= size:
         raise ValueError("chunk_overlap must be between zero and chunk_size - 1")
 
-    chunks: list[dict[str, Any]] = []
-    for section_index, section in enumerate(_semantic_sections(clean_document_text(content))):
+    planned_segments: list[tuple[int, dict[str, Any], int, tuple[str, int, int, int]]] = []
+    sections = _semantic_sections(clean_document_text(content))
+    for section_index, section in enumerate(sections):
         windows = _split_token_windows(
             section["content"],
             chunk_size=size,
             chunk_overlap=overlap,
             target_size=min(settings.RAG_CHUNK_TARGET_TOKENS, size),
         )
-        for section_chunk_index, (text, token_count, start_char, end_char) in enumerate(windows):
-            window_pages: list[int] = []
-            page_offsets = section["page_offsets"]
-            for offset_index, (page_start, page_number) in enumerate(page_offsets):
-                page_end = page_offsets[offset_index + 1][0] if offset_index + 1 < len(page_offsets) else len(section["content"])
-                if page_start < end_char and page_end > start_char:
-                    window_pages.append(page_number)
-            chunks.append({
-                "content": text,
-                "section_title": section["section_title"],
-                "section_type": section["section_type"],
-                "section_index": section_index,
-                "section_chunk_index": section_chunk_index,
-                "header_level": section["header_level"],
-                "header_path": section["header_path"],
-                "page": window_pages[0] if window_pages else section["page"],
-                "pages": window_pages or section["pages"],
-                "token_count": token_count,
-            })
+        planned_segments.extend(
+            (section_index, section, section_chunk_index, window)
+            for section_chunk_index, window in enumerate(windows)
+        )
+
+    total_segments = len(planned_segments)
+    for segment_index, (
+        section_index,
+        section,
+        section_chunk_index,
+        window,
+    ) in enumerate(planned_segments):
+        text, token_count, start_char, end_char = window
+        window_pages: list[int] = []
+        page_offsets = section["page_offsets"]
+        for offset_index, (page_start, page_number) in enumerate(page_offsets):
+            page_end = (
+                page_offsets[offset_index + 1][0]
+                if offset_index + 1 < len(page_offsets)
+                else len(section["content"])
+            )
+            if page_start < end_char and page_end > start_char:
+                window_pages.append(page_number)
+        chunk = {
+            "content": text,
+            "section_title": section["section_title"],
+            "section_type": section["section_type"],
+            "section_index": section_index,
+            "section_chunk_index": section_chunk_index,
+            "header_level": section["header_level"],
+            "header_path": section["header_path"],
+            "page": window_pages[0] if window_pages else section["page"],
+            "pages": window_pages or section["pages"],
+            "token_count": token_count,
+        }
+        processed_segments = segment_index + 1
+        yield {
+            "processed_segments": processed_segments,
+            "total_segments": total_segments,
+            "remaining_segments": total_segments - processed_segments,
+            "chunks_created": processed_segments,
+            "chunks": [chunk],
+        }
+
+
+def chunk_document(
+    content: str,
+    *,
+    chunk_size: int | None = None,
+    chunk_overlap: int | None = None,
+) -> list[dict[str, Any]]:
+    chunks: list[dict[str, Any]] = []
+    for progress in iter_chunk_document(
+        content,
+        chunk_size=chunk_size,
+        chunk_overlap=chunk_overlap,
+    ):
+        chunks.extend(progress["chunks"])
     return chunks

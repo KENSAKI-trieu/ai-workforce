@@ -23,6 +23,12 @@ DOMAIN_POLICIES = {
         ("rag_search", "generate_legal_document", "submit_approval_request"),
         "Apply legal policy context. Generated documents and external actions require approval.",
     ),
+    # HR does not reach this graph: the backend routes that role to its own deterministic
+    # executor instead. The names below are gateway tool names, while an HR agent's
+    # tools_access holds capability names from app.core.hr_capabilities, and the two sets
+    # are disjoint -- scope_tools intersects them, so enabling HR here would hand the model
+    # an empty toolset rather than these five. Reconcile the name spaces before routing HR
+    # through the graph.
     "HR": DomainPolicy(
         "HR",
         ("rag_search", "employee_lookup", "leave_lookup", "create_task", "submit_approval_request"),

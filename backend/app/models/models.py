@@ -102,13 +102,61 @@ class Department(Base):
     tenant: Mapped["Tenant"] = relationship("Tenant", back_populates="departments")
 
 
+class Position(Base):
+    """A job in the tenant's own org tree.
+
+    `name` is whatever the company calls this job and may be renamed freely. `slug` is
+    generated once and never changes, because document ACLs persist role strings as data
+    and match them lowercased -- a rename must not silently revoke document access.
+    `permissions` holds codes from app.core.permissions and is what guards branch on.
+    """
+
+    __tablename__ = "positions"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "slug", name="uq_position_tenant_slug"),
+        Index("idx_positions_tenant_parent", "tenant_id", "parent_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    # RESTRICT, not CASCADE: deleting a position that still has children would silently
+    # delete a whole branch of the org chart.
+    parent_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("positions.id", ondelete="RESTRICT"), nullable=True
+    )
+    name: Mapped[str] = mapped_column(String(150), nullable=False)
+    slug: Mapped[str] = mapped_column(String(80), nullable=False)
+    permissions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Only the root carries this. It means "every permission code this build defines",
+    # so adding a new permission in a later release cannot lock a company out of it.
+    grants_all: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    default_department: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    sort_order: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    tenant: Mapped["Tenant"] = relationship("Tenant")
+    parent: Mapped["Position | None"] = relationship(
+        "Position", remote_side="Position.id", back_populates="children"
+    )
+    children: Mapped[list["Position"]] = relationship(
+        "Position", back_populates="parent"
+    )
+    holders: Mapped[list["User"]] = relationship("User", back_populates="position")
+
+
 class User(Base):
     __tablename__ = "users"
+    # `ck_users_role` used to pin role to six literal values. It was dropped when the org
+    # tree landed, exactly as `ck_users_department` was dropped when departments became a
+    # per-tenant table, because the vocabulary is now tenant data rather than code.
     __table_args__ = (
-        CheckConstraint(
-            "role IN ('Owner', 'Admin', 'Manager', 'Employee', 'CEO', 'Guest')",
-            name="ck_users_role",
-        ),
         Index("idx_users_tenant_dept", "tenant_id", "department"),
         Index("idx_users_manager", "manager_id"),
     )
@@ -122,12 +170,20 @@ class User(Base):
     email: Mapped[str] = mapped_column(String(255), unique=True, nullable=False)
     full_name: Mapped[str] = mapped_column(String(255), nullable=False)
     password_hash: Mapped[str] = mapped_column(String(255), nullable=False)
+    # Legacy capability label, kept while the guards migrate to position permissions.
+    # Written from the assigned position; read by everything not yet moved over.
     role: Mapped[str] = mapped_column(String(50), nullable=False, default="Employee")
     department: Mapped[str] = mapped_column(String(50), nullable=False, default="ALL")
     avatar_url: Mapped[str | None] = mapped_column(Text, nullable=True)
+    position_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("positions.id", ondelete="RESTRICT"), nullable=True
+    )
     manager_id: Mapped[uuid.UUID | None] = mapped_column(
         UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
     )
+    # Set when a person's manager was chosen by hand, so re-assigning their position does
+    # not overwrite that decision with one derived from the tree.
+    manager_is_manual: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
@@ -150,6 +206,7 @@ class User(Base):
     direct_reports: Mapped[list["User"]] = relationship(
         "User", foreign_keys=[manager_id], back_populates="manager"
     )
+    position: Mapped["Position | None"] = relationship("Position", back_populates="holders")
 
 
 class UserProfile(Base):

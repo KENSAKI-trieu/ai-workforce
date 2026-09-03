@@ -96,7 +96,30 @@ export interface ProcessingStatus {
   processing_checkpoint?: "uploaded" | "parsed" | "chunked" | "embedded" | "ready";
   processing_progress: number;
   chunk_count: number;
+  chunk_segments_processed?: number;
+  chunk_segments_total?: number;
+  chunk_segments_remaining?: number;
+  chunks_created?: number;
+  embedded_chunks?: number;
+  embedding_total_chunks?: number;
+  embedding_remaining_chunks?: number;
+  embedding_batch_count?: number;
   failed_stage?: Exclude<PipelineStage, "failed"> | null;
   error_message: string | null;
   updated_at?: string | null;
+}
+
+export interface AIProcessingProgress {
+  processing_stream_id: string;
+  event_sequence: number;
+  processing_status: "chunking" | "embedding";
+  processing_progress: number;
+  chunk_segments_processed?: number;
+  chunk_segments_total?: number;
+  chunk_segments_remaining?: number;
+  chunks_created?: number;
+  embedded_chunks?: number;
+  embedding_total_chunks?: number;
+  embedding_remaining_chunks?: number;
+  embedding_batch_count?: number;
 }

@@ -49,6 +49,8 @@ class UserInToken(BaseModel):
     email: str
     full_name: str
     role: str
+    # The company's own name for this job. `role` stays for guards that branch on it.
+    position_name: Optional[str] = None
     department: str
     tenant_id: UUID
     avatar_url: Optional[str] = None

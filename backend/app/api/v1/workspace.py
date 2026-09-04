@@ -334,8 +334,10 @@ def request_workspace_deletion(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ):
-    if current_user.role != "Owner":
-        raise HTTPException(status_code=403, detail="Only the workspace Owner can request deletion")
+    # "Owner" is still accepted so a workspace whose rows predate the rename is not locked
+    # out of its own deletion request; new founders are written as "CEO".
+    if current_user.role not in {"CEO", "Owner"}:
+        raise HTTPException(status_code=403, detail="Only the workspace CEO can request deletion")
     tenant = db.query(Tenant).filter(Tenant.id == current_user.tenant_id).first()
     if req.confirmation_domain.strip().lower() != tenant.domain.lower():
         raise HTTPException(status_code=422, detail="Confirmation domain does not match")
@@ -352,7 +354,7 @@ def request_workspace_deletion(
     )
     owners = db.query(User).filter(
         User.tenant_id == tenant.id,
-        User.role.in_(("Owner", "Admin")),
+        User.role.in_(("CEO", "Owner", "Admin")),
         User.is_active.is_(True),
     ).all()
     for owner in owners:

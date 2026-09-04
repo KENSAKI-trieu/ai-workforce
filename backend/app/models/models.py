@@ -208,6 +208,15 @@ class User(Base):
     )
     position: Mapped["Position | None"] = relationship("Position", back_populates="holders")
 
+    @property
+    def position_name(self) -> str | None:
+        """What this person's job is called in their own company.
+
+        The UI shows this rather than `role`: `role` is a fixed internal label, while the
+        position name is whatever the tenant renamed it to.
+        """
+        return self.position.name if self.position else None
+
 
 class UserProfile(Base):
     """Personal and employment profile separated from authentication data."""

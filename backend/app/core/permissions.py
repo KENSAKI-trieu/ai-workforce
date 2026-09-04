@@ -13,6 +13,7 @@ same reason ``app.core.hr_capabilities`` lives here.
 
 from __future__ import annotations
 
+from collections.abc import Iterable
 from dataclasses import dataclass
 
 
@@ -293,8 +294,19 @@ DEFAULT_POSITIONS: tuple[DefaultPosition, ...] = (
 )
 
 # Legacy User.role value -> slug of the position that reproduces it.
+#
+# Written out rather than derived from DEFAULT_POSITIONS because the two directions are
+# not symmetric any more: the founder's role string is "CEO" (see
+# `legacy_role_for_position`), but a pre-existing user whose stored role is "CEO" must
+# still backfill into the `ceo` position, never into the root -- the root grants every
+# permission, so mapping "CEO" there would silently promote them.
 LEGACY_ROLE_TO_SLUG: dict[str, str] = {
-    item.legacy_role: item.slug for item in DEFAULT_POSITIONS
+    "Owner": "owner",
+    "CEO": "ceo",
+    "Admin": "admin",
+    "Manager": "manager",
+    "Employee": "employee",
+    "Guest": "guest",
 }
 
 ROOT_POSITION_SLUG = "owner"
@@ -359,3 +371,58 @@ SELF_LOCKOUT_GUARD_PERMISSIONS: frozenset[str] = frozenset({
     "org.structure.manage",
     "users.position.assign",
 })
+
+
+# ---------------------------------------------------------------------------
+# Position -> legacy role string
+# ---------------------------------------------------------------------------
+# The root is excluded on purpose: it is handled by the `grants_all` branch below and
+# resolves to "CEO", which is what the founder is called. Nothing writes "Owner" any more.
+_SLUG_TO_LEGACY_ROLE: dict[str, str] = {
+    item.slug: item.legacy_role
+    for item in DEFAULT_POSITIONS
+    if item.slug != ROOT_POSITION_SLUG
+} | {item.slug: item.legacy_role for item in SPECIALISED_POSITIONS}
+
+# Powers no Manager ever had. Holding any of them makes a custom position an Admin.
+_ADMIN_MARKERS: frozenset[str] = frozenset(_ADMIN_CORE) - frozenset(_MANAGER_CORE) | {
+    "org.structure.manage",
+}
+
+# What separates someone who runs a team from a plain Employee. Deliberately narrower
+# than _MANAGER_CORE: read-only crumbs like `hr.directory.view` are held by ordinary
+# staff too, and inflating them to Manager would widen every legacy role guard.
+_MANAGER_MARKERS: frozenset[str] = frozenset({
+    "users.view",
+    "knowledge.manage",
+    "approvals.sign",
+    "hr.scope.reports",
+    "hr.scope.company",
+})
+
+
+def legacy_role_for_position(
+    slug: str, grants_all: bool, granted: Iterable[str]
+) -> str:
+    """The `User.role` string that reproduces what a position grants.
+
+    Guards that have not moved to permission codes still branch on `User.role`, so a user
+    put into a position needs a role string that matches it -- otherwise the org chart and
+    the actual access drift apart. Takes plain values rather than a `Position` so this
+    module keeps its no-model-imports rule.
+
+    Custom positions have no legacy equivalent, so they are classified by the powers they
+    carry, erring downwards: a position that is not clearly administrative is a Manager,
+    and one that runs nobody is an Employee.
+    """
+    if grants_all:
+        return "CEO"
+    known = _SLUG_TO_LEGACY_ROLE.get(slug)
+    if known is not None:
+        return known
+    codes = frozenset(granted)
+    if codes & _ADMIN_MARKERS:
+        return "Admin"
+    if codes & _MANAGER_MARKERS:
+        return "Manager"
+    return "Employee"

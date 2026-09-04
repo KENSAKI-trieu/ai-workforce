@@ -464,3 +464,61 @@ def test_registering_a_company_puts_the_founder_on_the_root_position(
     ).all()
     assert len(tenant_positions) == len(DEFAULT_POSITIONS)
     assert_not_last_administrator(transactional_db_session, founder.tenant_id)
+
+
+# ---------------------------------------------------------------- legacy role sync
+
+
+def test_assigning_a_position_rewrites_the_legacy_role_string(transactional_db_session):
+    """Guards that still branch on `User.role` must not disagree with the org chart."""
+    db = transactional_db_session
+    tenant = _tenant(db)
+    positions = ensure_tenant_positions(db, tenant.id)
+    person = _user(db, tenant, role="Employee")
+
+    assign_position(db, person, positions["manager"])
+    assert person.role == "Manager"
+
+    assign_position(db, person, positions["admin"])
+    assert person.role == "Admin"
+
+    # The root is what the founder holds, and it is called CEO -- never "Owner".
+    assign_position(db, person, positions[ROOT_POSITION_SLUG])
+    assert person.role == "CEO"
+
+    assign_position(db, person, positions["employee"])
+    assert person.role == "Employee"
+
+
+def test_a_company_defined_position_gets_a_role_matching_its_powers(
+    transactional_db_session,
+):
+    """A custom position has no legacy twin, so it is classified by what it grants."""
+    db = transactional_db_session
+    tenant = _tenant(db)
+    ensure_tenant_positions(db, tenant.id)
+
+    def _custom(name: str, permissions: list[str]) -> Position:
+        position = Position(
+            id=uuid.uuid4(),
+            tenant_id=tenant.id,
+            name=name,
+            slug=unique_slug(db, tenant.id, name),
+            permissions=normalize_permissions(permissions),
+            grants_all=False,
+        )
+        db.add(position)
+        db.flush()
+        return position
+
+    person = _user(db, tenant)
+
+    assign_position(db, person, _custom("Trưởng phòng Vận hành", ["approvals.sign"]))
+    assert person.role == "Manager"
+
+    assign_position(db, person, _custom("Giám sát hệ thống", ["users.manage"]))
+    assert person.role == "Admin"
+
+    # Read-only crumbs an ordinary member of staff also holds must not inflate the role.
+    assign_position(db, person, _custom("Thực tập sinh", ["hr.directory.view"]))
+    assert person.role == "Employee"

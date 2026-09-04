@@ -126,10 +126,10 @@ def register_user(db: Session, data: RegisterRequest) -> LoginResponse:
         full_name=data.full_name,
         password_hash=get_password_hash(data.password),
         # The founder holds the root position, which grants every permission this build
-        # defines. `role` keeps the legacy "Owner" label because guards that have not
-        # moved to permissions yet still read it, including the Owner-only workspace
-        # deletion check -- writing anything else here would lock the founder out of it.
-        role="Owner",
+        # defines. The legacy `role` string says "CEO" because that is what the person who
+        # creates the company is called, in the org chart and in every guard that still
+        # reads the string -- including the workspace deletion check.
+        role="CEO",
         department="BOARD",
         position_id=root.id,
     )

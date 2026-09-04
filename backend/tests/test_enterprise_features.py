@@ -7,7 +7,7 @@ from app.models.models import AIAgent, User
 from reportlab.pdfgen import canvas
 
 
-def test_public_registration_always_creates_owner_workspace(client):
+def test_public_registration_always_creates_ceo_workspace(client):
     response = client.post(
         "/api/v1/auth/register",
         json={
@@ -20,7 +20,10 @@ def test_public_registration_always_creates_owner_workspace(client):
         },
     )
     assert response.status_code == 201
-    assert response.json()["user"]["role"] == "Owner"
+    # The founder holds the root position, which the default tree names "CEO". The legacy
+    # role string says the same thing, so the two can no longer disagree.
+    assert response.json()["user"]["role"] == "CEO"
+    assert response.json()["user"]["position_name"] == "CEO"
     assert response.json()["user"]["department"] == "BOARD"
 
 

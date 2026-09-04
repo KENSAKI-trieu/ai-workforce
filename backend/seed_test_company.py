@@ -1,17 +1,26 @@
 """
 Seed script: Tạo công ty test với:
   - Tenant: Test Company
-  - CEO: test@gmail.com / 123456
+  - CEO: test@gmail.com / 123456 (giữ chức vụ gốc, giống hệt người tạo công ty thật)
   - Nhân viên: test1@gmail.com -> test40@gmail.com / 123456 (mỗi người thuộc dept khác nhau)
+
+Script này tạo bảng bằng `create_all` chứ không đi qua Alembic. Nếu database đã có schema
+cũ, hãy chạy `alembic upgrade head` trước để có đủ các cột mà script này ghi vào.
 """
 
 import sys
 import uuid
 import logging
 from app.core.database import sync_engine, Base, SyncSessionLocal
+from app.core.permissions import ROOT_POSITION_SLUG
 from app.core.security import get_password_hash
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
 from app.models.models import Tenant, User, AIAgent, UserMemory
+from app.services.position_service import (
+    assign_position,
+    backfill_tenant_user_positions,
+    ensure_tenant_positions,
+)
 import json
 
 logging.basicConfig(level=logging.INFO, format="%(levelname)s | %(message)s")
@@ -44,8 +53,15 @@ def seed():
             logger.info(f"ℹ️  Tenant đã tồn tại: {tenant.name}")
 
         # ────────────────────────────────────────────
-        # 2. CEO
+        # 2. Cây chức vụ + CEO
         # ────────────────────────────────────────────
+        # Quyền được đọc qua Position, không phải qua chuỗi role. Một user không có
+        # position_id thì `user_permissions()` trả về rỗng — nên phải seed cây chức vụ
+        # trước và gán chức vụ gốc cho CEO, đúng như `auth_service.register_user` làm.
+        positions = ensure_tenant_positions(db, tenant.id)
+        db.commit()
+        root_position = positions[ROOT_POSITION_SLUG]
+
         ceo_email = "test@gmail.com"
         ceo = db.query(User).filter(User.email == ceo_email).first()
         if not ceo:
@@ -59,11 +75,16 @@ def seed():
                 department="BOARD",
             )
             db.add(ceo)
-            db.commit()
-            db.refresh(ceo)
+            db.flush()
             logger.info(f"✅ Tạo CEO: {ceo_email}")
         else:
             logger.info(f"ℹ️  CEO đã tồn tại: {ceo_email}")
+        # Chạy cả trên tài khoản đã tồn tại: bản seed cũ để position_id = NULL, nên chạy
+        # lại script là cách vá dữ liệu đó.
+        assign_position(db, ceo, root_position)
+        db.commit()
+        db.refresh(ceo)
+        logger.info(f"   ↳ chức vụ: {root_position.name} | role: {ceo.role}")
 
         # ────────────────────────────────────────────
         # 3. 40 nhân viên test1 -> test40
@@ -107,6 +128,12 @@ def seed():
             db.add(mem)
             logger.info(f"  ✅ {email} | {role} | {dept}")
 
+        db.flush()
+        # Map role legacy -> chức vụ mặc định cho mọi user chưa có position_id, kể cả
+        # những người do lần seed trước tạo ra.
+        assigned = backfill_tenant_user_positions(db, tenant.id)
+        if assigned:
+            logger.info(f"  ✅ Gán chức vụ cho {assigned} tài khoản chưa có")
         db.commit()
 
         # ────────────────────────────────────────────

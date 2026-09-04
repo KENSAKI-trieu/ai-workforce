@@ -20,6 +20,7 @@ from app.core.permissions import (
     PERMISSION_CODES,
     ROOT_POSITION_SLUG,
     SELF_LOCKOUT_GUARD_PERMISSIONS,
+    legacy_role_for_position,
     normalize_permissions,
 )
 from app.models.models import Position, User
@@ -334,11 +335,19 @@ def assign_position(
 ) -> uuid.UUID | None:
     """Put a user in a position, deriving their manager unless it was set by hand.
 
+    Also rewrites the legacy `user.role` string to match the position. Every guard that
+    has not moved to permission codes still reads that string, so leaving it stale would
+    let a user's org chart position and their actual access disagree -- which is exactly
+    the drift the position tree was introduced to end.
+
     Returns the manager id in effect afterwards. Does not commit.
     """
     if position.tenant_id != user.tenant_id:
         raise HTTPException(status_code=404, detail="Position not found")
     user.position_id = position.id
+    user.role = legacy_role_for_position(
+        position.slug, position.grants_all, position_permissions(position)
+    )
     if update_manager and not user.manager_is_manual:
         derived = derive_manager_id(db, user, position)
         if derived != user.id:

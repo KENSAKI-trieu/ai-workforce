@@ -237,14 +237,32 @@ def test_integration_least_privilege_lifecycle(
     assert disconnected.json()["status"] == "DISCONNECTED"
 
 
-def test_company_deletion_request_is_owner_only(client, ceo_token_headers):
+def test_company_deletion_request_is_refused_below_the_ceo(
+    client, ceo_token_headers, employee_token_headers
+):
+    """Only the person who runs the company may start a deletion.
+
+    This used to be an Owner-only check that even refused the CEO. The founder's role
+    string is "CEO" now, so the CEO is precisely who this must admit -- and everyone
+    below them is still who it must turn away.
+    """
     workspace = client.get("/api/v1/workspace", headers=ceo_token_headers).json()
-    response = client.post(
+    payload = {
+        "confirmation_domain": workspace["domain"],
+        "reason": "Test request must never delete company data immediately.",
+    }
+
+    refused = client.post(
+        "/api/v1/workspace/data-deletion-request",
+        headers=employee_token_headers,
+        json=payload,
+    )
+    assert refused.status_code == 403
+
+    accepted = client.post(
         "/api/v1/workspace/data-deletion-request",
         headers=ceo_token_headers,
-        json={
-            "confirmation_domain": workspace["domain"],
-            "reason": "Test request must never delete company data immediately.",
-        },
+        json=payload,
     )
-    assert response.status_code == 403
+    # 202: the request is queued for review, never an immediate delete.
+    assert accepted.status_code == 202

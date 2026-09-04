@@ -31,6 +31,8 @@ class UserUpdate(BaseModel):
 class UserResponse(UserBase):
     id: UUID
     tenant_id: UUID
+    # The company's own name for this job, read off the assigned position.
+    position_name: Optional[str] = None
     is_active: bool
     created_at: datetime
 

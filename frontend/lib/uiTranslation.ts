@@ -394,6 +394,7 @@ const EXACT_JA: Record<string, string> = {
   "Active": "有効",
   "Inactive": "無効",
   "Owner": "所有者",
+  "CEO": "最高経営責任者",
   "Employee": "従業員",
   "Department": "部署",
   "Role": "ロール",

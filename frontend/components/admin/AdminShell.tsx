@@ -65,7 +65,7 @@ export default function AdminShell({
               <span>{user?.full_name?.charAt(0).toUpperCase() || "U"}</span>
               <div>
                 <strong>{user?.full_name || "Người dùng"}</strong>
-                <small>{user?.role || ""}</small>
+                <small>{user?.position_name || user?.role || ""}</small>
               </div>
             </div>
           </div>

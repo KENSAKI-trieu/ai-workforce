@@ -351,3 +351,66 @@ def test_website_import_blocks_private_networks(client, ceo_token_headers):
     )
     assert response.status_code == 422
     assert "Private or reserved" in response.json()["detail"]
+
+
+def test_employee_creation_assigns_a_real_position(client, ceo_token_headers):
+    """A new hire must land on a position, not on a role string with no permissions.
+
+    Accounts created here used to get `position_id = NULL`, which every permission guard
+    reads as "may do nothing" -- invisible until the person tried to use the product.
+    """
+    tree = client.get("/api/v1/positions", headers=ceo_token_headers)
+    assert tree.status_code == 200
+    manager = next(
+        item for item in tree.json()["positions"] if item["slug"] == "manager"
+    )
+
+    email = f"position-hire-{uuid.uuid4().hex[:8]}@example.com"
+    created = client.post(
+        "/api/v1/users-mgmt",
+        headers=ceo_token_headers,
+        json={
+            "email": email,
+            "full_name": "Position Hire",
+            "password": "Password123!",
+            "position_id": manager["id"],
+            "department": "IT",
+        },
+    )
+    assert created.status_code == 201, created.text
+    user = created.json()["user"]
+    assert user["position_id"] == manager["id"]
+    assert user["position_name"] == manager["name"]
+    # The legacy role string is derived from the position rather than typed in.
+    assert user["role"] == "Manager"
+
+    listed = client.get(
+        "/api/v1/users-mgmt",
+        params={"position_id": manager["id"], "page_size": 100},
+        headers=ceo_token_headers,
+    )
+    assert listed.status_code == 200
+    items = listed.json()["items"]
+    assert any(item["email"] == email for item in items)
+    assert all(item["position_id"] == manager["id"] for item in items)
+
+
+def test_employee_creation_without_a_position_falls_back_to_the_role(
+    client, ceo_token_headers
+):
+    """Callers that predate the org tree still get a usable account."""
+    email = f"role-hire-{uuid.uuid4().hex[:8]}@example.com"
+    created = client.post(
+        "/api/v1/users-mgmt",
+        headers=ceo_token_headers,
+        json={
+            "email": email,
+            "full_name": "Role Hire",
+            "password": "Password123!",
+            "role": "Employee",
+            "department": "IT",
+        },
+    )
+    assert created.status_code == 201, created.text
+    assert created.json()["user"]["position_id"] is not None
+    assert created.json()["user"]["role"] == "Employee"

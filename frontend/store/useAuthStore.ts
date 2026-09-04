@@ -12,7 +12,10 @@ interface UserInfo {
   id: string;
   email: string;
   full_name: string;
+  /** Nhãn nội bộ. Để hiển thị cho người dùng, ưu tiên `position_name`. */
   role: string;
+  /** Tên chức vụ do công ty tự đặt; null nếu tài khoản chưa được gán chức vụ. */
+  position_name?: string | null;
   department: string;
   tenant_id: string;
   avatar_url?: string | null;

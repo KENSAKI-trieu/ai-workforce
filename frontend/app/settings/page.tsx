@@ -52,7 +52,10 @@ export default function SettingsPage() {
   const [message, setMessage] = useState("");
   const [deletionReason, setDeletionReason] = useState("");
   const [confirmation, setConfirmation] = useState("");
-  const canEdit = ["Owner", "Admin", "CEO"].includes(user?.role || "");
+  const canEdit = ["CEO", "Owner", "Admin"].includes(user?.role || "");
+  // Xoá workspace là việc của người tạo công ty. "Owner" giữ lại cho tài khoản tạo
+  // trước khi chuỗi role được đổi tên thành "CEO".
+  const canRequestDeletion = ["CEO", "Owner"].includes(user?.role || "");
 
   const load = useCallback(async () => {
     const [workspaceResponse, departmentResponse] = await Promise.all([
@@ -193,9 +196,9 @@ export default function SettingsPage() {
           <div style={{ borderLeft: "1px solid #fee2e2", paddingLeft: 20 }}>
             <h3 style={{ color: "#b91c1c" }}>Yêu cầu xóa workspace</h3>
             <div className="ops-form-grid" style={{ marginTop: 10 }}>
-              <div className="ops-field full"><label>Nhập chính xác domain: {workspace.domain}</label><input disabled={user?.role !== "Owner"} value={confirmation} onChange={(e) => setConfirmation(e.target.value)}/></div>
-              <div className="ops-field full"><label>Lý do</label><textarea disabled={user?.role !== "Owner"} value={deletionReason} onChange={(e) => setDeletionReason(e.target.value)} rows={3}/></div>
-              <div className="ops-field full"><button className="ops-button danger" disabled={user?.role !== "Owner" || confirmation !== workspace.domain || deletionReason.length < 10} onClick={() => void requestDeletion()}><Trash2 size={15}/>Gửi yêu cầu review</button></div>
+              <div className="ops-field full"><label>Nhập chính xác domain: {workspace.domain}</label><input disabled={!canRequestDeletion} value={confirmation} onChange={(e) => setConfirmation(e.target.value)}/></div>
+              <div className="ops-field full"><label>Lý do</label><textarea disabled={!canRequestDeletion} value={deletionReason} onChange={(e) => setDeletionReason(e.target.value)} rows={3}/></div>
+              <div className="ops-field full"><button className="ops-button danger" disabled={!canRequestDeletion || confirmation !== workspace.domain || deletionReason.length < 10} onClick={() => void requestDeletion()}><Trash2 size={15}/>Gửi yêu cầu review</button></div>
             </div>
           </div>
         </div>

@@ -281,7 +281,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           )}
           <span style={{ minWidth: 0 }}>
             <strong style={{ display: "block", fontSize: 13, color: "#1C2434", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}>{user?.full_name || text.employee}</strong>
-            <span style={{ display: "block", fontSize: 11, color: "#64748B", marginTop: 2 }}>{user?.role || "Employee"} · {user?.department || "ALL"}</span>
+            <span style={{ display: "block", fontSize: 11, color: "#64748B", marginTop: 2 }}>{user?.position_name || user?.role || "Employee"} · {user?.department || "ALL"}</span>
           </span>
         </button>
         <button onClick={() => setNotificationsOpen((current) => !current)} aria-label={text.notifications} title={text.notifications} style={{ width: 36, height: 36, borderRadius: 10, border: "1px solid #E2E8F0", background: notificationsOpen ? "#EEF2FF" : "#fff", color: notificationsOpen ? "#4F46E5" : "#64748B", cursor: "pointer", display: "grid", placeItems: "center", position: "relative", flexShrink: 0 }}>

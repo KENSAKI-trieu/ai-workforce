@@ -38,8 +38,10 @@ from app.services.hr_service import (
 from app.services.hr_employee_tools import (
     get_employee_sections,
     list_contract_status_summaries,
+    list_tenant_departments,
     query_company_users_sql,
 )
+from app.services.position_service import supervisory_role_names
 from app.services.rag_service import hybrid_search_documents
 from app.services.legal_service import audit_contract_text
 from app.services.it_service import handle_it_request
@@ -355,6 +357,8 @@ def _classify_hr_intent(message: str) -> str:
     if any(marker in normalized for marker in (
         "ho so cua toi",
         "thong tin nhan su cua toi",
+        "thong tin cua toi",
+        "thong tin cua minh",
     )):
         return "SELF_PROFILE"
     if any(marker in normalized for marker in (
@@ -394,11 +398,21 @@ def _classify_hr_intent(message: str) -> str:
         "nhan su",
         "employee",
     ))
+    # "Quản lý" is the job the default tree ships with, but a company staffs the same
+    # layer with titles of its own, and someone asking for the directors means the people
+    # who run the place -- not the one position whose slug happens to be `manager`.
     manager_entity = any(marker in normalized for marker in (
         "quan ly",
         "manager",
+        "giam doc",
+        "ban giam doc",
+        "lanh dao",
+        "truong phong",
     ))
     leave_context = "nghi" in normalized and "phep" in normalized
+    names_a_department = any(
+        marker in f"{normalized} " for marker in _DEPARTMENT_MENTION_MARKERS
+    )
 
     if employee_entity and leave_context and any(marker in normalized for marker in count_markers):
         return "EMPLOYEE_LEAVE_STATUS_COUNT"
@@ -409,14 +423,11 @@ def _classify_hr_intent(message: str) -> str:
         return "MANAGER_DIRECTORY"
     if employee_entity and any(marker in normalized for marker in directory_markers):
         return "EMPLOYEE_DIRECTORY"
-    if any(marker in normalized for marker in (
-        "tim nhan vien",
-        "tim ho so",
-        "tra cuu nhan vien",
-        "xem ho so cua",
-        "ho so nhan vien",
-        "ho so cua ",
-    )):
+    # Naming a department asks about a group, however the sentence is phrased: "thông tin
+    # nhân viên phòng IT" wants the IT list, not an employee whose name is "phòng IT".
+    if employee_entity and names_a_department:
+        return "EMPLOYEE_DIRECTORY"
+    if any(marker in normalized for marker in _EMPLOYEE_SEARCH_PREFIXES + ("ho so cua ",)):
         return "EMPLOYEE_SEARCH"
 
     if leave_context and any(marker in normalized for marker in _INFORMATIONAL_MARKERS):
@@ -510,6 +521,30 @@ def _parse_hr_export_request(message: str) -> tuple[str | None, str | None]:
     return export_format, directory_type
 
 
+# Longest first, so "xem thong tin nhan vien" is not truncated by "thong tin nhan vien"
+# and left with a stray "nhan vien" in the search term.
+_EMPLOYEE_SEARCH_PREFIXES = (
+    "xem thong tin nhan vien",
+    "xem thong tin cua",
+    "tra cuu nhan vien",
+    "chi tiet nhan vien",
+    "thong tin nhan vien",
+    "ho so nhan vien",
+    "xem ho so cua",
+    "tim nhan vien",
+    "thong tin cua",
+    "tim ho so",
+    "ho so cua",
+)
+
+# What sits between "nhân viên" and the identifier: "nhân viên số 40", "nhân viên mã 40".
+_EMPLOYEE_IDENTIFIER_LEADINS = ("so", "ma", "id", "#")
+
+# "thông tin của tôi" is a self-service request that the router may still label a search.
+# Searching the directory for the word "tôi" would be nonsense, so it names nobody.
+_FIRST_PERSON_TERMS = frozenset({"toi", "minh", "em", "tui", "ban than toi"})
+
+
 def _extract_employee_search_term(message: str) -> str:
     email_match = re.search(r"[\w.+-]+@[\w.-]+\.[a-zA-Z]{2,}", message)
     if email_match:
@@ -517,20 +552,91 @@ def _extract_employee_search_term(message: str) -> str:
 
     normalized = _normalize_intent_text(message)
     original_words = message.strip().split()
-    prefixes = (
-        "tra cuu nhan vien",
-        "xem ho so cua",
-        "ho so nhan vien",
-        "tim nhan vien",
-        "tim ho so",
-        "ho so cua",
-    )
-    for prefix in prefixes:
+    for prefix in _EMPLOYEE_SEARCH_PREFIXES:
         if normalized == prefix:
             return ""
-        if normalized.startswith(f"{prefix} "):
-            return " ".join(original_words[len(prefix.split()):]).strip(" .?!")
+        if not normalized.startswith(f"{prefix} "):
+            continue
+        remainder = original_words[len(prefix.split()):]
+        # "nhân viên số 40" identifies employee 40, not an employee called "số 40".
+        while remainder and _normalize_intent_text(remainder[0]).strip("#") in _EMPLOYEE_IDENTIFIER_LEADINS:
+            remainder = remainder[1:]
+        term = " ".join(remainder).strip(" .?!")
+        if _normalize_intent_text(term) in _FIRST_PERSON_TERMS:
+            return ""
+        return term
     return ""
+
+
+# Phrasings that announce a department is being named. Used both to spot the department
+# in the sentence and to tell "the department I asked for does not exist here" apart from
+# "no department was mentioned at all".
+_DEPARTMENT_MENTION_MARKERS = ("phong ", "bo phan ", "department ", "phong ban ")
+
+_DEPARTMENT_LEADIN = r"(?:phong ban|phong|bo phan|department)\s+"
+
+
+def _department_aliases(code: str, name: str) -> tuple[tuple[str, ...], tuple[str, ...]]:
+    """How this department can be named: freely, and only after the word "phòng".
+
+    A code ("IT") and a full name ("Phòng tuyển dụng") are specific enough to recognise
+    anywhere in a sentence. The name with its leading "Phòng" removed is not: a company
+    that calls a department "Phòng Quản lý" would otherwise turn every request for the
+    managers into a request for that one department.
+    """
+    normalized_name = _normalize_intent_text(name)
+    anywhere = {_normalize_intent_text(code), normalized_name}
+    after_leadin = set(anywhere)
+    for marker in _DEPARTMENT_MENTION_MARKERS:
+        if normalized_name.startswith(marker):
+            after_leadin.add(normalized_name[len(marker):])
+    return (
+        tuple(alias for alias in anywhere if alias),
+        tuple(alias for alias in after_leadin if alias),
+    )
+
+
+def _resolve_requested_departments(
+    db: Session, user: User, message: str
+) -> tuple[tuple[str, ...], bool]:
+    """Department codes named in the question, and whether one was named at all.
+
+    The second value is what separates an unfiltered directory request from a request
+    for a department this company does not have. Without it, "nhân viên phòng kế toán"
+    would silently fall back to listing the whole company under a heading that says
+    otherwise.
+    """
+    normalized = _normalize_intent_text(message)
+    matched: list[str] = []
+    for code, name in list_tenant_departments(db, actor=user):
+        anywhere, after_leadin = _department_aliases(code, name)
+        patterns = [rf"(?<!\w){re.escape(alias)}(?!\w)" for alias in anywhere]
+        patterns += [
+            rf"(?<!\w){_DEPARTMENT_LEADIN}{re.escape(alias)}(?!\w)"
+            for alias in after_leadin
+        ]
+        if any(re.search(pattern, normalized) for pattern in patterns):
+            matched.append(code)
+    mentions_department = any(
+        marker in f"{normalized} " for marker in _DEPARTMENT_MENTION_MARKERS
+    )
+    return tuple(dict.fromkeys(matched)), mentions_department
+
+
+def _unknown_department_reply(db: Session, user: User) -> str:
+    known = list_tenant_departments(db, actor=user)
+    if not known:
+        return "Công ty chưa khai báo phòng ban nào nên tôi không lọc theo phòng ban được."
+    listed = ", ".join(f"**{name}** (`{code}`)" for code, name in known)
+    return (
+        "Tôi không tìm thấy phòng ban bạn hỏi trong công ty. "
+        f"Các phòng ban hiện có: {listed}."
+    )
+
+
+def _department_filter_label(db: Session, user: User, codes: tuple[str, ...]) -> str:
+    names = dict(list_tenant_departments(db, actor=user))
+    return ", ".join(f"**{names.get(code, code)}**" for code in codes)
 
 
 _LEAVE_DATE_PATTERN = re.compile(
@@ -1215,49 +1321,24 @@ def _execute_agent_chat_core(
             }
             return response_data
 
-        if hr_intent == "MANAGER_DIRECTORY":
+        if hr_intent in {"MANAGER_DIRECTORY", "EMPLOYEE_DIRECTORY"}:
             _require_tool(agent, "query_company_users_sql")
-            directory = query_company_users_sql(
-                db,
-                actor=user,
-                roles=["Admin", "Manager"],
-                active_only=True,
-                limit=100,
+            managers_only = hr_intent == "MANAGER_DIRECTORY"
+            entity_label = "quản lý" if managers_only else "nhân viên"
+            departments, named_a_department = _resolve_requested_departments(
+                db, user, message
             )
-            items = [
-                _sql_directory_item(employee, scope=directory["scope"])
-                for employee in directory["items"]
-            ]
-            scope = directory["scope"]
-            response_data["tools_executed"].append({
-                "tool_name": "query_company_users_sql",
-                "input": {
-                    "directory": "managers",
-                    "scope": scope,
-                    "requested_sections": ["BASIC"],
-                    "purpose": "DIRECTORY_LOOKUP",
-                },
-                "result_count": len(items),
-            })
-            total_count = directory.get("total_count", len(items))
-            response_data["reply"] = (
-                f"Tôi tìm thấy **{total_count} quản lý** trong phạm vi **{scope}** "
-                "bạn được phép xem."
-            )
-            response_data["hr_card"] = {
-                "type": "EMPLOYEE_SEARCH",
-                "directory_type": "MANAGERS",
-                "scope": scope,
-                "total_count": total_count,
-                "items": items,
-            }
-            return response_data
+            # Listing everybody under a heading that says "phòng kế toán" is worse than
+            # answering nothing, so an unrecognised department stops here.
+            if named_a_department and not departments:
+                response_data["reply"] = _unknown_department_reply(db, user)
+                return response_data
 
-        if hr_intent == "EMPLOYEE_DIRECTORY":
-            _require_tool(agent, "query_company_users_sql")
             directory = query_company_users_sql(
                 db,
                 actor=user,
+                departments=departments or None,
+                roles=list(supervisory_role_names(db, user.tenant_id)) if managers_only else None,
                 active_only=True,
                 limit=100,
             )
@@ -1269,7 +1350,8 @@ def _execute_agent_chat_core(
             response_data["tools_executed"].append({
                 "tool_name": "query_company_users_sql",
                 "input": {
-                    "query": "*",
+                    **({"directory": "managers"} if managers_only else {"query": "*"}),
+                    "departments": list(departments),
                     "scope": scope,
                     "requested_sections": ["BASIC"],
                     "purpose": "DIRECTORY_LOOKUP",
@@ -1277,12 +1359,19 @@ def _execute_agent_chat_core(
                 "result_count": len(items),
             })
             total_count = directory.get("total_count", len(items))
+            department_clause = (
+                f" thuộc phòng {_department_filter_label(db, user, departments)}"
+                if departments else ""
+            )
             response_data["reply"] = (
-                f"Tôi tìm thấy **{total_count} nhân viên** trong phạm vi **{scope}** bạn được phép xem."
+                f"Tôi tìm thấy **{total_count} {entity_label}**{department_clause} "
+                f"trong phạm vi **{scope}** bạn được phép xem."
             )
             response_data["hr_card"] = {
                 "type": "EMPLOYEE_SEARCH",
+                **({"directory_type": "MANAGERS"} if managers_only else {}),
                 "scope": scope,
+                "department_filter": list(departments),
                 "total_count": total_count,
                 "items": items,
             }

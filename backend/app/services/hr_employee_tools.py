@@ -11,7 +11,7 @@ from sqlalchemy import func, or_, select
 from sqlalchemy.orm import Session
 from sqlalchemy.orm import aliased
 
-from app.models.models import EmploymentContract, User, UserProfile
+from app.models.models import Department, EmploymentContract, User, UserProfile
 from app.services.audit_events import add_audit_event
 from app.services.hr_access_policy import authorize_employee_access, normalize_sections
 from app.services.hr_service import (
@@ -20,6 +20,38 @@ from app.services.hr_service import (
     query_leave_balance,
     scoped_employee_query,
 )
+
+
+def list_tenant_departments(db: Session, *, actor: User) -> tuple[tuple[str, str], ...]:
+    """Every department code this tenant uses, paired with its display name.
+
+    Two sources, because neither is complete on its own. `departments` holds the names a
+    company chose ("Phòng tuyển dụng" for the code HR), and it is the only way to
+    recognise a department the user names in words. But a tenant seeded without those
+    rows still has department codes written on the user records, and the directory must
+    keep working there, so the distinct `User.department` values are folded in as codes
+    that stand for themselves.
+    """
+    catalogue: dict[str, str] = {}
+    for code, name in db.execute(
+        select(Department.code, Department.name).where(
+            Department.tenant_id == actor.tenant_id,
+            Department.is_active.is_(True),
+        )
+    ).all():
+        cleaned = str(code or "").strip()
+        if cleaned:
+            catalogue[cleaned] = str(name or "").strip() or cleaned
+    for (code,) in db.execute(
+        select(User.department).where(
+            User.tenant_id == actor.tenant_id,
+            User.department.is_not(None),
+        ).distinct()
+    ).all():
+        cleaned = str(code or "").strip()
+        if cleaned and cleaned not in catalogue:
+            catalogue[cleaned] = cleaned
+    return tuple(sorted(catalogue.items()))
 
 
 def query_company_users_sql(

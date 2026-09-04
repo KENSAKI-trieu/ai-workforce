@@ -15,7 +15,8 @@ from app.core.database import sync_engine, Base, SyncSessionLocal
 from app.core.permissions import ROOT_POSITION_SLUG
 from app.core.security import get_password_hash
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
-from app.models.models import Tenant, User, AIAgent, UserMemory
+from app.models.models import Tenant, User, AIAgent, Department, UserMemory
+from app.services.auth_service import DEFAULT_DEPARTMENTS
 from app.services.position_service import (
     assign_position,
     backfill_tenant_user_positions,
@@ -51,6 +52,21 @@ def seed():
             logger.info(f"✅ Tạo Tenant: {tenant.name} (id={tenant.id})")
         else:
             logger.info(f"ℹ️  Tenant đã tồn tại: {tenant.name}")
+
+        # ────────────────────────────────────────────
+        # 1b. Phòng ban
+        # ────────────────────────────────────────────
+        # Tenant tạo qua `register_user` luôn có bảng `departments`; script này dựng
+        # tenant trực tiếp nên phải tự tạo. Thiếu các dòng này thì HR agent không nhận ra
+        # phòng ban gọi bằng tên ("phòng nhân sự"), chỉ nhận ra mã.
+        for code, name in DEFAULT_DEPARTMENTS:
+            existing_dept = db.query(Department).filter(
+                Department.tenant_id == tenant.id,
+                Department.code == code,
+            ).first()
+            if not existing_dept:
+                db.add(Department(tenant_id=tenant.id, code=code, name=name))
+        db.commit()
 
         # ────────────────────────────────────────────
         # 2. Cây chức vụ + CEO

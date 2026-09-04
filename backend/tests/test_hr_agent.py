@@ -92,24 +92,38 @@ def test_version_seven_revokes_the_unreachable_basic_profile_grant(
     agent = transactional_db_session.query(AIAgent).filter(
         AIAgent.role_code == "HR"
     ).first()
-    # Set the grants explicitly: this module shares one session, so whatever an earlier
-    # test left on the row must not decide what this one is starting from.
-    agent.tools_access = [
-        "get_employee_basic_profile",
-        "get_employee_full_profile",
-        "query_leave_balance",
-    ]
-    agent.allowed_actions = list(agent.tools_access)
-    agent.disallowed_actions = []
-    agent.configuration_version = 6
+    # The module shares one session with the app, so this row has to be put back exactly
+    # as it was: three grants are enough to prove the sweep, and not enough to serve any
+    # chat test that runs after this one.
+    restore = {
+        field: getattr(agent, field)
+        for field in (
+            "tools_access",
+            "allowed_actions",
+            "disallowed_actions",
+            "configuration_version",
+        )
+    }
+    try:
+        agent.tools_access = [
+            "get_employee_basic_profile",
+            "get_employee_full_profile",
+            "query_leave_balance",
+        ]
+        agent.allowed_actions = list(agent.tools_access)
+        agent.disallowed_actions = []
+        agent.configuration_version = 6
 
-    _repair_hr_agent_capabilities(agent)
+        _repair_hr_agent_capabilities(agent)
 
-    assert "get_employee_basic_profile" not in agent.tools_access
-    assert "get_employee_basic_profile" not in agent.allowed_actions
-    assert agent.configuration_version == HR_CONFIGURATION_VERSION
-    # The sweep must not cost the agent a capability it can still dispatch.
-    assert "get_employee_full_profile" in agent.tools_access
+        assert "get_employee_basic_profile" not in agent.tools_access
+        assert "get_employee_basic_profile" not in agent.allowed_actions
+        assert agent.configuration_version == HR_CONFIGURATION_VERSION
+        # The sweep must not cost the agent a capability it can still dispatch.
+        assert "get_employee_full_profile" in agent.tools_access
+    finally:
+        for field, value in restore.items():
+            setattr(agent, field, value)
 
 
 def test_a_denied_profile_grant_still_denies_the_directory_tool():
@@ -177,9 +191,11 @@ def test_hr_manager_directory_phrase_from_chat_routes_to_sql(
     assert data["hr_card"]["directory_type"] == "MANAGERS"
     assert data["hr_card"]["total_count"] == len(data["hr_card"]["items"])
     assert data["hr_card"]["items"]
+    # Everyone who runs other people, read from the tenant's own position tree -- the
+    # founder included, since a directory of the management that omits the boss is wrong.
     assert {
         item["employee"]["role"] for item in data["hr_card"]["items"]
-    } <= {"Admin", "Manager"}
+    } <= {"Admin", "CEO", "Manager"}
 
 
 def test_hr_unknown_query_does_not_fall_back_to_policy(

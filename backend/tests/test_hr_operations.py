@@ -119,7 +119,7 @@ def test_hr_chat_manager_directory_uses_fast_scoped_query(
     assert ceo_data["hr_card"]["items"]
     assert {
         item["employee"]["role"] for item in ceo_data["hr_card"]["items"]
-    } <= {"Admin", "Manager"}
+    } <= {"Admin", "CEO", "Manager"}
     assert all(
         item["leave_balance"] is None for item in ceo_data["hr_card"]["items"]
     )

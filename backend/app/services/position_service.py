@@ -99,6 +99,43 @@ def has_permission(db: Session | None, user: User, code: str) -> bool:
     return code in user_permissions(db, user)
 
 
+# Powers that only somebody running other people is given. Reading the directory is not
+# among them: ordinary staff hold `hr.directory.view` too.
+_SUPERVISORY_PERMISSIONS: frozenset[str] = frozenset({
+    "hr.scope.reports",
+    "hr.scope.company",
+    "hr.employee.manage",
+    "users.manage",
+    "approvals.sign",
+    "org.structure.manage",
+})
+
+_FALLBACK_SUPERVISORY_ROLES: tuple[str, ...] = ("Admin", "CEO", "Manager")
+
+
+def supervisory_role_names(db: Session, tenant_id: uuid.UUID) -> tuple[str, ...]:
+    """The `User.role` strings held by everyone who runs other people in this tenant.
+
+    Asking the tenant's own tree rather than hardcoding a role list means a company that
+    renamed its management layer, or added a job of its own, still gets a complete answer
+    when it asks who the managers are. Reading roles rather than position ids is safe
+    because `assign_position` writes the role string from the position.
+    """
+    roles: set[str] = set()
+    positions = db.query(Position).filter(
+        Position.tenant_id == tenant_id,
+        Position.is_active.is_(True),
+    ).all()
+    for position in positions:
+        granted = position_permissions(position)
+        if not position.grants_all and not (granted & _SUPERVISORY_PERMISSIONS):
+            continue
+        roles.add(legacy_role_for_position(
+            position.slug, position.grants_all, granted
+        ))
+    return tuple(sorted(roles)) or _FALLBACK_SUPERVISORY_ROLES
+
+
 # ---------------------------------------------------------------------------
 # Seeding
 # ---------------------------------------------------------------------------

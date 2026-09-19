@@ -1,16 +1,21 @@
 """
 Unified Agent Execution Engine for AI Workforce.
 Processes incoming chat messages for HR, Knowledge, Legal, IT, Finance, Sales, and CEO agents.
-These deterministic tool flows emit audit logs but do not claim provider token usage.
+The deterministic tool flows emit audit logs but claim no provider token usage; the HR
+model calls are the exception and are metered into LLMCostLog by
+``_hr_llm_usage_recorder``, because they are billed and do not pass through the tool
+gateway that meters every other agent.
 """
 
 import logging
 import re
 import unicodedata
+import uuid
 from datetime import date, datetime
-from typing import Dict, Any, Iterator, List
+from typing import Dict, Any, Iterator, List, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
 from fastapi import HTTPException
+from sqlalchemy.exc import SQLAlchemyError
 from sqlalchemy.orm import Session, joinedload
 
 from app.models.models import (
@@ -44,16 +49,27 @@ from app.services.hr_employee_tools import (
 from app.services.position_service import supervisory_role_names
 from app.services.rag_service import hybrid_search_documents
 from app.services.legal_service import audit_contract_text
+from app.services.contract_review import split_contract_clauses
+from app.services import contract_review_store
+from app.services.legal_approval_service import create_legal_approval
 from app.services.it_service import handle_it_request
 from app.services.finance_service import audit_invoice_and_reconcile
 from app.services.sales_service import handle_sales_request
 from app.services.ceo_service import generate_and_execute_ceo_dag
-from app.services.audit_service import log_audit_action
+from app.services.audit_service import log_audit_action, log_llm_cost
+from app.services.cost_calculator import UnsupportedModelPricingError
 from app.core.config import settings
 from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.ai_service_client import AIServiceError
+from app.plugins.resolver import (
+    EMPTY_RESTRICTION,
+    SkillRestriction,
+    resolve_prompt_overlay,
+    resolve_skill_restriction,
+)
 from app.services.agents.hr_llm_flow import (
     ACTION_INTENTS,
+    UsageReporter,
     SYNTHESIZABLE_INTENTS,
     classify_hr_request,
     extract_leave_request_slots,
@@ -131,6 +147,22 @@ def _repair_hr_agent_capabilities(agent: AIAgent) -> None:
     agent.disallowed_actions = sorted(denied)
 
 
+# Where a tenant's plugin narrowing is parked on the loaded agent row. It is a plain
+# instance attribute and deliberately not a mapped column: writing the narrowed lists
+# back to `ai_agents` would survive uninstalling the package, permanently stripping the
+# tenant of tools the package had only meant to hide while it was installed.
+_PLUGIN_RESTRICTION_ATTR = "_plugin_skill_restriction"
+
+
+def _attach_plugin_restriction(agent: AIAgent, restriction: SkillRestriction) -> None:
+    setattr(agent, _PLUGIN_RESTRICTION_ATTR, restriction)
+
+
+def _plugin_restriction(agent: AIAgent) -> SkillRestriction:
+    """The narrowing in force for this row; unrestricted when nothing was attached."""
+    return getattr(agent, _PLUGIN_RESTRICTION_ATTR, EMPTY_RESTRICTION)
+
+
 def _require_tool(agent: AIAgent, tool_name: str) -> None:
     _repair_hr_agent_capabilities(agent)
     tools = set(agent.tools_access or [])
@@ -146,6 +178,17 @@ def _require_tool(agent: AIAgent, tool_name: str) -> None:
             status_code=403,
             detail=f"AI Employee is not allowed to use tool '{tool_name}'",
         )
+    # Checked last and phrased differently so an operator can tell a plugin withdrawal
+    # apart from a permission the agent never had. This can only ever reject: the
+    # grant checks above have already passed by the time control reaches here.
+    if not _plugin_restriction(agent).permits(tool_name):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                f"An installed plugin withdraws tool '{tool_name}' "
+                "from this AI Employee"
+            ),
+        )
 
 
 def _can_use_tool(agent: AIAgent, tool_name: str) -> bool:
@@ -158,6 +201,7 @@ def _can_use_tool(agent: AIAgent, tool_name: str) -> bool:
         tool_name not in denied
         and tool_name in tools
         and (not allowed or tool_name in allowed)
+        and _plugin_restriction(agent).permits(tool_name)
     )
 
 
@@ -751,12 +795,66 @@ def _extract_leave_slots(
     return slots
 
 
+def _hr_llm_usage_recorder(db: Session, user: User) -> UsageReporter:
+    """Meter every billed HR model call into ``LLMCostLog``.
+
+    The HR agent talks to the provider directly instead of going through the internal
+    tool gateway, which is where every other agent's usage is recorded. Until this
+    existed the cost dashboard reported the HR agent as free, while it was in fact
+    making up to three calls per chat turn.
+
+    The department is resolved from the user rather than passed in: ``log_llm_cost``
+    validates an explicitly supplied department against a fixed list, so a tenant that
+    named its departments anything else would have had its HR usage rejected instead of
+    recorded.
+    """
+
+    def record(result: dict[str, Any]) -> None:
+        usage = result.get("usage") or {}
+        model_name = str(result.get("model") or "").strip()
+        prompt_tokens = int(usage.get("prompt_tokens") or 0)
+        completion_tokens = int(usage.get("completion_tokens") or 0)
+        # A provider that returned no counters cannot be priced without guessing, and a
+        # zero-token row would only add noise to the dashboard.
+        if not model_name or (prompt_tokens <= 0 and completion_tokens <= 0):
+            return
+        try:
+            log_llm_cost(
+                db,
+                user.tenant_id,
+                "HR",
+                model_name,
+                prompt_tokens,
+                completion_tokens,
+                user_id=user.id,
+                cached_prompt_tokens=int(usage.get("cached_prompt_tokens") or 0),
+                usage_source="PROVIDER",
+            )
+        except UnsupportedModelPricingError:
+            # Naming the model matters: the fix is a pricing row, not a code change.
+            logger.warning(
+                "HR LLM usage not metered: no pricing configured for model '%s'",
+                model_name,
+            )
+        except ValueError:
+            logger.warning("HR LLM usage not metered: rejected usage payload", exc_info=True)
+        except SQLAlchemyError:
+            # The session is unusable after a failed flush, so hand back a clean one:
+            # the answer this turn already produced still has to be persisted.
+            logger.warning("HR LLM usage not metered: database error", exc_info=True)
+            db.rollback()
+
+    return record
+
+
 def _extract_leave_slots_with_llm(
     message: str,
     existing: dict[str, Any] | None,
     *,
     reference_date: date,
     timezone_name: str,
+    on_usage: UsageReporter | None = None,
+    prompts: Mapping[str, str] | None = None,
 ) -> dict[str, Any]:
 
     """Merge semantic LLM extraction over the safe deterministic parser fallback."""
@@ -766,6 +864,8 @@ def _extract_leave_slots_with_llm(
         existing=existing,
         reference_date=reference_date,
         timezone_name=timezone_name,
+        on_usage=on_usage,
+        prompts=prompts,
     )
     for field in ("start_date", "end_date", "reason"):
         if extracted.get(field):
@@ -908,6 +1008,274 @@ def _is_leave_cancel_message(normalized_message: str) -> bool:
     )
 
 
+# --- Legal: is this turn a contract to review, or a question? -----------------
+# The rule this replaces was `len(message) >= 180`, which sent long questions to the
+# analyzer and let short pasted clauses fall through to a four-word glossary that
+# answered "chưa tìm thấy văn bản phù hợp" -- leaving the user believing their
+# contract had been reviewed when it never was.
+
+_LEGAL_CONTRACT_NOUNS = (
+    "hop dong", "contract", "agreement", "nda", "msa", "sow",
+    "dieu khoan", "clause", "phu luc", "thoa thuan",
+)
+_LEGAL_REVIEW_VERBS = (
+    "ra soat", "review", "kiem tra", "audit", "xem giup", "xem ho", "check", "danh gia",
+)
+_LEGAL_RISK_TERMS = (
+    "rui ro", "phat", "penalty", "unlimited liability", "khong gioi han",
+    "don phuong cham dut", "boi thuong", "trach nhiem",
+)
+_LEGAL_BOILERPLATE = (
+    "can cu", "cac ben thoa thuan", "co hieu luc tu", "ky ket",
+    "dai dien theo phap luat", "whereas", "hereby", "shall",
+)
+_LEGAL_QUESTION_OPENERS = (
+    "la gi", "the nao", "nhu the nao", "co duoc", "co nen", "khi nao", "tai sao",
+    "what", "how", "can i", "should",
+)
+
+
+def _legal_clause_structure(message: str) -> int:
+    """How many document-numbered clauses the real parser finds in this text.
+
+    This is what replaces the length heuristic: it reuses the same splitter the
+    analyzer uses, so "looks like a contract" means "parses like one" rather than
+    "is long".
+    """
+    try:
+        clauses = split_contract_clauses(message)
+    except Exception:  # noqa: BLE001 - detection must never break the chat turn
+        return 0
+    return sum(1 for clause in clauses if str(clause.get("number", "")).strip().isdigit())
+
+
+def _classify_legal_contract_intent(message: str) -> tuple[str, dict[str, Any]]:
+    """Return REVIEW, UNSURE or QUESTION plus the signals behind the decision."""
+    normalized = _normalize_intent_text(message)
+    numbered_clauses = _legal_clause_structure(message)
+    has_structure = numbered_clauses >= 3
+
+    signals: dict[str, Any] = {"numbered_clauses": numbered_clauses}
+    score = 0
+
+    names_contract = any(noun in normalized for noun in _LEGAL_CONTRACT_NOUNS)
+    asks_review = any(verb in normalized for verb in _LEGAL_REVIEW_VERBS)
+    if names_contract and asks_review:
+        score += 3
+        signals["explicit_request"] = True
+    if has_structure:
+        score += 3
+        signals["clause_structure"] = True
+    if re.search(
+        r"^\s*(hop dong|contract|agreement|thoa thuan|phu luc)|ben a\s*:|ben b\s*:|party a\s*:",
+        normalized,
+    ):
+        score += 3
+        signals["contract_header"] = True
+    boilerplate = sum(1 for marker in _LEGAL_BOILERPLATE if marker in normalized)
+    if boilerplate >= 2:
+        score += 2
+        signals["legal_boilerplate"] = boilerplate
+    if any(term in normalized for term in _LEGAL_RISK_TERMS):
+        score += 1
+        signals["risk_terms"] = True
+
+    # A question mark anywhere counts: "... là bao lâu? Tôi muốn nắm rõ." is still a
+    # question, and only checking the final character would miss it.
+    is_question = "?" in message or any(
+        opener in normalized for opener in _LEGAL_QUESTION_OPENERS
+    )
+    if is_question and not has_structure:
+        score -= 3
+        signals["interrogative"] = True
+    if len(message.strip()) < 60 and not has_structure:
+        score -= 2
+        signals["too_short"] = True
+
+    signals["score"] = score
+    if score >= 4:
+        return "REVIEW", signals
+    if score >= 2:
+        return "UNSURE", signals
+    return "QUESTION", signals
+
+
+# --- Legal: which party is the user acting for? ------------------------------
+# Perspective flips severity in the analyzer (an unlimited-liability clause is HIGH
+# for whoever carries it and LOW for the other side), so reviewing without asking
+# produced a score that did not apply to the person reading it.
+
+_PARTY_A_MARKERS = (
+    "ben a", "party a", "nha cung cap", "ben cung cap", "ben ban",
+    "vendor", "supplier", "nha thau", "ben thuc hien", "developer",
+)
+_PARTY_B_MARKERS = (
+    "ben b", "party b", "khach hang", "ben mua", "client", "customer",
+    "ben thue", "chu dau tu", "ben su dung",
+)
+_NEUTRAL_MARKERS = (
+    "trung lap", "khach quan", "trung tinh", "khong dai dien", "ca hai ben",
+    "doc lap", "neutral",
+)
+_FIRST_PERSON_MARKERS = ("chung toi", "cong ty toi", "ben toi", "toi", "minh", "em")
+
+LEGAL_CANCEL_MARKERS = ("huy ra soat", "thoi khong ra soat", "bo qua", "khong ra soat nua")
+_REVIEW_CONFIRM_MARKERS = ("ra soat", "review", "phan tich", "dung", "co", "kiem tra")
+
+
+def _parse_represented_party(message: str) -> str | None:
+    """Read the perspective out of a free-text reply, or None to ask again."""
+    normalized = _normalize_intent_text(message)
+    if any(marker in normalized for marker in _NEUTRAL_MARKERS):
+        return "NEUTRAL"
+
+    # Word boundaries, not substrings: "bên bán" starts with "bên b", so a plain
+    # `in` test reads a request from the seller as one from the customer.
+    def _earliest(markers: tuple[str, ...]) -> int:
+        positions = [
+            match.start()
+            for marker in markers
+            if (match := re.search(rf"(?<!\w){re.escape(marker)}(?!\w)", normalized))
+        ]
+        return min(positions, default=-1)
+
+    position_a = _earliest(_PARTY_A_MARKERS)
+    position_b = _earliest(_PARTY_B_MARKERS)
+    if position_a < 0 and position_b < 0:
+        # A bare "a" or "b" answers the menu, but only as the whole reply: as a
+        # substring it matches almost anything.
+        stripped = normalized.strip(" .!?")
+        if stripped in {"a", "ben a"}:
+            return "PARTY_A"
+        if stripped in {"b", "ben b"}:
+            return "PARTY_B"
+        return None
+    if position_a >= 0 and position_b >= 0:
+        # Both sides named ("tôi là bên A, đối tác là bên B"): the one the speaker
+        # claims is the one that follows the first-person pronoun.
+        subject = min(
+            (normalized.find(marker) for marker in _FIRST_PERSON_MARKERS if marker in normalized),
+            default=-1,
+        )
+        if subject >= 0:
+            after_a = position_a > subject
+            after_b = position_b > subject
+            if after_a and not after_b:
+                return "PARTY_A"
+            if after_b and not after_a:
+                return "PARTY_B"
+            return "PARTY_A" if position_a < position_b else "PARTY_B"
+        return "PARTY_A" if position_a < position_b else "PARTY_B"
+    return "PARTY_A" if position_a >= 0 else "PARTY_B"
+
+
+def _is_legal_review_cancel(normalized_message: str) -> bool:
+    return (
+        normalized_message.strip(" .!?") in LEAVE_CANCEL_MESSAGES
+        or any(marker in normalized_message for marker in LEGAL_CANCEL_MARKERS)
+    )
+
+
+def _is_review_confirmation(normalized_message: str) -> bool:
+    stripped = normalized_message.strip(" .!?")
+    return stripped in {"dung", "co", "ok", "yes"} or any(
+        marker in normalized_message for marker in _REVIEW_CONFIRM_MARKERS
+    )
+
+
+def _legal_review_card(
+    *,
+    status: str,
+    contract_fingerprint: str,
+    contract_char_count: int,
+    excerpt: str = "",
+    represented_party: str | None = None,
+) -> dict[str, Any]:
+    return {
+        "type": "CONTRACT_REVIEW_DRAFT",
+        "status": status,
+        "represented_party": represented_party,
+        "contract_fingerprint": contract_fingerprint,
+        "contract_char_count": contract_char_count,
+        "contract_excerpt": excerpt[:200],
+    }
+
+
+def _contract_fingerprint(text: str) -> str:
+    return contract_review_store.content_hash(text)[:16]
+
+
+def _load_legal_review_draft(
+    db: Session,
+    user: User,
+    thread_id: str | None,
+) -> tuple[dict[str, Any], str] | None:
+    """Find an open perspective question and the contract text it was asked about.
+
+    The contract is not copied into the card: the user's own message is committed
+    before this runs, so the text is already durable in the thread. The card carries
+    a fingerprint of it, and the text is recovered by matching that hash rather than
+    by message order -- so the agent can only ever review the exact text the question
+    was asked about, and never a later message that happens to sit in the right slot.
+    (Message timestamps are not a reliable tiebreaker: rows written in one
+    transaction share a `now()`, which is the norm under the test fixtures.)
+    """
+    if not thread_id:
+        return None
+    conversation = db.query(ChatConversation).filter(
+        ChatConversation.tenant_id == user.tenant_id,
+        ChatConversation.user_id == user.id,
+        ChatConversation.thread_id == thread_id,
+    ).first()
+    if not conversation:
+        return None
+    messages = db.query(ChatMessage).filter(
+        ChatMessage.conversation_id == conversation.id,
+    ).order_by(ChatMessage.created_at.desc()).limit(20).all()
+
+    draft: dict[str, Any] | None = None
+    for chat_message in messages:
+        if chat_message.sender != "ASSISTANT":
+            continue
+        for attachment in chat_message.attachments or []:
+            payload = attachment.get("payload") or {}
+            if payload.get("type") != "CONTRACT_REVIEW_DRAFT":
+                continue
+            if payload.get("status") not in {"COLLECTING", "AWAITING_INTENT"}:
+                # The newest card is already resolved or cancelled; nothing pending.
+                return None
+            draft = payload
+            break
+        if draft:
+            break
+    if not draft:
+        return None
+
+    fingerprint = draft.get("contract_fingerprint")
+    for chat_message in messages:
+        if chat_message.sender != "USER":
+            continue
+        content = chat_message.content or ""
+        if _contract_fingerprint(content) == fingerprint:
+            return draft, content
+    return None
+
+
+LEGAL_PERSPECTIVE_QUESTION = (
+    "Trước khi rà soát, tôi cần biết bạn đại diện cho bên nào — cùng một điều khoản "
+    "có thể đảo chiều mức rủi ro tùy góc nhìn.\n\n"
+    "- **Bên A** (công ty / nhà cung cấp / bên bán)\n"
+    "- **Bên B** (khách hàng / bên mua)\n"
+    "- **Trung lập** (đánh giá khách quan, không thiên vị)\n\n"
+    "Bạn trả lời \"Bên A\", \"Bên B\" hoặc \"trung lập\". Gõ \"hủy\" nếu không muốn rà soát."
+)
+
+LEGAL_NOT_REVIEWED_NOTICE = (
+    "\n\n**Lưu ý: tôi chưa rà soát rủi ro nội dung này.** Nếu bạn muốn tôi rà soát hợp "
+    "đồng, hãy nhắn \"rà soát hợp đồng\" kèm nội dung."
+)
+
+
 def stream_hr_chat_events(
     db: Session,
     user: User,
@@ -923,6 +1291,10 @@ def stream_hr_chat_events(
     """
     yield {"event": "status", "phase": "ANALYZING"}
 
+    record_usage = _hr_llm_usage_recorder(db, user)
+    # One lookup per turn. None when the tenant installed nothing, which is the common
+    # case and keeps the default path identical to what shipped.
+    prompt_overlay = resolve_prompt_overlay(db, user.tenant_id, role_code)
     detailed_intent = _classify_hr_intent(message)
     leave_draft = _load_leave_draft(db, user, thread_id)
     normalized_message = _normalize_intent_text(message)
@@ -941,6 +1313,8 @@ def stream_hr_chat_events(
     classification = classify_hr_request(
         message,
         detailed_intent=detailed_intent,
+        on_usage=record_usage,
+        prompts=prompt_overlay,
     )
 
     # A slot-filling turn stays an action, but the router still gets to say that this
@@ -984,6 +1358,7 @@ def stream_hr_chat_events(
         hr_intent_override=routed_intent,
         leave_draft=leave_draft,
         leave_cancel_request=leave_cancel_request,
+        on_llm_usage=record_usage,
     )
     if response.get("tools_executed"):
         yield {"event": "status", "phase": "TOOL_CALLING"}
@@ -992,7 +1367,9 @@ def stream_hr_chat_events(
         # Self-service profile, compensation and leave-balance answers are already exact
         # and already contain personal data; they are neither improved nor safely
         # rewritten by a generative pass.
-        response = generate_grounded_hr_answer(message, response)
+        response = generate_grounded_hr_answer(
+            message, response, on_usage=record_usage, prompts=prompt_overlay
+        )
 
     yield {"event": "status", "phase": "COMPLETED"}
     yield {"event": "complete", "response": response}
@@ -1008,6 +1385,7 @@ def _execute_agent_chat_core(
     hr_intent_override: str | None = None,
     leave_draft: dict[str, Any] | None = None,
     leave_cancel_request: bool = False,
+    on_llm_usage: UsageReporter | None = None,
 ) -> Dict[str, Any]:
     """
     Main dispatch entry point for processing agent queries.
@@ -1022,6 +1400,12 @@ def _execute_agent_chat_core(
         raise HTTPException(status_code=404, detail=f"Agent '{role_code_upper}' not found")
     if not agent.is_active:
         raise HTTPException(status_code=409, detail=f"Agent '{role_code_upper}' is inactive")
+
+    # Resolved once per turn, immediately after the row is loaded, so every later
+    # `_require_tool` and `_can_use_tool` call in this request sees the same narrowing.
+    _attach_plugin_restriction(
+        agent, resolve_skill_restriction(db, user.tenant_id, role_code_upper)
+    )
 
     agent_name = agent.name if agent else f"{role_code_upper} Agent"
     agent_emoji = agent.avatar_emoji if agent else "🤖"
@@ -1544,6 +1928,10 @@ def _execute_agent_chat_core(
                 leave_draft,
                 reference_date=reference_date,
                 timezone_name=timezone_name,
+                # Falls back to metering here when the caller did not supply a reporter,
+                # so a direct call to this function still records what it spends.
+                on_usage=on_llm_usage or _hr_llm_usage_recorder(db, user),
+                prompts=resolve_prompt_overlay(db, user.tenant_id, role_code_upper),
             )
             missing_fields = _leave_missing_fields(slots)
             if missing_fields:
@@ -1818,40 +2206,138 @@ def _execute_agent_chat_core(
             )
             return response_data
         normalized_legal_message = message.lower()
-        contract_signals = (
-            "hợp đồng", "contract", "agreement", "nda", "msa", "sow", "điều khoản", "clause"
-        )
-        review_signals = (
-            "rà soát", "review", "audit", "risk", "rủi ro", "phạt", "penalty",
-            "unlimited liability", "không giới hạn", "đơn phương chấm dứt",
-            "customer owns", "khách hàng sở hữu",
-        )
-        is_contract_review = (
-            any(signal in normalized_legal_message for signal in contract_signals)
-            and (
-                any(signal in normalized_legal_message for signal in review_signals)
-                or len(message) >= 180
+        normalized_legal_intent = _normalize_intent_text(message)
+
+        # The tool gate above runs on every turn, so it covers the perspective
+        # question and the answer alike: an admin revoking the tool mid-conversation
+        # cannot leave the user stranded in a slot-filling loop that goes nowhere.
+        pending_review = _load_legal_review_draft(db, user, thread_id)
+        contract_text: str | None = None
+        represented_party: str | None = None
+        detection_signals: dict[str, Any] = {}
+
+        if pending_review:
+            draft, pending_text = pending_review
+            if _is_legal_review_cancel(normalized_legal_intent):
+                response_data["reply"] = (
+                    "Tôi đã hủy yêu cầu rà soát. Chưa có nội dung nào được phân tích hay lưu lại."
+                )
+                response_data["legal_risk_card"] = _legal_review_card(
+                    status="CANCELLED",
+                    contract_fingerprint=str(draft.get("contract_fingerprint") or ""),
+                    contract_char_count=int(draft.get("contract_char_count") or 0),
+                )
+                return response_data
+            if draft.get("status") == "AWAITING_INTENT":
+                if _is_review_confirmation(normalized_legal_intent):
+                    response_data["reply"] = LEGAL_PERSPECTIVE_QUESTION
+                    response_data["legal_risk_card"] = _legal_review_card(
+                        status="COLLECTING",
+                        contract_fingerprint=_contract_fingerprint(pending_text),
+                        contract_char_count=len(pending_text),
+                        excerpt=pending_text,
+                    )
+                    return response_data
+            else:
+                represented_party = _parse_represented_party(message)
+                if represented_party is None:
+                    response_data["reply"] = (
+                        "Tôi chưa xác định được bạn đại diện bên nào.\n\n"
+                        + LEGAL_PERSPECTIVE_QUESTION
+                    )
+                    response_data["legal_risk_card"] = _legal_review_card(
+                        status="COLLECTING",
+                        contract_fingerprint=_contract_fingerprint(pending_text),
+                        contract_char_count=len(pending_text),
+                        excerpt=pending_text,
+                    )
+                    return response_data
+                contract_text = pending_text
+
+        if contract_text is None:
+            intent, detection_signals = _classify_legal_contract_intent(message)
+            if intent == "REVIEW":
+                response_data["reply"] = LEGAL_PERSPECTIVE_QUESTION
+                response_data["legal_risk_card"] = _legal_review_card(
+                    status="COLLECTING",
+                    contract_fingerprint=_contract_fingerprint(message),
+                    contract_char_count=len(message),
+                    excerpt=message,
+                )
+                return response_data
+            if intent == "UNSURE":
+                # Never fall silently through to retrieval here: the user would be
+                # told no document matched and conclude their contract was reviewed.
+                response_data["reply"] = (
+                    "Tôi chưa chắc bạn muốn tôi **rà soát rủi ro một hợp đồng** hay "
+                    "**trả lời một câu hỏi pháp lý**. Nội dung bạn gửi có "
+                    f"{detection_signals.get('numbered_clauses', 0)} điều khoản nhận diện được.\n\n"
+                    "- Trả lời **\"rà soát\"** để tôi phân tích rủi ro nội dung này.\n"
+                    "- Hoặc đặt lại câu hỏi để tôi tra cứu trong Kho tri thức."
+                )
+                response_data["legal_risk_card"] = _legal_review_card(
+                    status="AWAITING_INTENT",
+                    contract_fingerprint=_contract_fingerprint(message),
+                    contract_char_count=len(message),
+                    excerpt=message,
+                )
+                return response_data
+
+        if contract_text is not None and represented_party is not None:
+            audit_res = audit_contract_text(
+                contract_text,
+                document_name="Nội dung gửi qua chat",
+                represented_party=represented_party,
             )
-        )
-        if is_contract_review:
-            audit_res = audit_contract_text(message)
             response_data["tools_executed"].append({
                 "tool_name": "audit_contract_risk",
-                "input": {"text_length": len(message)},
+                "input": {
+                    "text_length": len(contract_text),
+                    "represented_party": represented_party,
+                },
                 "risks_found": audit_res["total_risks_found"],
                 "risk_score": audit_res["risk_score"],
             })
+            # Saved before the audit log on purpose: log_audit_action commits, and
+            # save_contract_review only flushes, so the audit call is what persists both.
+            review = contract_review_store.save_contract_review(
+                db,
+                user=user,
+                result=audit_res,
+                contract_text=contract_text,
+                source="CHAT",
+            )
+            audit_res["review_id"] = str(review.id)
+            audit_res["redline_url"] = (
+                f"/api/v1/legal/contract-reviews/{review.id}/redline"
+            )
+            # Chat used to skip this, so a CRITICAL contract pasted here notified
+            # nobody while the same file uploaded to the Legal page raised an
+            # approval. create_legal_approval commits, which also persists the review.
+            workflow_id = create_legal_approval(
+                db, user, audit_res, contract_review_id=str(review.id)
+            )
+            if workflow_id:
+                review.workflow_id = uuid.UUID(workflow_id)
+                audit_res["workflow_id"] = workflow_id
+                audit_res["approval_created"] = True
             log_audit_action(
                 db,
                 user.tenant_id,
                 "LEGAL",
                 "audit_contract_risk",
-                {"text_length": len(message)},
+                {
+                    "text_length": len(contract_text),
+                    "represented_party": represented_party,
+                    "review_id": str(review.id),
+                },
                 {"risks": audit_res["total_risks_found"], "risk_score": audit_res["risk_score"]},
             )
             response_data["reply"] = (
-                f"Tôi đã rà soát nội dung hợp đồng và phát hiện **{audit_res['total_risks_found']} vấn đề**, "
-                f"với điểm rủi ro **{audit_res['risk_score']}/100 ({audit_res['risk_level']})**.\n\n"
+                f"Tôi đã rà soát nội dung hợp đồng theo góc nhìn "
+                f"**{audit_res['represented_party_label']}** và phát hiện "
+                f"**{audit_res['total_risks_found']} vấn đề**, với điểm rủi ro "
+                f"**{audit_res['risk_score']}/100 ({audit_res['risk_level']})**.\n\n"
                 "Mỗi phát hiện bên dưới kèm bằng chứng từ nội dung và hành động đề xuất."
             )
             response_data["legal_risk_card"] = audit_res
@@ -1890,6 +2376,7 @@ def _execute_agent_chat_core(
                 "Theo văn bản pháp luật và chính sách bạn được phép truy cập:\n\n"
                 f"{excerpts}\n\n"
                 "Nếu quyết định này tạo nghĩa vụ pháp lý hoặc chia sẻ dữ liệu nhạy cảm, hãy gửi Legal phê duyệt."
+                + LEGAL_NOT_REVIEWED_NOTICE
             )
             return response_data
 
@@ -1899,14 +2386,26 @@ def _execute_agent_chat_core(
             "force majeure": "Force majeure (bất khả kháng) là sự kiện ngoài khả năng kiểm soát hợp lý làm cản trở việc thực hiện nghĩa vụ. Điều khoản nên quy định sự kiện, thông báo và hậu quả cụ thể.",
             "intellectual property": "Intellectual property là quyền đối với tài sản trí tuệ như mã nguồn, thiết kế, nhãn hiệu và tài liệu. Hợp đồng cần tách IP có sẵn với deliverable được tạo trong dự án.",
         }
-        definition = next(
-            (value for term, value in legal_terms.items() if term in normalized_legal_message),
-            None,
-        )
-        response_data["reply"] = definition or (
+        # A pasted clause must never be answered with a dictionary definition, so the
+        # glossary only applies when nothing about the turn looks like a document.
+        definition = None
+        if not detection_signals.get("clause_structure"):
+            definition = next(
+                (value for term, value in legal_terms.items() if term in normalized_legal_message),
+                None,
+            )
+        if definition:
+            # Reporting this as retrieval would imply the answer came from tenant
+            # documents, when it came from four hardcoded strings.
+            response_data["tools_executed"].append({
+                "tool_name": "legal_glossary_lookup",
+                "input": {"query": message},
+                "result_count": 1,
+            })
+        response_data["reply"] = (definition or (
             "Tôi chưa tìm thấy văn bản còn hiệu lực và phù hợp trong phạm vi ACL của bạn. "
             "Tôi sẽ không tự suy diễn quy định; vui lòng bổ sung tài liệu hoặc gửi Legal Team xác nhận."
-        )
+        )) + LEGAL_NOT_REVIEWED_NOTICE
         return response_data
 
     # -----------------------------------------------------------------------

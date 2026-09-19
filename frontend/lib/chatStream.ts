@@ -1,3 +1,5 @@
+import { authorizedFetch } from "@/lib/authorizedFetch";
+
 export type ExecutionPhase =
   | "ANALYZING"
   | "SEARCHING"
@@ -30,16 +32,11 @@ export async function streamAgentChat(
   onEvent: (event: ChatStreamEvent) => void,
   signal?: AbortSignal,
 ): Promise<void> {
-  const token = typeof window !== "undefined"
-    ? window.localStorage.getItem("access_token")
-    : null;
-  const response = await fetch(`${API_BASE}/api/v1/agent/chat/stream`, {
+  const response = await authorizedFetch(`${API_BASE}/api/v1/agent/chat/stream`, {
     method: "POST",
-    credentials: "include",
     headers: {
       "Content-Type": "application/json",
       Accept: "text/event-stream",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(payload),
     signal,

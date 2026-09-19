@@ -4,8 +4,14 @@ sqlalchemy[asyncio]==2.0.31
 psycopg2-binary==2.9.9
 asyncpg==0.30.0
 alembic==1.13.2
-python-jose[cryptography]==3.3.0
+# 3.3.0 (2021) carries CVE-2024-33663 and CVE-2024-33664. Our usage pins the algorithm
+# list to HS256, which blunts the first, but there is no reason to stay on it.
+python-jose[cryptography]==3.5.0
 passlib[bcrypt]==1.7.4
+# app/core/security.py imports bcrypt directly -- precisely to avoid passlib's breakage
+# on bcrypt 5.x -- so the version it uses must be pinned here rather than inherited from
+# passlib's extra, where it was free to drift.
+bcrypt==5.0.0
 pydantic-settings==2.3.4
 python-multipart==0.0.9
 pgvector==0.3.2
@@ -20,3 +26,4 @@ reportlab==5.0.0
 python-docx==1.1.2
 pypdf==5.9.0
 redis==8.1.0
+PyYAML==6.0.3

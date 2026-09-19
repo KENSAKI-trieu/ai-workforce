@@ -44,6 +44,20 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Database connectivity check failed: {e}")
         raise
+    if settings.LANGGRAPH_ENABLED:
+        # Turning this flag on routes every non-HR agent through LangGraph, which makes
+        # the whole deterministic LEGAL branch unreachable. The gateway's LEGAL policy
+        # grants only the three tools named below -- none of them reviews contract risk --
+        # so contract review, the represented-party question and redline generation all
+        # disappear from chat with no error anywhere. The tool names are hardcoded on
+        # purpose: the backend talks to apps/ai-service over HTTP and must not import it.
+        logger.warning(
+            "⚠️ LANGGRAPH_ENABLED=true routes every non-HR agent through LangGraph. "
+            "The LEGAL domain policy exposes only rag_search, generate_legal_document "
+            "and submit_approval_request -- there is no contract risk-review tool -- so "
+            "contract review, the represented-party question and redline generation are "
+            "UNREACHABLE in chat until a review tool is added to DOMAIN_POLICIES['LEGAL']."
+        )
     yield
     logger.info("🛑 AI Workforce backend shutting down...")
 

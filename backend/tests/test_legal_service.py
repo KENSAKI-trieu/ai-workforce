@@ -175,11 +175,17 @@ def test_legal_api_routes_use_the_shared_v1_prefix_once():
         "/api/v1/legal/generate-document",
         "/api/v1/legal/document-templates",
         "/api/v1/legal/validate-document",
-        "/api/v1/legal/download-redline/{file_id}",
+        "/api/v1/legal/contract-reviews",
+        "/api/v1/legal/contract-reviews/{review_id}",
+        "/api/v1/legal/contract-reviews/{review_id}/redline",
+        "/api/v1/legal/contract-reviews/{review_id}/decisions/{finding_key}",
     }
 
     assert expected_paths <= route_paths
     assert not any(path.startswith("/api/v1/api/v1/") for path in route_paths)
+    # The old stub was unauthenticated, ignored its file_id and returned plain text
+    # claiming to be a docx. It must not come back.
+    assert "/api/v1/legal/download-redline/{file_id}" not in route_paths
 
 
 def test_contract_review_upload_endpoint(client, employee_token_headers):

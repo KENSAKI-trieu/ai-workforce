@@ -28,7 +28,12 @@ class AIServiceClient:
     @property
     def headers(self) -> dict[str, str]:
         if not settings.AI_SERVICE_INTERNAL_TOKEN:
-            return {}
+            # Sending no credential used to work because the AI service let unauthenticated
+            # requests through. It no longer does, and a silent empty header would surface
+            # as an opaque 503 from the far side instead of naming the missing setting.
+            raise AIServiceError(
+                "AI_SERVICE_INTERNAL_TOKEN is not configured; the AI service will reject the call"
+            )
         return {"X-AI-Service-Key": settings.AI_SERVICE_INTERNAL_TOKEN}
 
     def _post(

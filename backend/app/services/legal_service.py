@@ -9,7 +9,6 @@ from __future__ import annotations
 import difflib
 import json
 import re
-import uuid
 from typing import Any
 
 from app.services.contract_review import review_contract
@@ -80,13 +79,20 @@ def extract_contract_metadata(text: str) -> dict[str, Any]:
 def audit_contract_text(
     contract_text: str,
     document_name: str = "Contract.pdf",
+    represented_party: str = "NEUTRAL",
 ) -> dict[str, Any]:
-    """Compatibility wrapper around the independent contract-review module."""
-    result = review_contract(contract_text, document_name, "NEUTRAL")
-    result["docx_download_url"] = (
-        f"/api/v1/legal/download-redline/{uuid.uuid4().hex[:8]}"
-    )
-    return result
+    """Compatibility wrapper around the independent contract-review module.
+
+    The perspective is a parameter because it changes severity: the same clause is
+    HIGH for whoever carries the obligation and LOW for the other side. Callers that
+    know which party they act for must say so, or the score they show is not the
+    score that applies to them.
+
+    This used to attach a `docx_download_url` pointing at a random id that was never
+    stored -- a download link that could only ever 404. A redline is now reachable
+    only through a saved review, at /legal/contract-reviews/{id}/redline.
+    """
+    return review_contract(contract_text, document_name, represented_party)
 
 
 def detect_sensitive_data(text: str, headers: list[str] | None = None) -> dict[str, Any]:

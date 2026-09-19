@@ -1,5 +1,7 @@
 from contextlib import asynccontextmanager
+import hmac
 import json
+from typing import Any
 
 from fastapi import Depends, FastAPI, Header, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
@@ -10,6 +12,7 @@ from app.chains.chat import generate_chat
 from app.chains.structured_extraction import extract_agent_routing
 from app.config import settings
 from app.feature_flags import runtime_feature_snapshot, select_langchain_runtime
+from app.guardrails.tool_permission import is_tool_allowed
 from app.rag.embedding.factory import get_embedding_provider
 from app.rag.ingestion.chunker import chunk_document, iter_chunk_document
 from app.rag.reranking.reranker import rerank_with_metadata
@@ -47,6 +50,15 @@ orchestration_engines = OrchestrationEngineProvider()
 
 @asynccontextmanager
 async def lifespan(_: FastAPI):
+    # Every /v1 endpoint here answers with company data or spends money on a model
+    # provider. A missing credential used to disable the check instead of failing the
+    # request, so a deployment that forgot the variable served the whole surface to
+    # anyone who could reach the port -- and nothing in the logs said so.
+    if not settings.AI_SERVICE_INTERNAL_TOKEN and settings.APP_ENV != "test":
+        raise RuntimeError(
+            "AI_SERVICE_INTERNAL_TOKEN is not set. The AI service refuses to start "
+            "without it because every /v1 endpoint would be reachable unauthenticated."
+        )
     orchestration_engines.start()
     try:
         if settings.EMBEDDING_PRELOAD:
@@ -79,7 +91,14 @@ def require_internal_token(
     x_ai_service_key: str | None = Header(default=None),
 ) -> None:
     expected = settings.AI_SERVICE_INTERNAL_TOKEN
-    if expected and x_ai_service_key != expected:
+    if not expected:
+        # Startup already refuses this outside tests. Answering 503 rather than letting
+        # the request through keeps the missing-configuration case closed everywhere.
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="AI service credential is not configured",
+        )
+    if not x_ai_service_key or not hmac.compare_digest(x_ai_service_key, expected):
         raise HTTPException(
             status_code=status.HTTP_401_UNAUTHORIZED,
             detail="Invalid AI service credential",
@@ -91,6 +110,33 @@ def _tool_jwt(x_internal_tool_authorization: str | None) -> str:
     if not x_internal_tool_authorization or not x_internal_tool_authorization.startswith(prefix):
         raise HTTPException(status_code=401, detail="Internal tool authorization is required")
     return x_internal_tool_authorization[len(prefix):].strip()
+
+
+# Fields the orchestrator injects from the trusted runtime context. The system prompt
+# already tells the model not to produce them; leaving them in the advertised schema also
+# marked them required, so a compliant answer looked incomplete against its own contract.
+SERVER_INJECTED_TOOL_FIELDS = ("tenant_id", "audit")
+
+
+def _model_facing_schema(tool: Any) -> dict[str, Any]:
+    if tool.args_schema is None:
+        return {}
+    schema = dict(tool.args_schema.model_json_schema())
+    properties = {
+        name: value
+        for name, value in (schema.get("properties") or {}).items()
+        if name not in SERVER_INJECTED_TOOL_FIELDS
+    }
+    schema["properties"] = properties
+    required = [
+        name for name in (schema.get("required") or [])
+        if name not in SERVER_INJECTED_TOOL_FIELDS
+    ]
+    if required:
+        schema["required"] = required
+    else:
+        schema.pop("required", None)
+    return schema
 
 
 def _orchestration_context(
@@ -110,7 +156,7 @@ def _orchestration_context(
     tools = {
         tool.name: tool
         for tool in build_langchain_tools(gateway)
-        if tool.name in set(allowed_tools) and tool.name not in set(denied_tools)
+        if is_tool_allowed(tool.name, allowed_tools, denied_tools)
     }
     security = AgentRuntimeContext(
         tenant_id=tenant_id,
@@ -130,7 +176,7 @@ def _orchestration_context(
             {
                 "name": tool.name,
                 "description": tool.description,
-                "input_schema": tool.args_schema.model_json_schema() if tool.args_schema else {},
+                "input_schema": _model_facing_schema(tool),
                 "action": (tool.metadata or {}).get("action"),
             }
             for tool in tools.values()

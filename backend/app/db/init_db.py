@@ -16,8 +16,8 @@ from app.core.security import get_password_hash
 from app.core.hr_capabilities import (
     HR_CONFIGURATION_VERSION,
     HR_RETIRED_TOOLS,
-    default_hr_tools,
 )
+from app.services.auth_service import DEFAULT_AGENT_TOOLS
 from app.services.position_service import backfill_tenant_user_positions
 from app.models.models import Tenant, User, AIAgent, Department, DocumentChunk, UserMemory, AgentWorkflow, WorkflowApproval, AuditLog, LLMCostLog, Task, TaskComment, LeaveBalance
 
@@ -337,31 +337,11 @@ def init_db():
             },
         ]
 
-        default_agent_tools = {
-            "CEO": [
-                "generate_and_execute_ceo_dag", "rag_search", "create_task",
-                "expense_lookup", "generate_legal_document", "submit_approval_request",
-            ],
-            # Derived from the executor's capability list. The gateway names that used to
-            # be appended here (rag_search, employee_lookup, leave_lookup, create_task,
-            # submit_approval_request) were never usable: HR is routed around the
-            # LangGraph tool gateway, so those grants only widened the configuration UI.
-            "HR": default_hr_tools(),
-            "KNOWLEDGE": ["hybrid_search_documents", "rag_search"],
-            "LEGAL": [
-                "audit_contract_risk",
-                "compare_contract_versions",
-                "check_sensitive_data",
-                "check_software_licenses",
-                "generate_legal_document",
-                "hybrid_rag_search",
-                "rag_search",
-                "submit_approval_request",
-            ],
-            "IT": ["search_it_kb", "create_jira_ticket", "rag_search", "create_task", "submit_approval_request"],
-            "FINANCE": ["reconcile_po_db", "rag_search", "expense_lookup", "create_task", "submit_approval_request"],
-            "SALES": ["generate_quotation_pdf", "rag_search", "create_task", "submit_approval_request"],
-        }
+        # Seeded grants come from the same map the signup path uses, so a demo tenant and a
+        # registered tenant cannot disagree about what a role may call. Gateway tool names
+        # are composed in by DEFAULT_AGENT_TOOLS; HR deliberately gets none, because the
+        # backend routes that role around the graph entirely.
+        default_agent_tools = DEFAULT_AGENT_TOOLS
         legacy_tools = ["query_leave_balance", "request_leave", "hybrid_rag_search"]
         for adata in agents_data:
             agent = db.query(AIAgent).filter(

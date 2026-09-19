@@ -75,16 +75,34 @@ def run_manual_demo():
 
     # 4. Test Legal Agent Contract Audit
     print("\n4️⃣ TEST LEGAL AGENT (THẨM ĐỊNH HỢP ĐỒNG & REDLINE)")
+    legal_contract = (
+        "HỢP ĐỒNG DỊCH VỤ\n"
+        "Điều 1. Phạt vi phạm\nMức phạt 30% giá trị hợp đồng.\n"
+        "Điều 2. Chấm dứt\nBên A đơn phương chấm dứt ngay lập tức.\n"
+        "Điều 3. Trách nhiệm\nBên B chịu trách nhiệm không giới hạn."
+    )
+    legal_ask = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "LEGAL", "message": legal_contract},
+        headers=emp_headers
+    )
+    assert legal_ask.status_code == 200
+    print(f"  ❓ Legal hỏi góc nhìn trước khi rà soát: {legal_ask.json()['legal_risk_card']['status']}")
+
     legal_chat = client.post(
         "/api/v1/agent/chat",
-        json={"agent_role": "LEGAL", "message": "Điều khoản phạt 30% giá trị hợp đồng và đơn phương chấm dứt ngay"},
+        json={
+            "agent_role": "LEGAL",
+            "message": "Tôi là bên A",
+            "conversation_id": legal_ask.json()["conversation_id"],
+        },
         headers=emp_headers
     )
     assert legal_chat.status_code == 200
     legal_res = legal_chat.json()
     lcard = legal_res["legal_risk_card"]
-    print(f"  ⚖️ Kết quả rà soát Legal: Phát hiện {lcard['total_risks_found']} điều khoản rủi ro.")
-    print(f"  📄 File .docx Redline download URL: {lcard['docx_download_url']}")
+    print(f"  ⚖️ Kết quả rà soát Legal ({lcard['represented_party']}): Phát hiện {lcard['total_risks_found']} điều khoản rủi ro.")
+    print(f"  📄 Redline mở sau khi có đề xuất được chấp nhận: {lcard.get('redline_url')}")
 
     # 5. Test IT Agent Jira Ticket
     print("\n5️⃣ TEST IT AGENT (SỰ CỐ KỸ THUẬT & TỰ ĐỘNG TẠO JIRA TICKET)")

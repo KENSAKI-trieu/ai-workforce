@@ -7,6 +7,12 @@ from typing import Optional
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, field_validator
 
+from app.core.password_policy import (
+    MAX_PASSWORD_LENGTH,
+    MIN_PASSWORD_LENGTH,
+    validate_password,
+)
+
 
 # ---------------------------------------------------------------------------
 # Register
@@ -14,13 +20,25 @@ from pydantic import BaseModel, EmailStr, Field, field_validator
 class RegisterRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(..., min_length=2, max_length=255)
-    password: str = Field(..., min_length=8, max_length=128)
+    password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
     tenant_name: str = Field(
         ...,
         min_length=2,
         max_length=255,
         description="Company/workspace name. Public registration always creates a new workspace.",
     )
+
+    _check_password = field_validator("password")(validate_password)
+
+
+# ---------------------------------------------------------------------------
+# Change password
+# ---------------------------------------------------------------------------
+class ChangePasswordRequest(BaseModel):
+    current_password: str
+    new_password: str = Field(..., min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+    _check_password = field_validator("new_password")(validate_password)
 
 
 # ---------------------------------------------------------------------------
@@ -31,14 +49,10 @@ class LoginRequest(BaseModel):
     password: str
 
 
-class TokenResponse(BaseModel):
-    access_token: str
-    refresh_token: str
-    token_type: str = "bearer"
-
-
-class TokenRefreshRequest(BaseModel):
-    refresh_token: str
+# `TokenResponse` and `TokenRefreshRequest` used to live here. Both carried a
+# refresh_token field, and both are gone: the refresh token is never serialised to a
+# client any more. It exists only as an HttpOnly cookie scoped to /api/v1/auth, so
+# script running on the page cannot read it and cannot send it anywhere.
 
 
 # ---------------------------------------------------------------------------
@@ -60,6 +74,5 @@ class UserInToken(BaseModel):
 
 class LoginResponse(BaseModel):
     access_token: str
-    refresh_token: str
     token_type: str = "bearer"
     user: UserInToken

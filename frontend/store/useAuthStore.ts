@@ -1,6 +1,10 @@
 /**
- * Zustand store for global authentication state with Access Token (LocalStorage/RAM)
- * and Refresh Token (HttpOnly Cookie), featuring bulletproof F5 hydration protection.
+ * Zustand store for global authentication state.
+ *
+ * The access token is the only credential this file ever touches. The refresh token is
+ * an HttpOnly cookie the browser sends on its own -- it used to be mirrored into
+ * localStorage too, which handed any XSS a 30-day credential and made the cookie
+ * pointless.
  */
 
 import { create } from 'zustand';
@@ -37,7 +41,7 @@ interface AuthState {
   ) => Promise<void>;
   logout: () => Promise<void>;
   fetchMe: () => Promise<void>;
-  setTokens: (access: string, user: UserInfo, refresh?: string) => void;
+  setTokens: (access: string, user: UserInfo) => void;
 }
 
 const getInitialToken = (): string | null => {
@@ -59,19 +63,17 @@ export const useAuthStore = create<AuthState>()(
 
       setHasHydrated: (status) => set({ hasHydrated: status }),
 
-      setTokens: (access, user, refresh?: string) => {
+      setTokens: (access, user) => {
         if (typeof window !== 'undefined') {
           localStorage.setItem('access_token', access);
-          if (refresh) localStorage.setItem('refresh_token', refresh);
         }
         set({ accessToken: access, user, isAuthenticated: true });
       },
 
       login: async (email, password) => {
         const { data } = await api.post('/api/v1/auth/login', { email, password });
-        if (typeof window !== 'undefined') {
-          if (data.access_token) localStorage.setItem('access_token', data.access_token);
-          if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
+        if (typeof window !== 'undefined' && data.access_token) {
+          localStorage.setItem('access_token', data.access_token);
         }
         set({
           accessToken: data.access_token,
@@ -87,9 +89,8 @@ export const useAuthStore = create<AuthState>()(
           password,
           tenant_name: tenantName,
         });
-        if (typeof window !== 'undefined') {
-          if (data.access_token) localStorage.setItem('access_token', data.access_token);
-          if (data.refresh_token) localStorage.setItem('refresh_token', data.refresh_token);
+        if (typeof window !== 'undefined' && data.access_token) {
+          localStorage.setItem('access_token', data.access_token);
         }
         set({
           accessToken: data.access_token,
@@ -113,7 +114,6 @@ export const useAuthStore = create<AuthState>()(
           if (axios.isAxiosError(err) && err.response?.status === 401) {
             if (typeof window !== 'undefined') {
               localStorage.removeItem('access_token');
-              localStorage.removeItem('refresh_token');
             }
             set({ user: null, accessToken: null, isAuthenticated: false });
           }
@@ -128,7 +128,6 @@ export const useAuthStore = create<AuthState>()(
         } finally {
           if (typeof window !== 'undefined') {
             localStorage.removeItem('access_token');
-            localStorage.removeItem('refresh_token');
           }
           set({ user: null, accessToken: null, isAuthenticated: false });
         }

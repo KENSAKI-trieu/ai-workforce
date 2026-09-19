@@ -25,8 +25,32 @@ class Settings(BaseSettings):
     SECRET_KEY: str
     SEED_DEFAULT_PASSWORD: Optional[str] = None
     ALGORITHM: str = "HS256"
-    ACCESS_TOKEN_EXPIRE_MINUTES: int = 10080  # 7 days
+    # An access token cannot be revoked, so its lifetime is the window an attacker keeps
+    # after stealing one. This was 10080 (seven days), which made the refresh mechanism
+    # decorative. Short-lived access tokens are the whole reason refresh tokens exist.
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     REFRESH_TOKEN_EXPIRE_DAYS: int = 30  # 30 days
+
+    # --- Refresh cookie ---
+    # The refresh cookie used to be issued with secure=False hardcoded, so production
+    # would have sent a 30-day credential over plaintext. These are settings now, and
+    # production is not allowed to start with the unsafe combination.
+    COOKIE_SECURE: bool = False
+    COOKIE_SAMESITE: str = "lax"
+    COOKIE_DOMAIN: Optional[str] = None
+
+    # --- Login throttling ---
+    # Nothing used to stand between an attacker and unlimited password guesses.
+    # The per-email budget is the one that stops credential stuffing; the per-IP budget
+    # is deliberately looser because a whole office can share one address.
+    LOGIN_RATE_LIMIT_ENABLED: bool = True
+    LOGIN_RATE_LIMIT_MAX_PER_EMAIL: int = 10
+    LOGIN_RATE_LIMIT_MAX_PER_IP: int = 50
+    LOGIN_RATE_LIMIT_WINDOW_SECONDS: int = 900
+    # When Redis cannot be reached the limit cannot be enforced. Closed by default: a
+    # brief inability to log in beats an unmetered window for guessing passwords. Set
+    # true to trade that for availability -- it is logged loudly either way.
+    LOGIN_RATE_LIMIT_FAIL_OPEN: bool = False
 
     # --- LLM ---
     OPENAI_API_KEY: Optional[str] = None
@@ -114,6 +138,20 @@ class Settings(BaseSettings):
             raise ValueError("RAG minimum dense score must be between -1 and 1")
         if not 0.0 <= self.RAG_MIN_RELEVANCE_SCORE <= 1.0:
             raise ValueError("RAG minimum relevance score must be between 0 and 1")
+
+        samesite = self.COOKIE_SAMESITE.lower()
+        if samesite not in {"lax", "strict", "none"}:
+            raise ValueError("COOKIE_SAMESITE must be one of: lax, strict, none")
+        self.COOKIE_SAMESITE = samesite
+        # A SameSite=None cookie without Secure is silently dropped by every current
+        # browser, which would look like "refresh is broken" rather than a config error.
+        if samesite == "none" and not self.COOKIE_SECURE:
+            raise ValueError("COOKIE_SAMESITE=none requires COOKIE_SECURE=true")
+        if self.APP_ENV.lower() == "production" and not self.COOKIE_SECURE:
+            raise ValueError(
+                "COOKIE_SECURE must be true in production; the refresh cookie is a "
+                "30-day credential and must never travel over plaintext HTTP"
+            )
         return self
 
     @property

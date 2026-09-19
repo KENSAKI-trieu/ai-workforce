@@ -1,0 +1,27 @@
+name: company-b-hr
+version: 1.0.0
+display_name: "Cấu hình HR cho Công ty B"
+description: >-
+  Gói mẫu: HR agent của Công ty B trả lời bằng tiếng Nhật kính ngữ và chỉ được dùng
+  một tập công cụ rất hẹp.
+target_role: HR
+min_platform_version: 1
+
+prompts:
+  answer:
+    mode: append
+    text: |
+      この企業向けの追加ルール:
+      - 回答は必ず日本語の敬語で行うこと。ユーザーが他の言語で質問した場合も日本語で答える。
+      - 社内規程を引用する際は、規程名と条番号を必ず明記すること。
+      - 給与に関する回答の最後には、人事部への確認を促す一文を必ず添えること。
+
+skills:
+  # Công ty B chỉ mở đúng hai năng lực đọc. Đây là phép giao với quyền của agent, nên
+  # danh sách này không bao giờ cấp thêm quyền mà agent chưa có.
+  tools_access:
+    - hybrid_rag_search
+    - query_leave_balance
+
+knowledge:
+  - "*"

@@ -8,6 +8,7 @@ import api from "@/lib/api";
 import { useAuthStore } from "@/store/useAuthStore";
 import KnowledgeShell from "../_components/KnowledgeShell";
 import type { DocumentReader } from "../_lib/types";
+import { useProcessingStream } from "../_lib/processingStream";
 import { messageFrom } from "../_lib/utils";
 import styles from "../knowledge.module.css";
 
@@ -29,19 +30,39 @@ export default function DocumentDetailClient({ documentId, version }: { document
   const [search, setSearch] = useState("");
   const [loading, setLoading] = useState(Boolean(documentId));
   const [error, setError] = useState<string | null>(null);
+  const readerStage = reader?.processing_status || "ready";
+
+  // Opening a document that is still ingesting used to freeze its pipeline at
+  // whatever the single fetch returned, so the only way forward was a reload.
+  const streamed = useProcessingStream(
+    documentId,
+    version,
+    Boolean(reader) && !["ready", "failed"].includes(readerStage),
+  );
+  const streamedStage = streamed?.processing_status;
+  // Chunks only exist once indexing commits them. Keying the fetch on this flag
+  // refetches exactly once when the pipeline settles, with no cascading render.
+  const streamSettled = streamedStage === "ready" || streamedStage === "failed";
 
   useEffect(() => {
     if (!documentId || !hasHydrated || !isAuthenticated) return;
+    let current = true;
     api.get<DocumentReader>(`/api/v1/documents/${encodeURIComponent(documentId)}/reader`, { params: { version } })
-      .then(({ data }) => setReader(data))
-      .catch((reason) => setError(messageFrom(reason)))
-      .finally(() => setLoading(false));
-  }, [documentId, hasHydrated, isAuthenticated, version]);
+      .then(({ data }) => current && setReader(data))
+      .catch((reason) => current && setError(messageFrom(reason)))
+      .finally(() => current && setLoading(false));
+    return () => {
+      current = false;
+    };
+  }, [documentId, hasHydrated, isAuthenticated, streamSettled, version]);
 
   const displayedError = documentId ? error : "Thiếu mã tài liệu.";
-  const processingStage = reader?.processing_status || "ready";
+  const processingStage = streamedStage === "uploaded"
+    ? "parsing"
+    : streamedStage || readerStage;
+  const processingProgress = streamed?.processing_progress ?? reader?.processing_progress ?? 0;
   const currentRank = processingStage === "failed"
-    ? checkpointRank[reader?.processing_checkpoint || "uploaded"] ?? 0
+    ? checkpointRank[streamed?.processing_checkpoint || reader?.processing_checkpoint || "uploaded"] ?? 0
     : detailRank[processingStage] ?? 0;
 
   const chunks = useMemo(() => {
@@ -101,7 +122,7 @@ export default function DocumentDetailClient({ documentId, version }: { document
                         {complete ? <Check size={11} /> : active ? <Loader2 className="animate-spin" size={11} /> : failed ? <X size={11} /> : <Circle size={7} />}
                       </span>
                       <span>{item.label}</span>
-                      <span>{complete ? "100%" : active ? `${reader.processing_progress ?? 0}%` : "0%"}</span>
+                      <span>{complete ? "100%" : active ? `${processingProgress}%` : "0%"}</span>
                     </div>
                   );
                 })}

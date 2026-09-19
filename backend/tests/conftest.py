@@ -17,6 +17,10 @@ os.environ["AI_SERVICE_URL"] = ""
 # The fixtures below authenticate with this deterministic test-only password.
 # Override ambient values so developer shells and CI cannot make the suite flaky.
 os.environ["SEED_DEFAULT_PASSWORD"] = "Password123!"
+# The suite logs in as the same account from every module, far more often than a person
+# would, and does not run a Redis. The limiter has its own tests, which switch it back on
+# against a fake client.
+os.environ["LOGIN_RATE_LIMIT_ENABLED"] = "false"
 
 from app.main import app
 from app.core.database import get_db, sync_engine

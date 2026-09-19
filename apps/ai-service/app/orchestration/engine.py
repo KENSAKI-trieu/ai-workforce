@@ -16,6 +16,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import Command, interrupt
 
 from app.guardrails.input_guard import validate_input
+from app.guardrails.tool_permission import is_tool_allowed
 from app.guardrails.output_guard import validate_grounded_output
 from app.middleware.context import AgentRuntimeContext
 from app.middleware.redaction import redact_sensitive_data, redact_text
@@ -270,8 +271,10 @@ def _execute_tool(
                 {**pending, "status": "REJECTED", "result": None},
             ],
         }
-    allowed_tools = runtime.security.allowed_tools - runtime.security.denied_tools
-    if name not in allowed_tools or name not in runtime.tools:
+    permitted = is_tool_allowed(
+        name, runtime.security.allowed_tools, runtime.security.denied_tools
+    )
+    if not permitted or name not in runtime.tools:
         return {
             "pending_tool_call": None,
             "final_answer": "The action was not executed because its authorization is no longer valid.",
@@ -372,13 +375,8 @@ def _output_validation(state: WorkforceAgentState) -> dict[str, Any]:
         }
 
 
-def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
-    if state.get("tool_calls") or not state.get("citation_required"):
-        return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
-    context = state.get("retrieved_context") or []
-    if not context:
-        return {"citations": [], "execution_trace": _trace(state, "citation_verification", "NO_CONTEXT")}
-    allowed = {
+def _allowed_citation_sources(context: list[dict[str, Any]]) -> set[str]:
+    return {
         str(value).casefold()
         for item in context
         for value in (
@@ -386,19 +384,43 @@ def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
         )
         if value
     }
+
+
+def _supplied_citations(state: WorkforceAgentState) -> set[str]:
     text_citations = {value.strip().casefold() for value in CITATION_PATTERN.findall(state.get("final_answer") or "")}
     structured_sources = {
         str(citation.get("source") or citation.get("document_title") or citation.get("document_id") or citation.get("chunk_id") or "").casefold()
         for citation in state.get("citations") or []
     } - {""}
-    supplied = text_citations | structured_sources
-    if not supplied or not supplied.issubset(allowed):
-        return {
-            "final_answer": "The answer was withheld because its citations could not be verified.",
-            "citations": [],
-            "errors": [*(state.get("errors") or []), {"node": "citation_verification", "error": "UNVERIFIED_CITATION"}],
-            "execution_trace": _trace(state, "citation_verification", "FAILED"),
-        }
+    return text_citations | structured_sources
+
+
+def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
+    return {
+        "final_answer": "The answer was withheld because its citations could not be verified.",
+        "citations": [],
+        "errors": [*(state.get("errors") or []), {"node": "citation_verification", "error": error}],
+        "execution_trace": _trace(state, "citation_verification", "FAILED"),
+    }
+
+
+def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
+    if state.get("tool_calls") or not state.get("citation_required"):
+        return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
+    context = state.get("retrieved_context") or []
+    supplied = _supplied_citations(state)
+    if not context:
+        # Retrieval found nothing, so there is no source any citation could be checked
+        # against. Letting the answer through unread was the safe half of that; letting it
+        # through while it still *claims* a source was not -- with an empty allow-set every
+        # citation here is invented, and this branch returned before the check that would
+        # have caught it. An answer with no citation is still allowed: a governed domain
+        # has to be able to say something without pretending it read a document.
+        if supplied:
+            return _withhold_answer(state, "CITATION_WITHOUT_CONTEXT")
+        return {"citations": [], "execution_trace": _trace(state, "citation_verification", "NO_CONTEXT")}
+    if not supplied or not supplied.issubset(_allowed_citation_sources(context)):
+        return _withhold_answer(state, "UNVERIFIED_CITATION")
     return {"execution_trace": _trace(state, "citation_verification")}
 
 

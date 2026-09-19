@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import uuid
 from datetime import date
 from types import SimpleNamespace
 
@@ -15,11 +16,27 @@ from app.services.agents.hr_llm_flow import (
     generate_grounded_hr_answer,
 )
 
+# The chat entry point reads the caller's tenant to resolve plugin prompts, so the
+# user double needs one even though these tests never reach a database.
+_TEST_TENANT_ID = uuid.uuid4()
+
 
 @pytest.fixture(scope="module", autouse=True)
 def setup_database():
     """These unit tests use fakes only and do not require the integration database."""
     yield
+
+
+@pytest.fixture(autouse=True)
+def no_plugin_overlay(monkeypatch):
+    """Route these tests through the unmodified default prompts.
+
+    ``execute_agent_chat`` looks up the tenant's installed plugins, but the db and user
+    here are bare fakes with no session behind them. These tests are about routing, so
+    the lookup is stubbed to the "nothing installed" answer; the overlay itself is
+    covered in test_plugins.py.
+    """
+    monkeypatch.setattr(agent_executor, "resolve_prompt_overlay", lambda *_a, **_k: None)
 
 
 class FakeAIClient:
@@ -190,12 +207,12 @@ def test_llm_question_classification_cannot_execute_an_action(monkeypatch):
     monkeypatch.setattr(
         agent_executor,
         "generate_grounded_hr_answer",
-        lambda _message, response: {**response, "generated": True},
+        lambda _message, response, **_kwargs: {**response, "generated": True},
     )
 
     result = agent_executor.execute_agent_chat(
         SimpleNamespace(),
-        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
         "Tôi có thể xin nghỉ ngày mai không?",
     )
@@ -282,12 +299,12 @@ def test_router_intent_replaces_the_keyword_label_for_a_paraphrased_question(mon
     monkeypatch.setattr(
         agent_executor,
         "generate_grounded_hr_answer",
-        lambda _message, response: response,
+        lambda _message, response, **_kwargs: response,
     )
 
     agent_executor.execute_agent_chat(
         SimpleNamespace(),
-        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
         "công ty mình bao nhiêu người rồi",
     )
@@ -315,7 +332,7 @@ def test_router_action_with_a_read_only_intent_fails_closed(monkeypatch):
 
     agent_executor.execute_agent_chat(
         SimpleNamespace(),
-        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
         "làm gì đó với danh sách nhân viên",
     )
@@ -343,12 +360,12 @@ def test_keyword_label_survives_when_the_router_falls_back(monkeypatch):
     monkeypatch.setattr(
         agent_executor,
         "generate_grounded_hr_answer",
-        lambda _message, response: response,
+        lambda _message, response, **_kwargs: response,
     )
 
     agent_executor.execute_agent_chat(
         SimpleNamespace(),
-        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
         "còn bao nhiêu ngày phép",
     )
@@ -380,12 +397,12 @@ def test_a_question_during_an_open_leave_draft_is_routed_by_the_router(monkeypat
     monkeypatch.setattr(
         agent_executor,
         "generate_grounded_hr_answer",
-        lambda _message, response: response,
+        lambda _message, response, **_kwargs: response,
     )
 
     agent_executor.execute_agent_chat(
         SimpleNamespace(),
-        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
         "Nghỉ ngày 20/12 có bị trừ lương không?",
     )
@@ -418,7 +435,7 @@ def test_cancelling_a_draft_is_never_reinterpreted_as_a_question(monkeypatch):
 
     agent_executor.execute_agent_chat(
         SimpleNamespace(),
-        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
         "Thôi hủy đơn giúp tôi",
     )
@@ -454,7 +471,7 @@ def test_personal_data_answers_are_never_sent_to_the_answer_model(monkeypatch):
     )
 
     result = agent_executor.execute_agent_chat(
-        SimpleNamespace(), SimpleNamespace(), "HR", "lương của tôi là bao nhiêu"
+        SimpleNamespace(), SimpleNamespace(tenant_id=_TEST_TENANT_ID), "HR", "lương của tôi là bao nhiêu"
     )
 
     assert calls == []

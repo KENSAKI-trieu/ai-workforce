@@ -1,6 +1,8 @@
+import asyncio
 import json
 import math
 
+import pytest
 from fastapi.testclient import TestClient
 
 from app.main import app
@@ -32,16 +34,50 @@ def test_runtime_health_defaults_to_legacy() -> None:
     assert payload["langgraph"]["effective"] is False
 
 
+@pytest.mark.internal_auth
 def test_internal_health_requires_configured_token(monkeypatch) -> None:
     from app.config import settings
 
     monkeypatch.setattr(settings, "AI_SERVICE_INTERNAL_TOKEN", "phase-1-secret")
     assert client.get("/health/runtime").status_code == 401
+    assert client.get(
+        "/health/runtime",
+        headers={"X-AI-Service-Key": "wrong-secret"},
+    ).status_code == 401
     response = client.get(
         "/health/runtime",
         headers={"X-AI-Service-Key": "phase-1-secret"},
     )
     assert response.status_code == 200
+
+
+@pytest.mark.internal_auth
+def test_internal_endpoint_is_closed_when_token_is_unset(monkeypatch) -> None:
+    """A missing credential must not read as "no authentication required"."""
+    from app.config import settings
+
+    monkeypatch.setattr(settings, "AI_SERVICE_INTERNAL_TOKEN", None)
+    assert client.get("/health/runtime").status_code == 503
+    assert client.get(
+        "/health/runtime",
+        headers={"X-AI-Service-Key": "anything"},
+    ).status_code == 503
+
+
+@pytest.mark.internal_auth
+def test_startup_refuses_to_run_without_internal_token(monkeypatch) -> None:
+    from app.config import settings
+    from app.main import lifespan
+
+    monkeypatch.setattr(settings, "AI_SERVICE_INTERNAL_TOKEN", None)
+    monkeypatch.setattr(settings, "APP_ENV", "production")
+    with pytest.raises(RuntimeError, match="AI_SERVICE_INTERNAL_TOKEN"):
+        asyncio.run(_enter_lifespan(lifespan))
+
+
+async def _enter_lifespan(lifespan) -> None:
+    async with lifespan(app):
+        pass
 
 
 def test_langchain_role_gate_and_legacy_fallback() -> None:

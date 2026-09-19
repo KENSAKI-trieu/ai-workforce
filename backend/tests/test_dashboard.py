@@ -57,10 +57,19 @@ def test_get_dashboard_stats(client, ceo_token_headers, transactional_db_session
 
     assert data["kpi"]["total_agents"] >= 1
     assert data["kpi"]["total_employees"] >= 1
+    # The endpoint counts messages inside the requested period, so the expectation has to
+    # use the same window. Comparing against an unfiltered count only matched on a freshly
+    # seeded database: as soon as the database held messages older than the period, the
+    # two numbers diverged and this assertion failed for reasons that had nothing to do
+    # with the endpoint. `_period_bounds` is the endpoint's own helper, so the window is
+    # shared rather than re-derived here.
+    period_start, period_end, _ = _period_bounds("week")
     assert data["kpi"]["total_messages"] == transactional_db_session.query(
         ChatMessage
     ).join(ChatConversation).filter(
-        ChatConversation.tenant_id == user.tenant_id
+        ChatConversation.tenant_id == user.tenant_id,
+        ChatMessage.created_at >= period_start,
+        ChatMessage.created_at <= period_end,
     ).count()
     assert isinstance(data["chatbots"], list)
     assert next(

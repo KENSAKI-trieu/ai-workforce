@@ -1,7 +1,8 @@
 """Server-side implementations for governed tools.
 
-These functions receive an authenticated database user. They never accept role,
-department, or actor identity from tool input.
+These functions receive a `ToolContext` holding an authenticated database user and, when the
+caller is an AI Employee, that agent's row. They never accept role, department, or actor
+identity from tool input.
 """
 
 from __future__ import annotations
@@ -10,7 +11,6 @@ import uuid
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy.orm import Session
 
 from app.models.models import AIAgent, AgentWorkflow, Task, User, WorkflowApproval
 from app.services.audit_service import (
@@ -22,10 +22,12 @@ from app.services.audit_service import (
 )
 from app.services.hr_employee_tools import get_employee_sections
 from app.services.hr_service import query_leave_balance
+from app.services.langgraph_approvals import GRAPH_APPROVER_ROLES
 from app.services.legal_document_generator import generate_legal_document
 from app.services.legal_draft_storage import save_legal_artifact
 from app.services.legal_documents.schemas import list_document_schemas
 from app.services.rag_service import hybrid_search_documents
+from app.tools.registry import ToolContext
 from app.tools.schemas import (
     CreateTaskInput,
     EmployeeLookupInput,
@@ -36,24 +38,36 @@ from app.tools.schemas import (
     SubmitApprovalInput,
 )
 
+# Keys in a caller-supplied approval payload that the approval routes read as control data.
+# `kind` selects which branch of `_can_approve` applies and whether the approve route tries
+# to resume a LangGraph thread, so accepting it from a tool argument would let a requester
+# choose the rule that governs their own request.
+RESERVED_APPROVAL_PAYLOAD_KEYS = frozenset({"kind", "requester_id", "requester_name"})
 
-def search_rag(db: Session, actor: User, request: RAGSearchInput) -> list[dict[str, Any]]:
+
+def search_rag(context: ToolContext, request: RAGSearchInput) -> list[dict[str, Any]]:
+    actor = context.actor
+    agent = context.agent
     return hybrid_search_documents(
-        db=db,
+        db=context.db,
         tenant_id=actor.tenant_id,
         query_text=request.query,
         department="*" if actor.role in {"Owner", "Admin", "CEO"} else actor.department,
         top_k=request.top_k,
         collections=request.collections,
+        # The AI Employee's configured knowledge scope. Omitting it here let a governed
+        # agent read every document its user could reach, ignoring the scope an operator
+        # had set for it -- the deterministic executors have always passed this.
+        agent_access=(agent.knowledge_access or None) if agent else None,
         user_role=actor.role,
         user_department=actor.department,
     )
 
 
-def lookup_employee(db: Session, actor: User, request: EmployeeLookupInput) -> dict[str, Any]:
+def lookup_employee(context: ToolContext, request: EmployeeLookupInput) -> dict[str, Any]:
     return get_employee_sections(
-        db,
-        actor=actor,
+        context.db,
+        actor=context.actor,
         employee_id=request.employee_id,
         requested_sections=request.sections,
         purpose=request.purpose,
@@ -61,7 +75,9 @@ def lookup_employee(db: Session, actor: User, request: EmployeeLookupInput) -> d
     )
 
 
-def lookup_leave(db: Session, actor: User, request: LeaveLookupInput) -> dict[str, Any]:
+def lookup_leave(context: ToolContext, request: LeaveLookupInput) -> dict[str, Any]:
+    db = context.db
+    actor = context.actor
     employee_id = request.employee_id or actor.id
     access = get_employee_sections(
         db,
@@ -85,7 +101,9 @@ def lookup_leave(db: Session, actor: User, request: LeaveLookupInput) -> dict[st
     }
 
 
-def _validate_task_target(db: Session, actor: User, request: CreateTaskInput) -> None:
+def _validate_task_target(context: ToolContext, request: CreateTaskInput) -> None:
+    db = context.db
+    actor = context.actor
     if request.assignee_id:
         assignee = db.query(User).filter(
             User.id == request.assignee_id,
@@ -108,8 +126,9 @@ def _validate_task_target(db: Session, actor: User, request: CreateTaskInput) ->
             raise HTTPException(status_code=422, detail="AI Employee is unavailable")
 
 
-def create_task(db: Session, actor: User, request: CreateTaskInput) -> dict[str, Any]:
-    _validate_task_target(db, actor, request)
+def create_task(context: ToolContext, request: CreateTaskInput) -> dict[str, Any]:
+    _validate_task_target(context, request)
+    actor = context.actor
     task = Task(
         tenant_id=actor.tenant_id,
         title=request.title.strip(),
@@ -122,12 +141,15 @@ def create_task(db: Session, actor: User, request: CreateTaskInput) -> dict[str,
         status="PENDING",
         attachments=[],
     )
-    db.add(task)
-    db.flush()
+    context.db.add(task)
+    context.db.flush()
     return {"task_id": str(task.id), "status": task.status}
 
 
-def lookup_expenses(db: Session, actor: User, request: ExpenseLookupInput) -> dict[str, Any] | list[dict[str, Any]]:
+def lookup_expenses(
+    context: ToolContext,
+    request: ExpenseLookupInput,
+) -> dict[str, Any] | list[dict[str, Any]]:
     handlers = {
         "SUMMARY": get_llm_cost_summary,
         "AGENT": get_cost_by_agent,
@@ -135,14 +157,15 @@ def lookup_expenses(db: Session, actor: User, request: ExpenseLookupInput) -> di
         "DEPARTMENT": get_cost_by_department,
         "WORKFLOW": get_cost_by_workflow,
     }
-    return handlers[request.breakdown](db, actor.tenant_id, request.month)
+    return handlers[request.breakdown](context.db, context.actor.tenant_id, request.month)
 
 
 def generate_legal_document_draft(
-    db: Session,
-    actor: User,
+    context: ToolContext,
     request: GenerateLegalDocumentInput,
 ) -> dict[str, Any]:
+    db = context.db
+    actor = context.actor
     try:
         draft_content, filename, media_type = generate_legal_document(
             request.document_type, request.output_format, request.fields, approved=False
@@ -214,19 +237,46 @@ def generate_legal_document_draft(
     }
 
 
+def _validate_approver(context: ToolContext, request: SubmitApprovalInput) -> User | None:
+    """Reject approvers who would turn the gate into a formality."""
+    if not request.approver_id:
+        return None
+    actor = context.actor
+    if request.approver_id == actor.id:
+        # `_can_approve` lets the named approver act on their own request, so a requester
+        # naming themselves approves their own external action.
+        raise HTTPException(
+            status_code=422,
+            detail="The requester cannot be the approver of their own request",
+        )
+    approver = context.db.query(User).filter(
+        User.id == request.approver_id,
+        User.tenant_id == actor.tenant_id,
+        User.is_active.is_(True),
+    ).first()
+    if not approver:
+        raise HTTPException(status_code=422, detail="Approver is unavailable")
+    if approver.role not in GRAPH_APPROVER_ROLES:
+        raise HTTPException(
+            status_code=422,
+            detail="Approver must hold an approver role (Owner, Admin, CEO or Manager)",
+        )
+    return approver
+
+
 def submit_approval_request(
-    db: Session,
-    actor: User,
+    context: ToolContext,
     request: SubmitApprovalInput,
 ) -> dict[str, Any]:
-    if request.approver_id:
-        approver = db.query(User).filter(
-            User.id == request.approver_id,
-            User.tenant_id == actor.tenant_id,
-            User.is_active.is_(True),
-        ).first()
-        if not approver:
-            raise HTTPException(status_code=422, detail="Approver is unavailable")
+    db = context.db
+    actor = context.actor
+    reserved = RESERVED_APPROVAL_PAYLOAD_KEYS & set(request.payload)
+    if reserved:
+        raise HTTPException(
+            status_code=422,
+            detail=f"Approval payload cannot set reserved keys: {', '.join(sorted(reserved))}",
+        )
+    _validate_approver(context, request)
     workflow = AgentWorkflow(
         tenant_id=actor.tenant_id,
         initiator_id=actor.id,

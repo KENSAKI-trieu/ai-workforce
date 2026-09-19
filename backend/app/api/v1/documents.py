@@ -39,11 +39,14 @@ from app.services.document_ingestion import (
     resume_document_ingestion,
 )
 from app.services.document_processing_events import (
+    clear_subscriber,
+    mark_subscriber,
     processing_events_after,
     processing_status_payload,
     publish_processing_status,
     reset_processing_events,
     wait_for_processing_event,
+    wait_for_subscriber,
 )
 from app.services.document_parser import DocumentParseError, extract_file_text
 from app.services.knowledge_storage import (
@@ -71,11 +74,20 @@ MAX_UPLOAD_BYTES = 10 * 1024 * 1024
 VALID_DUPLICATE_STRATEGIES = {"prompt", "replace", "keep_old"}
 
 
+SUBSCRIBER_WAIT_SECONDS = 2.0
+
+
 def _resume_document_ingestion_background(
     record_id: uuid.UUID,
     progress_stream_id: str | None = None,
 ) -> None:
     """Run durable ingestion after the upload response has been sent."""
+    # The uploader opens its progress stream only after this response reaches
+    # the browser. Starting immediately would push the first stages into the
+    # replay backlog, which the client then drains far faster than the pipeline
+    # actually ran. Waiting briefly makes every transition genuinely live; the
+    # bound keeps script and API uploads, which never attach, from stalling.
+    wait_for_subscriber(record_id, timeout=SUBSCRIBER_WAIT_SECONDS)
     with SyncSessionLocal() as background_db:
         try:
             resume_document_ingestion(
@@ -797,18 +809,63 @@ def stream_document_processing_events(
     record_id = initial.id
     manager_department = current_user.department if current_user.role == "Manager" else None
 
+    # Registering here, before the lazy generator runs, is what releases an
+    # upload waiting in `_resume_document_ingestion_background`.
+    mark_subscriber(record_id)
+    # Snapshots already queued when this stream opened are history, not live
+    # pipeline activity. Naming them apart lets the client jump straight to the
+    # current stage instead of animating through stages that already finished.
+    backlog = processing_events_after(record_id, 0)
+    replay_through = backlog[-1][0] if backlog else 0
+
     def events():
         deadline = time.monotonic() + 15 * 60
         last_payload: str | None = None
         heartbeat_at = time.monotonic()
         event_sequence = 0
-        while time.monotonic() < deadline:
-            queued_events = processing_events_after(record_id, event_sequence)
-            if queued_events:
-                for event_sequence, payload in queued_events:
-                    serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-                    if serialized == last_payload:
-                        continue
+        try:
+            while time.monotonic() < deadline:
+                queued_events = processing_events_after(record_id, event_sequence)
+                if queued_events:
+                    for event_sequence, payload in queued_events:
+                        serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                        if serialized == last_payload:
+                            continue
+                        status = str(payload["processing_status"])
+                        if status in {"ready", "failed"}:
+                            event = status
+                        elif event_sequence <= replay_through:
+                            event = "replay"
+                        else:
+                            event = "status"
+                        yield _sse_event(event, payload)
+                        last_payload = serialized
+                        heartbeat_at = time.monotonic()
+                        if status in {"ready", "failed"}:
+                            return
+                    continue
+
+                # Database polling remains a cross-process/restart fallback. Live
+                # ingestion in this process is delivered by the ordered queue above.
+                with SyncSessionLocal() as event_db:
+                    record = event_db.query(KnowledgeDocument).filter(
+                        KnowledgeDocument.tenant_id == tenant_id,
+                        KnowledgeDocument.document_id == document_id,
+                        KnowledgeDocument.version == version,
+                    ).first()
+                    if not record or (
+                        manager_department is not None
+                        and record.department not in {"ALL", manager_department}
+                    ):
+                        yield _sse_event("error", {
+                            "code": "DOCUMENT_NOT_FOUND",
+                            "message": "Document processing status not found",
+                        })
+                        return
+                    payload = _processing_status_payload(record)
+
+                serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+                if serialized != last_payload:
                     status = str(payload["processing_status"])
                     event = status if status in {"ready", "failed"} else "status"
                     yield _sse_event(event, payload)
@@ -816,45 +873,17 @@ def stream_document_processing_events(
                     heartbeat_at = time.monotonic()
                     if status in {"ready", "failed"}:
                         return
-                continue
+                elif time.monotonic() - heartbeat_at >= 10:
+                    yield ": keep-alive\n\n"
+                    heartbeat_at = time.monotonic()
+                wait_for_processing_event(record_id, event_sequence, timeout=0.5)
 
-            # Database polling remains a cross-process/restart fallback. Live
-            # ingestion in this process is delivered by the ordered queue above.
-            with SyncSessionLocal() as event_db:
-                record = event_db.query(KnowledgeDocument).filter(
-                    KnowledgeDocument.tenant_id == tenant_id,
-                    KnowledgeDocument.document_id == document_id,
-                    KnowledgeDocument.version == version,
-                ).first()
-                if not record or (
-                    manager_department is not None
-                    and record.department not in {"ALL", manager_department}
-                ):
-                    yield _sse_event("error", {
-                        "code": "DOCUMENT_NOT_FOUND",
-                        "message": "Document processing status not found",
-                    })
-                    return
-                payload = _processing_status_payload(record)
-
-            serialized = json.dumps(payload, ensure_ascii=False, sort_keys=True)
-            if serialized != last_payload:
-                status = str(payload["processing_status"])
-                event = status if status in {"ready", "failed"} else "status"
-                yield _sse_event(event, payload)
-                last_payload = serialized
-                heartbeat_at = time.monotonic()
-                if status in {"ready", "failed"}:
-                    return
-            elif time.monotonic() - heartbeat_at >= 10:
-                yield ": keep-alive\n\n"
-                heartbeat_at = time.monotonic()
-            wait_for_processing_event(record_id, event_sequence, timeout=0.5)
-
-        yield _sse_event("error", {
-            "code": "PIPELINE_STREAM_TIMEOUT",
-            "message": "Document processing stream timed out",
-        })
+            yield _sse_event("error", {
+                "code": "PIPELINE_STREAM_TIMEOUT",
+                "message": "Document processing stream timed out",
+            })
+        finally:
+            clear_subscriber(record_id)
 
     return StreamingResponse(
         events(),

@@ -1,6 +1,8 @@
 """Durability tests for checkpointed knowledge-document ingestion."""
 
+import contextlib
 import json
+import threading
 import uuid
 
 import pytest
@@ -8,6 +10,7 @@ import pytest
 from app.api.v1 import documents
 from app.models.models import DocumentChunk, KnowledgeDocument
 from app.services import document_ingestion
+from app.services.document_processing_events import clear_subscriber, mark_subscriber
 from app.services.embedding_service import get_embedding_service
 
 
@@ -219,6 +222,84 @@ def test_processing_event_stream_emits_terminal_status(
         and payload.get("embedding_remaining_chunks") == 0
         for payload in payloads
     )
+
+
+def test_completed_history_streams_as_replay_instead_of_live_status(
+    client, ceo_token_headers, transactional_db_session, monkeypatch
+):
+    """A late subscriber must be able to tell history from live activity."""
+    document_id = f"checkpoint-replay-{uuid.uuid4().hex}"
+    assert _upload(client, ceo_token_headers, document_id).status_code == 201
+
+    class SharedSession:
+        def __enter__(self):
+            return transactional_db_session
+
+        def __exit__(self, *_args):
+            return None
+
+    monkeypatch.setattr(documents, "SyncSessionLocal", SharedSession)
+    response = client.get(
+        f"/api/v1/documents/processing-events/{document_id}",
+        params={"version": "1.0"},
+        headers=ceo_token_headers,
+    )
+
+    assert response.status_code == 200
+    # Ingestion already finished, so every intermediate stage is backlog.
+    assert "event: replay" in response.text
+    assert "event: status" not in response.text
+    assert "event: ready" in response.text
+
+
+def test_async_ingestion_waits_for_the_progress_subscriber(monkeypatch):
+    """Stages must not run before the uploader's stream is attached."""
+    record_id = uuid.uuid4()
+    started = threading.Event()
+    monkeypatch.setattr(
+        documents,
+        "SyncSessionLocal",
+        lambda: contextlib.nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        documents,
+        "resume_document_ingestion",
+        lambda *_args, **_kwargs: started.set(),
+    )
+
+    worker = threading.Thread(
+        target=documents._resume_document_ingestion_background,
+        args=(record_id, "stream-id"),
+    )
+    worker.start()
+    try:
+        assert not started.wait(timeout=0.3), "ingestion ran before a subscriber attached"
+        mark_subscriber(record_id)
+        assert started.wait(timeout=2.0), "ingestion did not resume once attached"
+    finally:
+        worker.join(timeout=5)
+        clear_subscriber(record_id)
+
+
+def test_async_ingestion_runs_when_no_subscriber_ever_attaches(monkeypatch):
+    """Script and API uploads never open a stream and must not stall."""
+    record_id = uuid.uuid4()
+    started = threading.Event()
+    monkeypatch.setattr(documents, "SUBSCRIBER_WAIT_SECONDS", 0.1)
+    monkeypatch.setattr(
+        documents,
+        "SyncSessionLocal",
+        lambda: contextlib.nullcontext(object()),
+    )
+    monkeypatch.setattr(
+        documents,
+        "resume_document_ingestion",
+        lambda *_args, **_kwargs: started.set(),
+    )
+
+    documents._resume_document_ingestion_background(record_id, "stream-id")
+
+    assert started.is_set()
 
 
 def test_chunk_checkpoint_accepts_section_titles_longer_than_500_characters(

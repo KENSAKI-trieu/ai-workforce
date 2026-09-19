@@ -45,7 +45,7 @@ import api from "@/lib/api";
 import { useAuthStore } from "@/store/useAuthStore";
 import styles from "./legal.module.css";
 
-type View = "overview" | "chat" | "review" | "drafts" | "compliance";
+type View = "overview" | "chat" | "review" | "drafts" | "compliance" | "saved";
 type ReviewMode = "contract" | "compare" | "privacy" | "license";
 type Severity = "CRITICAL" | "HIGH" | "MEDIUM" | "LOW";
 type RepresentedParty = "" | "PARTY_A" | "PARTY_B" | "NEUTRAL";
@@ -86,8 +86,37 @@ interface LegalDraft {
   download_url: string;
 }
 interface LegalDraftPreview { artifact_id: string; filename: string; document_type_label: string; status: string; requester_name: string; content: string; }
+type DecisionVerb = "ACCEPTED" | "REJECTED" | "EDITED";
+interface ReviewDecision {
+  finding_key: string;
+  decision: DecisionVerb;
+  revised_text?: string | null;
+  comment?: string | null;
+  decided_by_name?: string | null;
+  updated_at?: string | null;
+}
+interface SavedReviewSummary {
+  review_id: string;
+  document_name: string;
+  contract_type_label?: string | null;
+  represented_party_label?: string | null;
+  risk_score: number;
+  risk_level: Severity;
+  total_findings: number;
+  decided_count: number;
+  accepted_count: number;
+  status: string;
+  source: string;
+  created_by_name?: string | null;
+  created_at?: string | null;
+  redline_ready: boolean;
+  redline_url: string;
+}
 interface RiskFinding {
   id: string;
+  // Content-derived and stable across re-runs, unlike `id`, which is positional.
+  // Decisions are keyed on this so they cannot reattach to a different finding.
+  finding_key: string;
   clause: string;
   clause_title: string;
   severity: Severity;
@@ -135,6 +164,9 @@ interface ContractReview {
   review_disclaimer: string;
   approval_created: boolean;
   workflow_id?: string | null;
+  review_id: string;
+  decisions?: ReviewDecision[];
+  redline_url?: string;
 }
 interface PrivacyResult {
   document_name: string;
@@ -213,6 +245,7 @@ export default function LegalAgentPage() {
   const [representedParty, setRepresentedParty] = useState<RepresentedParty>("");
   const [reviewResult, setReviewResult] = useState<ContractReview | PrivacyResult | CompareResult | LicenseResult | null>(null);
   const [drafts, setDrafts] = useState<LegalDraft[]>([]);
+  const [savedReviews, setSavedReviews] = useState<SavedReviewSummary[]>([]);
   const [draftPreview, setDraftPreview] = useState<LegalDraftPreview | null>(null);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [showGenerator, setShowGenerator] = useState(false);
@@ -222,16 +255,18 @@ export default function LegalAgentPage() {
     setLoading(true);
     setError(null);
     try {
-      const [agentResponse, documentsResponse, approvalsResponse, draftsResponse] = await Promise.all([
+      const [agentResponse, documentsResponse, approvalsResponse, draftsResponse, reviewsResponse] = await Promise.all([
         api.get<Agent>("/api/v1/agents/LEGAL"),
         api.get<DocumentItem[]>("/api/v1/documents"),
         api.get<ApprovalItem[]>("/api/v1/approvals/pending"),
         api.get<LegalDraft[]>("/api/v1/legal/document-drafts"),
+        api.get<SavedReviewSummary[]>("/api/v1/legal/contract-reviews"),
       ]);
       setAgent(agentResponse.data);
       setDocuments(documentsResponse.data);
       setApprovals(approvalsResponse.data.filter((item) => item.action_type.includes("LEGAL")));
       setDrafts(draftsResponse.data);
+      setSavedReviews(reviewsResponse.data);
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
@@ -319,6 +354,23 @@ export default function LegalAgentPage() {
     }
   };
 
+  const openSavedReview = async (summary: SavedReviewSummary) => {
+    setBusy(true);
+    setError(null);
+    try {
+      const { data } = await api.get<ContractReview>(
+        `/api/v1/legal/contract-reviews/${summary.review_id}`,
+      );
+      setReviewMode("contract");
+      setReviewResult(data);
+      setView("review");
+    } catch (reason) {
+      setError(messageFrom(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
   const downloadDraft = async (draft: LegalDraft) => {
     if (!draft.can_download) return;
     setError(null);
@@ -372,6 +424,7 @@ export default function LegalAgentPage() {
               <button className={view === "overview" ? styles.active : ""} onClick={() => setView("overview")}><CircleGauge size={17} />Tổng quan</button>
               <button className={view === "chat" ? styles.active : ""} onClick={() => setView("chat")}><MessageSquareText size={17} />Chat</button>
               <button className={view === "review" ? styles.active : ""} onClick={() => { setReviewMode("contract"); setReviewResult(null); setView("review"); }}><FileSearch size={17} />Tài liệu & hợp đồng</button>
+              <button className={view === "saved" ? styles.active : ""} onClick={() => { void loadData(); setView("saved"); }}><FileText size={17} />Rà soát đã lưu</button>
               <button className={view === "drafts" ? styles.active : ""} onClick={() => setView("drafts")}><FilePlus2 size={17} />Tạo văn bản</button>
               <button className={view === "compliance" ? styles.active : ""} onClick={() => { setReviewMode("privacy"); setReviewResult(null); setView("compliance"); }}><ShieldAlert size={17} />Compliance & IP</button>
             </nav>
@@ -440,6 +493,8 @@ export default function LegalAgentPage() {
               />
             )}
 
+            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item)} startReview={() => openTool("contract")} />}
+
             {view === "drafts" && <DraftWorkspace drafts={drafts} role={user?.role || "Employee"} notice={draftNotice} openGenerator={() => { setDraftNotice(null); setShowGenerator(true); }} preview={(draft) => void previewDraft(draft)} download={(draft) => void downloadDraft(draft)} openApprovals={() => router.push("/approvals")} busy={busy} />}
           </main>
         </div>
@@ -487,6 +542,29 @@ function DraftWorkspace({ drafts, role, notice, openGenerator, preview, download
         <div className={styles.draftInfo}><strong>{draft.document_type_label}</strong><small>{draft.filename} · {draft.requester_name}</small><em>{draft.submitted_at ? new Date(draft.submitted_at).toLocaleString("vi-VN") : ""}</em>{draft.comments && <p>Nhận xét: {draft.comments}</p>}</div>
         <span className={`${styles.draftStatus} ${styles[`draft${draft.status}`]}`}>{draft.status === "WAITING" ? "Chờ duyệt" : draft.status === "APPROVED" ? "Đã duyệt" : draft.status === "REJECTED" ? "Từ chối" : "Hết hạn"}</span>
         <div className={styles.draftActions}><button disabled={busy || !draft.can_preview} onClick={() => preview(draft)}><Eye size={13} />Xem</button><button disabled={!draft.can_download} onClick={() => download(draft)} title={!draft.can_download ? "Chỉ tải được sau khi được phê duyệt" : "Tải văn bản"}><Download size={13} />{draft.status === "APPROVED" ? "Tải bản cuối" : "Tải bản nháp"}</button></div>
+      </article>)}</div>}
+    </section>
+  </>;
+}
+
+function SavedReviewWorkspace({ reviews, busy, open, startReview }: {
+  reviews: SavedReviewSummary[]; busy: boolean;
+  open: (review: SavedReviewSummary) => void; startReview: () => void;
+}) {
+  return <>
+    <div className={styles.headingRow}><div><span className={styles.eyebrow}>CONTRACT REVIEW HISTORY</span><h1>Rà soát đã lưu</h1><p>Mở lại bản rà soát cũ kèm quyết định đã đánh dấu và tải file redline.</p></div><button className={styles.primaryButton} onClick={startReview}><FileSearch size={16} />Rà soát hợp đồng mới</button></div>
+    <section className={styles.draftPanel}>
+      <header><div><h2>{reviews.length} bản rà soát</h2><p>Quyền xem được kiểm tra ở server</p></div></header>
+      {reviews.length === 0 ? <div className={styles.draftEmpty}><FileSearch size={30} /><strong>Chưa có bản rà soát nào</strong><p>Kết quả rà soát hợp đồng sẽ được lưu lại tại đây.</p></div> : <div className={styles.draftList}>{reviews.map((item) => <article key={item.review_id}>
+        <span className={styles.draftFileIcon}><FileSearch size={18} /></span>
+        <div className={styles.draftInfo}>
+          <strong>{item.document_name}</strong>
+          <small>{item.contract_type_label || item.source} · {item.represented_party_label || "—"} · {item.created_by_name || ""}</small>
+          <em>{item.created_at ? new Date(item.created_at).toLocaleString("vi-VN") : ""}</em>
+        </div>
+        <span className={`${styles.riskBadge} ${riskClass(item.risk_level)}`}>{item.risk_score}/100 {item.risk_level}</span>
+        <span className={styles.draftStatus}>{item.decided_count}/{item.total_findings} đã xử lý</span>
+        <div className={styles.draftActions}><button disabled={busy} onClick={() => open(item)}><Eye size={13} />Mở lại</button></div>
       </article>)}</div>}
     </section>
   </>;
@@ -553,22 +631,86 @@ function ResultView({ result }: { result: ContractReview | PrivacyResult | Compa
 }
 
 function ContractReviewResult({ review }: { review: ContractReview }) {
-  const [decisions, setDecisions] = useState<Record<string, "ACCEPTED" | "REJECTED" | "EDITED">>({});
+  // Keyed by finding_key, not by the positional id, and seeded from what the server
+  // already has so reopening a review shows the decisions taken earlier.
+  const savedDecisions = useMemo(() => {
+    const initial: Record<string, DecisionVerb> = {};
+    const texts: Record<string, string> = {};
+    for (const item of review.decisions || []) {
+      initial[item.finding_key] = item.decision;
+      if (item.revised_text) texts[item.finding_key] = item.revised_text;
+    }
+    return { initial, texts };
+  }, [review.decisions]);
+
+  const [decisions, setDecisions] = useState<Record<string, DecisionVerb>>(savedDecisions.initial);
   const [editingId, setEditingId] = useState<string | null>(null);
-  const [drafts, setDrafts] = useState<Record<string, string>>({});
+  const [drafts, setDrafts] = useState<Record<string, string>>(savedDecisions.texts);
+  const [saving, setSaving] = useState<string | null>(null);
+  const [saveError, setSaveError] = useState<string | null>(null);
   const [reader, setReader] = useState<DocumentReader | null>(null);
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerError, setReaderError] = useState<string | null>(null);
   const metadata = review.metadata;
+  const acceptedCount = Object.values(decisions).filter(
+    (value) => value === "ACCEPTED" || value === "EDITED",
+  ).length;
   const findingTypeLabels: Record<RiskFinding["finding_type"], string> = {
     LEGAL_ISSUE: "Vấn đề pháp lý", COMMERCIAL_RISK: "Rủi ro thương mại",
     POLICY_VIOLATION: "Vi phạm policy", MISSING_CLAUSE: "Điều khoản thiếu",
     AMBIGUOUS_CLAUSE: "Điều khoản mơ hồ", INTERNAL_CONFLICT: "Mâu thuẫn nội bộ",
   };
 
-  const setDecision = (id: string, decision: "ACCEPTED" | "REJECTED") => {
-    setDecisions((current) => ({ ...current, [id]: decision }));
+  // Optimistic, then rolled back if the server refuses: a decision that only ever
+  // lived in this component was the whole defect being fixed here.
+  const saveDecision = async (
+    findingKey: string,
+    decision: DecisionVerb,
+    revisedText?: string,
+  ) => {
+    const previous = decisions[findingKey];
+    setDecisions((current) => ({ ...current, [findingKey]: decision }));
+    setSaving(findingKey);
+    setSaveError(null);
+    try {
+      await api.put(
+        `/api/v1/legal/contract-reviews/${review.review_id}/decisions/${findingKey}`,
+        { decision, revised_text: revisedText ?? null },
+      );
+    } catch (reason) {
+      setDecisions((current) => {
+        const rolledBack = { ...current };
+        if (previous) rolledBack[findingKey] = previous;
+        else delete rolledBack[findingKey];
+        return rolledBack;
+      });
+      setSaveError(messageFrom(reason));
+    } finally {
+      setSaving(null);
+    }
+  };
+
+  const setDecision = (findingKey: string, decision: "ACCEPTED" | "REJECTED") => {
     setEditingId(null);
+    void saveDecision(findingKey, decision);
+  };
+
+  const downloadRedline = async () => {
+    setSaveError(null);
+    try {
+      const response = await api.get<Blob>(
+        review.redline_url || `/api/v1/legal/contract-reviews/${review.review_id}/redline`,
+        { responseType: "blob" },
+      );
+      const objectUrl = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = `redline-${review.document_name.replace(/\.[^.]+$/, "")}.docx`;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (reason) {
+      setSaveError(messageFrom(reason));
+    }
   };
 
   const openReference = async (source: ContractReview["reference_sources"][number]) => {
@@ -617,6 +759,29 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
     <header><div className={`${styles.scoreRing} ${riskClass(review.risk_level)}`}><strong>{review.risk_score}</strong><small>/100</small></div><div><span className={`${styles.riskBadge} ${riskClass(review.risk_level)}`}>{review.risk_level} RISK</span><h2>{review.document_name}</h2><p>{review.contract_type_label} · {review.represented_party_label} · {review.total_risks_found} phát hiện</p></div></header>
     <div className={styles.contractScroll}>
       {review.approval_created && <div className={styles.workflowAlert}><ShieldAlert size={17} /><span><strong>Đã tạo approval workflow</strong><small>Employee → Manager → Legal Team</small></span></div>}
+      {saveError && <div className={styles.workflowAlert}><AlertTriangle size={17} /><span><strong>Không lưu được quyết định</strong><small>{saveError}</small></span></div>}
+
+      <section className={styles.reviewSection}>
+        <div className={styles.reviewSectionTitle}>
+          <div>
+            <strong>Bản rà soát đã được lưu</strong>
+            <small>
+              {acceptedCount > 0
+                ? `${acceptedCount}/${review.findings.length} đề xuất đã được chấp nhận · redline sẵn sàng`
+                : "Chấp nhận ít nhất một đề xuất để xuất file redline"}
+            </small>
+          </div>
+          <button
+            type="button"
+            className={styles.primaryButton}
+            disabled={acceptedCount === 0}
+            title={acceptedCount === 0 ? "Cần ít nhất một đề xuất được chấp nhận" : "Tải báo cáo redline"}
+            onClick={() => void downloadRedline()}
+          >
+            <Download size={15} />Tải redline
+          </button>
+        </div>
+      </section>
 
       <section className={styles.reviewSection}>
         <div className={styles.reviewSectionTitle}><div><strong>Tóm tắt hợp đồng</strong><small>Loại hợp đồng được nhận diện với độ tin cậy {Math.round(review.contract_type_confidence * 100)}%</small></div></div>
@@ -652,24 +817,26 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
       <section className={`${styles.reviewSection} ${styles.findingSection}`}>
         <div className={styles.reviewSectionTitle}><div><strong>Phát hiện & đề xuất sửa</strong><small>AI không thay đổi file gốc; mỗi đề xuất cần được xác nhận</small></div></div>
         <div className={styles.findings}>{review.findings.map((item) => {
-          const decision = decisions[item.id];
-          const draft = drafts[item.id] ?? item.suggested_revision;
+          const decision = decisions[item.finding_key];
+          const draft = drafts[item.finding_key] ?? item.suggested_revision;
           return <article key={item.id}>
             <div className={styles.findingHeader}><span className={`${styles.severityDot} ${riskClass(item.severity)}`} /><strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong><span className={`${styles.impactBadge} ${styles[item.impact.toLowerCase()]}`}>{item.impact === "ADVERSE" ? "Bất lợi" : item.impact === "BENEFICIAL" ? "Có lợi" : item.impact === "BALANCED" ? "Cân bằng" : "Chung"}</span><span className={styles.findingType}>{findingTypeLabels[item.finding_type]}</span><span className={`${styles.riskBadge} ${riskClass(item.severity)}`}>{item.severity}</span></div>
             <div className={styles.findingExplanation}><p><b>Lý do:</b> {item.reason}</p><p><b>Khuyến nghị:</b> {item.recommendation}</p></div>
             <div className={styles.redlineGrid}>
               <div><small>ORIGINAL</small><blockquote>{item.original_text}</blockquote></div>
-              <div><small>AI RECOMMENDATION</small>{editingId === item.id ? <textarea value={draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.id]: event.target.value }))} /> : <blockquote>{draft}</blockquote>}</div>
+              <div><small>AI RECOMMENDATION</small>{editingId === item.id ? <textarea value={draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.finding_key]: event.target.value }))} /> : <blockquote>{draft}</blockquote>}</div>
             </div>
             {item.sources.length > 0 && <div className={styles.findingSources}>{item.sources.map((source) => source.url ? <a key={source.id} href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : <span key={source.id}>{source.title}</span>)}</div>}
             <div className={styles.findingActions}>
-              <button className={decision === "ACCEPTED" ? styles.accepted : ""} onClick={() => setDecision(item.id, "ACCEPTED")}><Check size={13} />Accept</button>
-              <button className={decision === "REJECTED" ? styles.rejected : ""} onClick={() => setDecision(item.id, "REJECTED")}><X size={13} />Reject</button>
-              <button className={decision === "EDITED" ? styles.edited : ""} onClick={() => {
-                if (editingId === item.id) { setDecisions((current) => ({ ...current, [item.id]: "EDITED" })); setEditingId(null); }
-                else { setDrafts((current) => ({ ...current, [item.id]: draft })); setEditingId(item.id); }
+              <button disabled={saving === item.finding_key} className={decision === "ACCEPTED" ? styles.accepted : ""} onClick={() => setDecision(item.finding_key, "ACCEPTED")}><Check size={13} />Accept</button>
+              <button disabled={saving === item.finding_key} className={decision === "REJECTED" ? styles.rejected : ""} onClick={() => setDecision(item.finding_key, "REJECTED")}><X size={13} />Reject</button>
+              <button disabled={saving === item.finding_key} className={decision === "EDITED" ? styles.edited : ""} onClick={() => {
+                if (editingId === item.id) { setEditingId(null); void saveDecision(item.finding_key, "EDITED", draft); }
+                else { setDrafts((current) => ({ ...current, [item.finding_key]: draft })); setEditingId(item.id); }
               }}>{editingId === item.id ? <><Check size={13} />Lưu bản sửa</> : "Edit"}</button>
-              {decision && <small>{decision === "ACCEPTED" ? "Đã chấp nhận đề xuất" : decision === "REJECTED" ? "Đã từ chối" : "Đã lưu bản chỉnh sửa"}</small>}
+              {saving === item.finding_key
+                ? <small>Đang lưu…</small>
+                : decision && <small>{decision === "ACCEPTED" ? "Đã chấp nhận đề xuất" : decision === "REJECTED" ? "Đã từ chối" : "Đã lưu bản chỉnh sửa"}</small>}
             </div>
           </article>;
         })}</div>

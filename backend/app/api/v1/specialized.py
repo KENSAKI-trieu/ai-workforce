@@ -17,7 +17,9 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user
-from app.models.models import AgentWorkflow, User, WorkflowApproval
+from app.models.models import AgentWorkflow, ContractReview, User, WorkflowApproval
+from app.services.audit_service import log_audit_action
+from app.services import contract_review_store
 from app.services.document_parser import DocumentParseError, extract_file_text
 from app.services.legal_service import (
     audit_contract_text,
@@ -26,6 +28,9 @@ from app.services.legal_service import (
     detect_sensitive_data,
 )
 from app.services.contract_review import detect_contract_type, review_contract
+from app.services.contract_redline import build_redline_docx
+# Shared with the chat path so both entry points escalate identically.
+from app.services.legal_approval_service import create_legal_approval as _create_legal_approval
 from app.services.legal_document_generator import generate_legal_document
 from app.services.legal_draft_storage import read_legal_artifact, save_legal_artifact
 from app.services.legal_documents import list_document_schemas, validate_document_fields
@@ -70,6 +75,12 @@ class LegalDocumentGenerateRequest(BaseModel):
 class LegalDocumentValidationRequest(BaseModel):
     document_type: str
     fields: dict[str, Any]
+
+
+class ContractReviewDecisionRequest(BaseModel):
+    decision: str
+    revised_text: Optional[str] = None
+    comment: Optional[str] = None
 
 
 def _legal_draft_approval(
@@ -127,6 +138,47 @@ def _legal_draft_item(approval: WorkflowApproval, current_user: User) -> dict[st
     }
 
 
+def _contract_review_for_user(
+    db: Session, current_user: User, review_id: str
+) -> ContractReview:
+    review = contract_review_store.get_contract_review(
+        db, user=current_user, review_id=review_id
+    )
+    if not review:
+        # A review in another tenant, and one this user may not read, are the same
+        # 404: the existence of a contract is itself information.
+        raise HTTPException(status_code=404, detail="Contract review not found")
+    return review
+
+
+def _contract_review_item(
+    review: ContractReview, decisions: list[dict[str, Any]], current_user: User
+) -> dict[str, Any]:
+    accepted = sum(item["decision"] in {"ACCEPTED", "EDITED"} for item in decisions)
+    return {
+        "review_id": str(review.id),
+        "workflow_id": str(review.workflow_id) if review.workflow_id else None,
+        "document_name": review.document_name,
+        "source": review.source,
+        "contract_type": review.contract_type,
+        "contract_type_label": (review.result or {}).get("contract_type_label"),
+        "represented_party": review.represented_party,
+        "represented_party_label": (review.result or {}).get("represented_party_label"),
+        "risk_score": review.risk_score,
+        "risk_level": review.risk_level,
+        "total_findings": review.total_findings,
+        "decided_count": len(decisions),
+        "accepted_count": accepted,
+        "status": review.status,
+        "created_by_name": review.created_by.full_name if review.created_by else None,
+        "created_at": review.created_at.isoformat() if review.created_at else None,
+        "updated_at": review.updated_at.isoformat() if review.updated_at else None,
+        "redline_ready": accepted > 0,
+        "redline_url": f"/api/v1/legal/contract-reviews/{review.id}/redline",
+        "can_decide": contract_review_store.can_access_contract_review(current_user, review),
+    }
+
+
 async def _read_legal_file(file: UploadFile) -> tuple[str, str, list[str]]:
     data = await file.read()
     if not data:
@@ -163,56 +215,6 @@ async def _read_legal_file(file: UploadFile) -> tuple[str, str, list[str]]:
     if not text.strip():
         raise HTTPException(status_code=422, detail="No readable text was found in the file")
     return filename, text, headers
-
-
-def _create_legal_approval(
-    db: Session,
-    current_user: User,
-    result: dict[str, Any],
-    action_type: str = "LEGAL_CONTRACT_APPROVAL",
-) -> str | None:
-    if not result.get(
-        "requires_legal_approval",
-        result.get("risk_level") in {"HIGH", "CRITICAL"},
-    ):
-        return None
-    document_name = result.get("document_name") or result.get("manifest") or "Legal review"
-    findings = result.get("risks") or result.get("findings") or []
-    reason_by_action = {
-        "LEGAL_CONTRACT_APPROVAL": "Legal Agent detected high-risk contract terms.",
-        "LEGAL_PRIVACY_APPROVAL": "Sensitive or restricted personal data was detected.",
-        "LEGAL_LICENSE_APPROVAL": "A reciprocal open-source license requires commercial-use review.",
-    }
-    workflow = AgentWorkflow(
-        tenant_id=current_user.tenant_id,
-        initiator_id=current_user.id,
-        title=f"Legal review: {document_name}",
-        status="AWAITING_APPROVAL",
-        current_step=1,
-        dag_plan={
-            "agent_role": "LEGAL",
-            "steps": ["EMPLOYEE_SUBMISSION", "MANAGER_REVIEW", "LEGAL_APPROVAL"],
-        },
-    )
-    db.add(workflow)
-    db.flush()
-    approval = WorkflowApproval(
-        workflow_id=workflow.id,
-        action_type=action_type,
-        risk_level=result.get("risk_level", "HIGH"),
-        payload={
-            "document_name": document_name,
-            "risk_score": result.get("risk_score"),
-            "findings": findings,
-            "reason": reason_by_action.get(action_type, "Legal review is required."),
-            "requester_name": current_user.full_name,
-            "data_sources": [document_name],
-        },
-        status="WAITING",
-    )
-    db.add(approval)
-    db.commit()
-    return str(workflow.id)
 
 
 # --- LEGAL ---
@@ -301,16 +303,28 @@ def validate_legal_document_endpoint(
 @router.post("/legal/audit-contract", summary="Audit contract text for high-risk clauses")
 def audit_contract_endpoint(
     req: ContractAuditRequest,
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     try:
-        return review_contract(
+        result = review_contract(
             req.contract_text,
             req.document_name,
             req.represented_party,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    review = contract_review_store.save_contract_review(
+        db,
+        user=current_user,
+        result=result,
+        contract_text=req.contract_text,
+        source="API",
+    )
+    db.commit()
+    result["review_id"] = str(review.id)
+    result["redline_url"] = f"/api/v1/legal/contract-reviews/{review.id}/redline"
+    return result
 
 
 @router.post("/legal/review-document", summary="Extract and review a legal document")
@@ -331,7 +345,149 @@ async def review_legal_document(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     result["workflow_id"] = _create_legal_approval(db, current_user, result)
     result["approval_created"] = result["workflow_id"] is not None
+    # Saved here rather than by a follow-up call from the browser: a second call
+    # would have to accept the review body back from the client, which would let
+    # anyone post a fabricated result and have it become the audit record.
+    review = contract_review_store.save_contract_review(
+        db,
+        user=current_user,
+        result=result,
+        contract_text=text,
+        source="UPLOAD",
+        workflow_id=uuid.UUID(result["workflow_id"]) if result["workflow_id"] else None,
+    )
+    if review.workflow_id:
+        # Let the approvals screen open the saved review behind this escalation.
+        approval = db.query(WorkflowApproval).filter(
+            WorkflowApproval.workflow_id == review.workflow_id
+        ).first()
+        if approval and not (approval.payload or {}).get("contract_review_id"):
+            approval.payload = {**(approval.payload or {}), "contract_review_id": str(review.id)}
+    db.commit()
+    result["review_id"] = str(review.id)
+    result["decisions"] = contract_review_store.serialize_decisions(db, review)
+    result["redline_url"] = f"/api/v1/legal/contract-reviews/{review.id}/redline"
     return result
+
+
+@router.get("/legal/contract-reviews", summary="List saved contract reviews")
+def list_contract_reviews_endpoint(
+    limit: int = 50,
+    offset: int = 0,
+    risk_level: Optional[str] = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> list[dict[str, Any]]:
+    reviews = contract_review_store.list_contract_reviews(
+        db, user=current_user, limit=limit, offset=offset, risk_level=risk_level
+    )
+    return [
+        _contract_review_item(
+            review, contract_review_store.serialize_decisions(db, review), current_user
+        )
+        for review in reviews
+    ]
+
+
+@router.get(
+    "/legal/contract-reviews/{review_id}",
+    summary="Reopen a saved contract review with its decisions",
+)
+def get_contract_review_endpoint(
+    review_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    review = _contract_review_for_user(db, current_user, review_id)
+    decisions = contract_review_store.serialize_decisions(db, review)
+    # The stored analyzer output is spread at the top level so the client renders a
+    # reopened review through exactly the same shape as a fresh one.
+    return {
+        **(review.result or {}),
+        **_contract_review_item(review, decisions, current_user),
+        "decisions": decisions,
+    }
+
+
+@router.put(
+    "/legal/contract-reviews/{review_id}/decisions/{finding_key}",
+    summary="Record the reviewer decision for one finding",
+)
+def put_contract_review_decision(
+    review_id: str,
+    finding_key: str,
+    req: ContractReviewDecisionRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    review = _contract_review_for_user(db, current_user, review_id)
+    decision = (req.decision or "").upper()
+    if decision not in contract_review_store.VALID_DECISIONS:
+        raise HTTPException(
+            status_code=422, detail="decision must be ACCEPTED, REJECTED or EDITED"
+        )
+    if finding_key not in contract_review_store.finding_keys(review):
+        raise HTTPException(
+            status_code=422, detail="This finding does not belong to the review"
+        )
+    if decision == "EDITED" and not (req.revised_text or "").strip():
+        raise HTTPException(
+            status_code=422, detail="revised_text is required when the decision is EDITED"
+        )
+    contract_review_store.upsert_decision(
+        db,
+        review=review,
+        user=current_user,
+        finding_key=finding_key,
+        decision=decision,
+        revised_text=req.revised_text,
+        comment=req.comment,
+    )
+    decisions = contract_review_store.serialize_decisions(db, review)
+    payload = {
+        **_contract_review_item(review, decisions, current_user),
+        "decisions": decisions,
+    }
+    # log_audit_action commits internally, so it has to be the last write: anything
+    # after it would land in a separate transaction.
+    log_audit_action(
+        db,
+        current_user.tenant_id,
+        "LEGAL",
+        "record_contract_review_decision",
+        {"review_id": str(review.id), "finding_key": finding_key, "decision": decision},
+        {"decided_count": len(decisions), "status": review.status},
+    )
+    return payload
+
+
+@router.delete(
+    "/legal/contract-reviews/{review_id}/decisions/{finding_key}",
+    summary="Clear the reviewer decision for one finding",
+)
+def delete_contract_review_decision(
+    review_id: str,
+    finding_key: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    review = _contract_review_for_user(db, current_user, review_id)
+    if not contract_review_store.clear_decision(db, review=review, finding_key=finding_key):
+        raise HTTPException(status_code=404, detail="No decision recorded for this finding")
+    decisions = contract_review_store.serialize_decisions(db, review)
+    payload = {
+        **_contract_review_item(review, decisions, current_user),
+        "decisions": decisions,
+    }
+    log_audit_action(
+        db,
+        current_user.tenant_id,
+        "LEGAL",
+        "clear_contract_review_decision",
+        {"review_id": str(review.id), "finding_key": finding_key},
+        {"decided_count": len(decisions), "status": review.status},
+    )
+    return payload
 
 
 @router.post("/legal/compare-documents", summary="Compare two contract versions")
@@ -582,9 +738,63 @@ def download_legal_document_draft(
     )
 
 
-@router.get("/legal/download-redline/{file_id}", response_class=PlainTextResponse, summary="Download contract redline docx file")
-def download_redline(file_id: str):
-    return f"SIMULATED REDLINE DOCX FILE FOR {file_id}\nAll penalty clauses adjusted to 8% max limit per Law."
+@router.get(
+    "/legal/contract-reviews/{review_id}/redline",
+    summary="Download the redline report built from the accepted revisions",
+)
+def download_contract_redline(
+    review_id: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Response:
+    review = _contract_review_for_user(db, current_user, review_id)
+    decisions = contract_review_store.serialize_decisions(db, review)
+    if not any(item["decision"] in {"ACCEPTED", "EDITED"} for item in decisions):
+        raise HTTPException(
+            status_code=409,
+            detail="Chưa có đề xuất nào được chấp nhận để tạo redline.",
+        )
+
+    content: bytes | None = None
+    if review.redline_storage_key:
+        try:
+            content = read_legal_artifact(str(review.redline_storage_key))
+        except (OSError, ValueError):
+            # The cached file is gone; fall through and rebuild it.
+            content = None
+    if content is None:
+        content, filename = build_redline_docx(
+            review.result or {},
+            decisions,
+            document_name=review.document_name,
+            generated_by=current_user.full_name,
+            review_id=str(review.id),
+        )
+        artifact_id = review.redline_artifact_id or uuid.uuid4().hex
+        review.redline_artifact_id = artifact_id
+        review.redline_filename = filename
+        review.redline_storage_key = save_legal_artifact(
+            tenant_id=review.tenant_id,
+            artifact_id=artifact_id,
+            variant="redline",
+            filename=filename,
+            content=content,
+        )
+        db.commit()
+
+    filename = Path(str(review.redline_filename or "redline.docx")).name
+    return Response(
+        content=content,
+        media_type=(
+            "application/vnd.openxmlformats-officedocument.wordprocessingml.document"
+        ),
+        headers={
+            "Content-Disposition": (
+                f"attachment; filename=\"{filename}\"; "
+                f"filename*=UTF-8''{quote(filename)}"
+            )
+        },
+    )
 
 
 # --- IT ---

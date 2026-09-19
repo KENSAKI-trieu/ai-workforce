@@ -30,6 +30,20 @@ class ToolGatewayClient:
             return True
         return response is not None and response.status_code in statuses
 
+    @staticmethod
+    def _result(name: str, response: httpx.Response) -> Any:
+        """Read the gateway envelope, failing as a gateway error rather than a KeyError.
+
+        A 200 that is not the expected envelope is still the gateway misbehaving, and the
+        caller only knows how to handle ToolGatewayError.
+        """
+        try:
+            return response.json()["result"]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise ToolGatewayError(
+                f"Tool gateway returned an unreadable response for '{name}'"
+            ) from exc
+
     def invoke(
         self,
         name: str,
@@ -51,7 +65,7 @@ class ToolGatewayClient:
                     timeout=timeout_seconds,
                 )
                 response.raise_for_status()
-                return response.json()["result"]
+                return self._result(name, response)
             except httpx.HTTPError as exc:
                 last_error = exc
                 if attempt == max_attempts or not self._retryable(response, exc, retryable_status_codes):
@@ -80,7 +94,7 @@ class ToolGatewayClient:
                         json={"input": payload},
                     )
                     response.raise_for_status()
-                    return response.json()["result"]
+                    return self._result(name, response)
                 except httpx.HTTPError as exc:
                     last_error = exc
                     if attempt == max_attempts or not self._retryable(response, exc, retryable_status_codes):

@@ -1,0 +1,35 @@
+name: company-a-hr
+version: 1.0.0
+display_name: "Cấu hình HR cho Công ty A"
+description: >-
+  Gói mẫu: thêm thuật ngữ nội bộ và quy tắc xưng hô cho HR agent của Công ty A,
+  đồng thời tắt tính năng xuất danh bạ.
+target_role: HR
+min_platform_version: 1
+
+prompts:
+  # `append` giữ nguyên toàn bộ ràng buộc của prompt gốc rồi nối thêm phần riêng của
+  # khách hàng. Đây là chế độ nên dùng cho hầu hết trường hợp.
+  answer:
+    mode: append
+    text: |
+      Quy ước riêng của Công ty A:
+      - Xưng hô với người dùng là "anh/chị", không dùng "bạn".
+      - Gọi kỳ đánh giá nhân sự là "kỳ review", không gọi là "đợt đánh giá".
+      - Khi nhắc tới quỹ phép, luôn nói rõ đây là số ngày của năm dương lịch hiện tại.
+      - Nếu câu hỏi liên quan tới lương thưởng, luôn kết thúc bằng một câu nhắc người
+        dùng liên hệ phòng Nhân sự để được xác nhận chính thức.
+
+  classifier:
+    mode: append
+    text: |
+      Additional routing hint for this tenant: this company calls its performance review
+      cycle "kỳ review". A question about "kỳ review" is POLICY_QUERY, never an ACTION.
+
+skills:
+  # Công ty A không cho phép AI xuất danh bạ nhân sự ra file.
+  disallowed_actions:
+    - export_hr_directory
+
+knowledge:
+  - "*"

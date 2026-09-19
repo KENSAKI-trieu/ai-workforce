@@ -8,7 +8,8 @@ from sqlalchemy import func
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.hr_capabilities import HR_RETIRED_TOOLS
+from app.core.gateway_tools import GATEWAY_TOOL_DESCRIPTIONS
+from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
 from app.core.security import RoleRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
@@ -41,6 +42,10 @@ TOOL_DESCRIPTIONS = {
     "create_jira_ticket": "Tạo ticket IT.",
     "reconcile_po_db": "Đối soát hóa đơn và đơn mua hàng.",
     "generate_quotation_pdf": "Tạo báo giá bán hàng.",
+    # Gateway tool names share this column with the capability names above. Leaving them
+    # out made every seeded non-HR agent unsaveable: the UI submits the grants it was
+    # given, and the unknown-tool check below rejected the ones it had never heard of.
+    **GATEWAY_TOOL_DESCRIPTIONS,
 }
 
 
@@ -283,7 +288,9 @@ def update_agent(
         raise HTTPException(status_code=422, detail="Allowed actions must also be enabled tools")
     for field_name, value in data.items():
         setattr(agent, field_name, value)
-    agent.configuration_version = 5
+    # Stamping the current version, not a literal: a lower number makes the seeding
+    # migration treat this row as legacy and re-add defaults the operator just removed.
+    agent.configuration_version = HR_CONFIGURATION_VERSION
     db.add(AuditLog(
         tenant_id=current_user.tenant_id,
         actor_user_id=current_user.id,

@@ -11,6 +11,7 @@ import { useKnowledgeWorkflowStore } from "@/store/useKnowledgeWorkflowStore";
 import KnowledgeShell from "../_components/KnowledgeShell";
 import WizardHeader from "../_components/WizardHeader";
 import type { AIProcessingProgress, PipelineStage, ProcessingStatus } from "../_lib/types";
+import { mergeProcessingStatus, readProcessingEvents } from "../_lib/processingStream";
 import { formatFileSize, messageFrom, processingMessage } from "../_lib/utils";
 import styles from "../knowledge.module.css";
 
@@ -71,7 +72,7 @@ export default function KnowledgePipelinePage() {
       return false;
     }
     if (nextStage !== "failed") latestStageRank.current = rank[nextStage];
-    setProcessingStatus(data);
+    setProcessingStatus((previous) => mergeProcessingStatus(previous, data));
     setProgress(data.processing_progress);
     setChunkCount(data.chunks_created ?? data.chunk_count);
     if (nextStage === "failed") {
@@ -136,54 +137,32 @@ export default function KnowledgePipelinePage() {
     const controller = new AbortController();
     eventStreamAbort.current?.abort();
     eventStreamAbort.current = controller;
+    let finished = false;
     try {
-      const baseUrl = api.defaults.baseURL || window.location.origin;
-      const url = new URL(
-        `/api/v1/documents/processing-events/${encodeURIComponent(documentId)}`,
-        baseUrl,
-      );
-      url.searchParams.set("version", version);
-      const token = localStorage.getItem("access_token");
-      const response = await fetch(url, {
-        credentials: "include",
-        headers: {
-          Accept: "text/event-stream",
-          ...(token ? { Authorization: `Bearer ${token}` } : {}),
-        },
+      await readProcessingEvents(documentId, version, {
         signal: controller.signal,
-      });
-      if (!response.ok || !response.body) {
-        throw new Error(`Pipeline event stream returned HTTP ${response.status}`);
-      }
-
-      const reader = response.body.getReader();
-      const decoder = new TextDecoder();
-      let buffer = "";
-      while (pollingGeneration.current === generation) {
-        const { done, value } = await reader.read();
-        if (done) return;
-        buffer += decoder.decode(value, { stream: true });
-        const blocks = buffer.split(/\r?\n\r?\n/);
-        buffer = blocks.pop() || "";
-        for (const block of blocks) {
-          const dataText = block
-            .split(/\r?\n/)
-            .filter((line) => line.startsWith("data:"))
-            .map((line) => line.slice(5).trimStart())
-            .join("\n");
-          if (!dataText) continue;
-          const data = JSON.parse(dataText) as ProcessingStatus | { code: string; message: string };
-          if ("processing_status" in data) {
-            if (applyStatus(data)) return;
-            // A single network read may contain several fast backend events.
-            // Yield one paint so React renders every real AI response instead
-            // of batching the entire pipeline into the terminal 100% state.
-            await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
-          } else {
-            throw new Error(`${data.code}: ${data.message}`);
+        shouldContinue: () => !finished && pollingGeneration.current === generation,
+        onEvent: async (event) => {
+          if (event.error) {
+            throw new Error(`${event.error.code}: ${event.error.message}`);
           }
-        }
-      }
+          if (!event.status) return;
+          if (applyStatus(event.status)) {
+            finished = true;
+            return;
+          }
+          // `replay` frames are history the backend had already queued before
+          // this stream attached. Pacing them would replay a finished pipeline
+          // at frame rate, which is exactly what made the wizard look like it
+          // skipped straight to done — so jump to the real current stage and
+          // only pace the frames that arrive live.
+          if (event.name === "replay") return;
+          // A single network read may contain several fast backend events.
+          // Yield one paint so React renders every real AI response instead
+          // of batching the entire pipeline into the terminal 100% state.
+          await new Promise<void>((resolve) => requestAnimationFrame(() => resolve()));
+        },
+      });
     } catch (reason) {
       if (controller.signal.aborted || pollingGeneration.current !== generation) return;
       console.warn("[Knowledge pipeline stream disconnected; falling back to polling]", {

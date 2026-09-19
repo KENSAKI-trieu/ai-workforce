@@ -1,8 +1,8 @@
 from datetime import datetime, timedelta, timezone
-from typing import Any, Optional
+from typing import Any, NamedTuple, Optional
 from uuid import UUID, uuid4
 
-from fastapi import Depends, HTTPException, status, Request
+from fastapi import Depends, HTTPException, status
 from fastapi.security import OAuth2PasswordBearer
 from jose import JWTError, jwt
 from sqlalchemy.orm import Session
@@ -34,17 +34,21 @@ def get_password_hash(password: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# Token Extraction (HttpOnly Cookie + Header Bearer Fallback)
+# Token Extraction (Authorization: Bearer only)
 # ---------------------------------------------------------------------------
 def get_token_from_request(
-    request: Request,
     header_token: Optional[str] = Depends(oauth2_scheme),
 ) -> str:
+    """Read the access token from the Authorization header, and only from there.
+
+    This used to fall back to an `access_token` cookie that the backend never sets.
+    The branch was unreachable, but it left the API one line away from cookie-borne
+    authentication -- and with CORS running `allow_credentials=True` and no CSRF token
+    anywhere, that line would have made every state-changing endpoint forgeable from
+    another site. Only the refresh flow uses a cookie, and it is scoped to /api/v1/auth.
+    """
     if header_token:
         return header_token
-    cookie_token = request.cookies.get("access_token")
-    if cookie_token:
-        return cookie_token
     raise HTTPException(
         status_code=status.HTTP_401_UNAUTHORIZED,
         detail="Not authenticated",
@@ -75,20 +79,43 @@ def create_access_token(
     return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
 
 
+class IssuedRefreshToken(NamedTuple):
+    """A refresh token and the identity the server has to store to be able to revoke it."""
+
+    token: str
+    jti: UUID
+    family_id: UUID
+    expires_at: datetime
+
+
 def create_refresh_token(
     subject: str | UUID,
+    *,
+    family_id: Optional[UUID] = None,
     expires_delta: Optional[timedelta] = None,
-) -> str:
-    expire = datetime.now(timezone.utc) + (
+) -> IssuedRefreshToken:
+    """Mint a refresh token that the server can later recognise and revoke.
+
+    `jti` identifies this exact token and `family_id` the login it descends from; both
+    are recorded in `refresh_tokens`. Reusing an already-rotated token means the
+    credential exists in two places at once, and the family is what gets revoked.
+    """
+    issued_at = datetime.now(timezone.utc)
+    expire = issued_at + (
         expires_delta or timedelta(days=settings.REFRESH_TOKEN_EXPIRE_DAYS)
     )
+    jti = uuid4()
+    family = family_id or uuid4()
     payload = {
         "sub": str(subject),
         "type": "refresh",
+        "jti": str(jti),
+        "family_id": str(family),
         "exp": expire,
-        "iat": datetime.now(timezone.utc),
+        "iat": issued_at,
     }
-    return jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    token = jwt.encode(payload, settings.SECRET_KEY, algorithm=settings.ALGORITHM)
+    return IssuedRefreshToken(token=token, jti=jti, family_id=family, expires_at=expire)
 
 
 def create_internal_tool_token(
@@ -97,7 +124,13 @@ def create_internal_tool_token(
     agent_role: str | None = None,
     expires_delta: Optional[timedelta] = None,
 ) -> str:
-    """Create a short-lived, backend-issued identity token for tool execution."""
+    """Create a short-lived, backend-issued identity token for tool execution.
+
+    `actor_kind` states whether an AI Employee's configuration applies to this token. The
+    gateway used to infer that from a missing `agent_role`, which meant a token without the
+    claim silently skipped the per-agent tool grants; saying it outright turns that into a
+    decision the minting side has to make.
+    """
     expire = datetime.now(timezone.utc) + (expires_delta or timedelta(minutes=5))
     payload = {
         "sub": str(user.id),
@@ -107,6 +140,7 @@ def create_internal_tool_token(
         "aud": "internal-tool-gateway",
         "jti": str(uuid4()),
         "agent_role": agent_role,
+        "actor_kind": "AGENT" if agent_role else "USER",
         "exp": expire,
         "iat": datetime.now(timezone.utc),
     }

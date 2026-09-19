@@ -8,6 +8,7 @@ from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
+from app.core.gateway_tools import effective_tool_grants
 from app.core.security import create_internal_tool_token
 from app.models.models import (
     AIAgent,
@@ -53,7 +54,12 @@ class LangGraphEngine:
             "conversation_id": conversation_id,
             "workflow_id": workflow_id,
             "agent_role": agent.role_code,
-            "allowed_tools": list(agent.tools_access or []),
+            # The effective grant, not the raw column: `allowed_actions` narrows
+            # `tools_access` and has no field of its own on the wire, so resolving it here
+            # keeps the AI service from binding a tool the gateway will refuse.
+            "allowed_tools": effective_tool_grants(
+                agent.tools_access, agent.allowed_actions, agent.disallowed_actions
+            ),
             "denied_tools": list(agent.disallowed_actions or []),
         }
         if message is not None:

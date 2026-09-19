@@ -218,6 +218,57 @@ class User(Base):
         return self.position.name if self.position else None
 
 
+class RefreshToken(Base):
+    """One issued refresh token, so that a session can actually be ended.
+
+    Refresh tokens used to be stateless JWTs: logging out cleared a cookie and nothing
+    else, a rotated token stayed valid until it expired, and a stolen one was good for
+    thirty days with no way to tell or to stop it. Recording each issued token gives all
+    three back -- revocation, expiry of the superseded token, and theft detection.
+
+    `family_id` chains a login to every token rotated from it. Presenting a token that
+    was already used means two parties hold the same credential, so the whole family is
+    revoked and both are forced to log in again.
+    """
+
+    __tablename__ = "refresh_tokens"
+    __table_args__ = (
+        Index("idx_refresh_tokens_user", "user_id"),
+        Index("idx_refresh_tokens_family", "family_id"),
+    )
+
+    # Equal to the `jti` claim of the JWT handed to the client.
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True)
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    family_id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), nullable=False)
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), nullable=False)
+    revoked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    revoked_reason: Mapped[str | None] = mapped_column(String(50), nullable=True)
+    replaced_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("refresh_tokens.id", ondelete="SET NULL"), nullable=True
+    )
+    user_agent: Mapped[str | None] = mapped_column(Text, nullable=True)
+    client_ip: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+
+    user: Mapped["User"] = relationship("User")
+
+    @property
+    def is_usable(self) -> bool:
+        if self.revoked_at is not None:
+            return False
+        return self.expires_at > datetime.now(timezone.utc)
+
+
 class UserProfile(Base):
     """Personal and employment profile separated from authentication data."""
 
@@ -529,6 +580,113 @@ class OutboundMessage(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     sent_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+
+
+class ContractReview(Base):
+    """One run of the Legal Agent contract reviewer, kept so it can be reopened.
+
+    The analyzer output is stored whole as JSONB rather than normalized: it is
+    immutable, its shape is versioned by `review_version`, and normalizing findings
+    or clauses into rows would force a migration every time a rule pack changes.
+    The reviewer's per-finding decisions are the part that changes, and those live
+    in `contract_review_decisions`.
+    """
+
+    __tablename__ = "contract_reviews"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "idempotency_key", name="uq_contract_review_idempotency"),
+        Index("idx_contract_reviews_tenant_created", "tenant_id", "created_at"),
+        Index("idx_contract_reviews_tenant_creator", "tenant_id", "created_by_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    # SET NULL, not CASCADE: removing the escalation workflow must not erase the
+    # record of what was reviewed and who decided what.
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_workflows.id", ondelete="SET NULL")
+    )
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="UPLOAD")
+    document_name: Mapped[str] = mapped_column(String(255), nullable=False)
+    content_hash: Mapped[str] = mapped_column(String(64), nullable=False)
+    idempotency_key: Mapped[str] = mapped_column(String(200), nullable=False)
+    represented_party: Mapped[str] = mapped_column(String(20), nullable=False)
+    contract_type: Mapped[str] = mapped_column(String(80), nullable=False)
+    review_version: Mapped[str] = mapped_column(String(10), nullable=False, default="2.0")
+    risk_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="LOW")
+    total_findings: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
+    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    status: Mapped[str] = mapped_column(String(30), nullable=False, default="OPEN")
+    redline_artifact_id: Mapped[str | None] = mapped_column(String(64))
+    redline_storage_key: Mapped[str | None] = mapped_column(Text)
+    redline_filename: Mapped[str | None] = mapped_column(String(255))
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    tenant = relationship("Tenant")
+    created_by = relationship("User", foreign_keys=[created_by_id])
+    decisions = relationship(
+        "ContractReviewDecision",
+        back_populates="review",
+        cascade="all, delete-orphan",
+    )
+
+
+class ContractReviewDecision(Base):
+    """What a reviewer decided about one finding: accept, reject, or rewrite.
+
+    Rows rather than a JSONB blob on the parent, because this is an audit trail:
+    each decision needs its own author and timestamp, two people redlining the same
+    review must not overwrite each other, and "what did this person accept" has to
+    be answerable. Tenant scoping goes through the parent, as with WorkflowApproval.
+    """
+
+    __tablename__ = "contract_review_decisions"
+    __table_args__ = (
+        UniqueConstraint("review_id", "finding_key", name="uq_contract_review_decision_finding"),
+        Index("idx_contract_review_decisions_review", "review_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    review_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True),
+        ForeignKey("contract_reviews.id", ondelete="CASCADE"),
+        nullable=False,
+    )
+    finding_key: Mapped[str] = mapped_column(String(64), nullable=False)
+    # The positional `finding-N` as it stood when the decision was taken. Kept only
+    # so a stored decision can be traced back to what the reviewer saw on screen.
+    finding_ref: Mapped[str | None] = mapped_column(String(40))
+    decision: Mapped[str] = mapped_column(String(20), nullable=False)
+    revised_text: Mapped[str | None] = mapped_column(Text)
+    comment: Mapped[str | None] = mapped_column(Text)
+    decided_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    review = relationship("ContractReview", back_populates="decisions")
+    decided_by = relationship("User", foreign_keys=[decided_by_id])
 
 
 # ============================================================
@@ -1422,3 +1580,38 @@ class IntegrationUsageLog(Base):
         "IntegrationConnection", back_populates="usage_logs"
     )
     actor_user: Mapped["User | None"] = relationship("User")
+
+
+# ============================================================
+# 30. TENANT_PLUGIN_INSTALLS — prompt/skill packages enabled per tenant
+# ============================================================
+class TenantPluginInstall(Base):
+    """One installed plugin package for one tenant.
+
+    The manifest itself stays on disk and is the single source of truth for what a
+    plugin does; this row only records that a tenant opted into it. ``plugin_version``
+    is the version that was installed, kept so a package edited on disk afterwards can
+    be reported as drifted instead of changing a tenant's behaviour unannounced.
+    """
+
+    __tablename__ = "tenant_plugin_installs"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "plugin_name", name="uq_tenant_plugin"),
+        Index("idx_tenant_plugin_role", "tenant_id", "target_role"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    plugin_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    plugin_version: Mapped[str] = mapped_column(String(50), nullable=False)
+    target_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    installed_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    installed_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )

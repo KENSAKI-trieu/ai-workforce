@@ -87,6 +87,59 @@ def test_high_finding_sets_high_floor_without_false_critical_label():
     assert result["requires_legal_approval"] is True
 
 
+def test_finding_keys_are_stable_across_reruns():
+    first = review_contract(SOFTWARE_CONTRACT, "software.txt", "PARTY_B")
+    second = review_contract(SOFTWARE_CONTRACT, "software.txt", "PARTY_B")
+
+    assert [item["finding_key"] for item in first["findings"]] == [
+        item["finding_key"] for item in second["findings"]
+    ]
+    assert all(item["finding_key"].startswith("f-") for item in first["findings"])
+
+
+def test_finding_keys_survive_positional_renumbering():
+    """A stored decision must not reattach to a different finding.
+
+    Appending a clause introduces a LIABILITY finding that sorts ahead of the
+    termination one, so every ``finding-N`` after it shifts. The content-derived
+    key is what a decision is recorded against, and it must not move.
+    """
+    extended = SOFTWARE_CONTRACT + (
+        "\nĐiều 7. Trách nhiệm\nNhà cung cấp chịu unlimited liability.\n"
+    )
+    base = review_contract(SOFTWARE_CONTRACT, "software.txt", "NEUTRAL")
+    grown = review_contract(extended, "software.txt", "NEUTRAL")
+
+    def termination(result):
+        return next(
+            item for item in result["findings"]
+            if item["category"] == "TERMINATION" and item["finding_type"] == "COMMERCIAL_RISK"
+        )
+
+    assert base["contract_type"] == grown["contract_type"]
+    assert termination(base)["id"] != termination(grown)["id"]
+    assert termination(base)["finding_key"] == termination(grown)["finding_key"]
+
+
+def test_duplicate_finding_keys_get_deterministic_suffixes():
+    duplicated = (
+        "HỢP ĐỒNG DỊCH VỤ\n"
+        "Điều 5. Phat vi pham\nMức phạt vi phạm 30% giá trị hợp đồng.\n\n"
+        "Điều 5. Phat vi pham\nMức phạt vi phạm 30% giá trị hợp đồng.\n"
+    )
+    first = review_contract(duplicated, "dup.txt", "NEUTRAL")
+    second = review_contract(duplicated, "dup.txt", "NEUTRAL")
+
+    keys = [item["finding_key"] for item in first["findings"]]
+    penalties = [
+        item["finding_key"] for item in first["findings"] if item["category"] == "PENALTY"
+    ]
+    assert len(keys) == len(set(keys))
+    assert len(penalties) >= 2
+    assert penalties[1] == f"{penalties[0]}-2"
+    assert keys == [item["finding_key"] for item in second["findings"]]
+
+
 def test_review_endpoint_requires_and_uses_represented_party(client, employee_token_headers):
     missing_party = client.post(
         "/api/v1/legal/review-document",

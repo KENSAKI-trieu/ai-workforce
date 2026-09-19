@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime
+from datetime import datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -91,3 +91,14 @@ class SubmitApprovalInput(IdempotentToolInput):
     @classmethod
     def normalize_action_type(cls, value: str) -> str:
         return value.strip().upper()
+
+    @field_validator("expires_at")
+    @classmethod
+    def require_future_expiry(cls, value: datetime | None) -> datetime | None:
+        """An already-past deadline creates a gate that is EXPIRED before anyone sees it."""
+        if value is None:
+            return value
+        deadline = value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+        if deadline <= datetime.now(timezone.utc):
+            raise ValueError("expires_at must be in the future")
+        return value

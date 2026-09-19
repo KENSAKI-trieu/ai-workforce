@@ -4,12 +4,17 @@ from typing import Literal, Optional
 from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException, Query
-from pydantic import BaseModel, EmailStr, Field
+from pydantic import BaseModel, EmailStr, Field, field_validator
 from sqlalchemy import or_
 from sqlalchemy.orm import Session, joinedload
 
 from app.core.database import get_db
 from app.core.permissions import LEGACY_ROLE_TO_SLUG
+from app.core.password_policy import (
+    MAX_PASSWORD_LENGTH,
+    MIN_PASSWORD_LENGTH,
+    validate_password,
+)
 from app.core.security import get_current_active_user, get_password_hash
 from app.models.models import Department, Position, User
 from app.services.position_service import (
@@ -34,7 +39,11 @@ MANAGEMENT_ROLES = {"CEO", "Owner", "Admin"}
 class CreateEmployeeRequest(BaseModel):
     email: EmailStr
     full_name: str = Field(min_length=2, max_length=255)
-    password: str = Field(min_length=8, max_length=128)
+    # Same floor as public registration. These two forms used to declare their own
+    # limits and drifted apart; an account made here is no less of a way in.
+    password: str = Field(min_length=MIN_PASSWORD_LENGTH, max_length=MAX_PASSWORD_LENGTH)
+
+    _check_password = field_validator("password")(validate_password)
     # The position is what actually grants access. `role` stays as a fallback for callers
     # that predate the org tree; the stored role string is derived from the position.
     position_id: Optional[UUID] = None

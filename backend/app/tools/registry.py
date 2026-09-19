@@ -10,7 +10,7 @@ from fastapi import HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 
-from app.models.models import User
+from app.models.models import AIAgent, User
 from app.tools.schemas import (
     CreateTaskInput,
     EmployeeLookupInput,
@@ -52,7 +52,23 @@ class ToolACL:
         return role_allowed or department_allowed
 
 
-ToolExecutor = Callable[[Session, User, BaseModel], dict[str, Any] | list[dict[str, Any]]]
+@dataclass(frozen=True)
+class ToolContext:
+    """What an executor is allowed to know about its caller.
+
+    `agent` is the AI Employee row the internal token was minted for, already checked
+    against this tool by the gateway. It is None when the token carries no agent identity
+    -- a user acting directly -- and executors must then apply no agent-level narrowing.
+    Passing the row rather than re-querying it keeps `knowledge_access` and the tool ACL
+    reading the same record within one request.
+    """
+
+    db: Session
+    actor: User
+    agent: AIAgent | None = None
+
+
+ToolExecutor = Callable[[ToolContext, BaseModel], dict[str, Any] | list[dict[str, Any]]]
 
 
 @dataclass(frozen=True)

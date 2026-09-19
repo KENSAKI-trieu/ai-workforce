@@ -43,7 +43,10 @@ HR_RETIRED_TOOLS: frozenset[str] = frozenset({
     "get_employee_basic_profile",
 })
 
-HR_CONFIGURATION_VERSION = 7
+# Also the stamp init_db uses to decide whether a non-HR agent row still needs the gateway
+# tool grants composed into DEFAULT_AGENT_TOOLS. Version 8 exists for that repair: rows
+# created by the signup path before it carried capability names only.
+HR_CONFIGURATION_VERSION = 8
 
 
 def default_hr_tools() -> list[str]:

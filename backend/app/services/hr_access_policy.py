@@ -89,7 +89,7 @@ SELF_SERVICE_SECTIONS: frozenset[str] = frozenset(
 )
 
 
-def _role_sections(actor: User, target: User, db: Session | None = None) -> set[str]:
+def _role_sections(actor: User, target: User, db: Session | None) -> set[str]:
     """Sections the actor may read about the target, from their position's permissions.
 
     This used to be a role x department ladder with department codes like "FINANCE"
@@ -98,13 +98,20 @@ def _role_sections(actor: User, target: User, db: Session | None = None) -> set[
     the actor is permitted to do, and each department-specialised job is a real position.
 
     Reading your own record is a floor that no job title can take away.
+
+    `db` is required rather than defaulted. It used to default to None and answer with an
+    empty set whenever it was omitted, which silently denied every section -- the exact
+    failure `user_permissions` refuses to produce, and which it raises about instead.
+    Passing None is still allowed, because `user_permissions` can recover the session from
+    the actor itself; what is no longer allowed is forgetting the argument and getting a
+    denial that looks like a policy decision.
     """
     if actor.id == target.id:
         return set(SELF_SERVICE_SECTIONS)
 
     from app.services.position_service import user_permissions
 
-    granted = user_permissions(db, actor) if db is not None else frozenset()
+    granted = user_permissions(db, actor)
     return {
         section
         for section, permission in HR_SECTION_PERMISSIONS.items()

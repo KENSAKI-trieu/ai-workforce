@@ -18,6 +18,13 @@ class DomainPolicy:
 
 
 DOMAIN_POLICIES = {
+    # These three tools are the whole of the LEGAL agent once the backend routes this
+    # role here (LANGGRAPH_ENABLED=true). None of them reviews contract risk, so the
+    # deterministic engine behind `audit_contract_risk` -- clause splitting, the
+    # per-contract-type checklist, the perspective-aware severity rules and internal
+    # conflict detection -- becomes unreachable from chat, silently: the backend's LEGAL
+    # branch is skipped entirely rather than failing. Anyone enabling the flag for LEGAL
+    # must add a review tool here first; backend/app/main.py logs this at startup.
     "LEGAL": DomainPolicy(
         "LEGAL",
         ("rag_search", "generate_legal_document", "submit_approval_request"),
@@ -27,8 +34,9 @@ DOMAIN_POLICIES = {
     # executor instead. The names below are gateway tool names, while an HR agent's
     # tools_access holds capability names from app.core.hr_capabilities, and the two sets
     # are disjoint -- scope_tools intersects them, so enabling HR here would hand the model
-    # an empty toolset rather than these five. Reconcile the name spaces before routing HR
-    # through the graph.
+    # an empty toolset rather than these five. Every other role now gets its gateway grants
+    # from backend/app/core/gateway_tools.py, where HR is empty on purpose; grant HR there
+    # first if this role is ever routed through the graph.
     "HR": DomainPolicy(
         "HR",
         ("rag_search", "employee_lookup", "leave_lookup", "create_task", "submit_approval_request"),

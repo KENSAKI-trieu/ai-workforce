@@ -56,6 +56,14 @@ def _can_approve(db: Session, current_user: User, approval: WorkflowApproval) ->
         return can_approve_hr_request(db, current_user, approval)
     if approval.action_type == "LEGAL_DOCUMENT_APPROVAL":
         return current_user.role in EXECUTIVE_APPROVER_ROLES
+    if str(payload.get("requester_id") or "") == str(current_user.id):
+        # Blocking a requester who named themselves approver was only half of it: with
+        # `approver_id` left empty this branch fell through to `return True` for anyone
+        # holding an approver role, so a Manager could open a gate and walk through it.
+        # `requester_id` is written by the server, never by the caller, so it is the one
+        # field that reliably says whose request this is. The graph branch above already
+        # refuses the initiator this way.
+        return False
     if current_user.role not in APPROVER_ROLES:
         return approval.approver_id == current_user.id
     if approval.approver_id and approval.approver_id != current_user.id:

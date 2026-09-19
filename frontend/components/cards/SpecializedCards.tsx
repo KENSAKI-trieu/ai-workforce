@@ -9,7 +9,6 @@ import {
   DollarSign,
   TrendingUp,
   Tag,
-  Scale,
   ExternalLink,
 } from "lucide-react";
 
@@ -87,91 +86,6 @@ export const JiraTicketCard: React.FC<JiraTicketCardProps> = ({
           Xem trên Jira <ExternalLink size={13} />
         </button>
       </div>
-    </div>
-  );
-};
-
-
-// --- 2. Legal Risk Card (Legal Agent) ---
-interface RiskItem {
-  clause: string;
-  severity: string;
-  recommendation: string;
-}
-
-interface LegalRiskCardProps {
-  documentName: string;
-  totalRisksFound: number;
-  risks: RiskItem[];
-  docxDownloadUrl: string;
-}
-
-export const LegalRiskCard: React.FC<LegalRiskCardProps> = ({
-  documentName,
-  totalRisksFound,
-  risks,
-  docxDownloadUrl,
-}) => {
-  return (
-    <div
-      style={{
-        marginTop: "12px",
-        padding: "16px 20px",
-        borderRadius: "14px",
-        background: "rgba(239, 68, 68, 0.08)",
-        border: "1px solid rgba(239, 68, 68, 0.3)",
-        backdropFilter: "blur(10px)",
-        maxWidth: "500px",
-      }}
-    >
-      <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between", marginBottom: "12px" }}>
-        <div style={{ display: "flex", alignItems: "center", gap: "8px", color: "#f87171", fontSize: "0.85rem", fontWeight: 700 }}>
-          <Scale size={18} />
-          PHÂN TÍCH RỦI RO HỢP ĐỒNG ({totalRisksFound} CẢNH BÁO)
-        </div>
-      </div>
-
-      <div style={{ display: "flex", flexDirection: "column", gap: "10px", marginBottom: "14px" }}>
-        {risks.map((r, i) => (
-          <div
-            key={i}
-            style={{
-              padding: "10px 12px",
-              borderRadius: "8px",
-              background: "rgba(0, 0, 0, 0.2)",
-              borderLeft: "3px solid " + (r.severity === "HIGH" ? "#ef4444" : "#f59e0b"),
-            }}
-          >
-            <div style={{ display: "flex", justifyContent: "space-between", fontSize: "0.78rem", fontWeight: 700, color: "var(--text-primary)", marginBottom: "4px" }}>
-              <span>⚠️ {r.clause}</span>
-              <span style={{ color: r.severity === "HIGH" ? "#ef4444" : "#f59e0b", fontSize: "0.7rem" }}>{r.severity}</span>
-            </div>
-            <div style={{ fontSize: "0.75rem", color: "var(--text-secondary)", lineHeight: 1.4 }}>
-              💡 <strong>Khuyến nghị:</strong> {r.recommendation}
-            </div>
-          </div>
-        ))}
-      </div>
-
-      <a
-        href={docxDownloadUrl}
-        target="_blank"
-        rel="noopener noreferrer"
-        style={{
-          display: "inline-flex",
-          alignItems: "center",
-          gap: "6px",
-          padding: "8px 14px",
-          borderRadius: "8px",
-          background: "linear-gradient(135deg, #ef4444, #dc2626)",
-          color: "white",
-          fontSize: "0.8rem",
-          fontWeight: 600,
-          textDecoration: "none",
-        }}
-      >
-        <Download size={15} /> Tải File Redline Word (.docx)
-      </a>
     </div>
   );
 };

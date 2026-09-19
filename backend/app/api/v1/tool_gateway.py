@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import hashlib
+import json
 import time
 from typing import Any
 from uuid import UUID
@@ -13,11 +15,13 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.gateway_tools import effective_tool_grants
 from app.core.security import decode_internal_tool_token
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, User
+from app.plugins.resolver import resolve_skill_restriction
 from app.services.audit_events import add_audit_event
 from app.services.audit_service import log_llm_cost
-from app.tools.registry import ToolAction, tool_registry
+from app.tools.registry import ToolAction, ToolContext, ToolDefinition, tool_registry
 from app.services.langgraph_approvals import GRAPH_WORKFLOW_KIND, ensure_graph_approval
 
 router = APIRouter(prefix="/internal/tools", tags=["Internal Tool Gateway"])
@@ -88,15 +92,19 @@ def _internal_actor(
     return user, claims
 
 
-def _enforce_agent_configuration(
-    db: Session,
-    actor: User,
-    claims: dict[str, Any],
-    tool_name: str,
-) -> None:
+def _acting_agent(db: Session, actor: User, claims: dict[str, Any]) -> AIAgent | None:
+    """The AI Employee this token acts as, or None when a user acts directly.
+
+    A token minted for a user carries no `agent_role` and has no agent configuration to
+    apply. That case is declared by the `actor_kind` claim rather than inferred from a
+    missing field: inferring it meant a token that simply lacked `agent_role` skipped the
+    per-agent grants entirely, so the coarse role ACL was all that remained.
+    """
     role = claims.get("agent_role")
     if not role:
-        return
+        if str(claims.get("actor_kind") or "").upper() == "USER":
+            return None
+        raise HTTPException(status_code=401, detail="Internal tool credential is missing an actor")
     agent = db.query(AIAgent).filter(
         AIAgent.tenant_id == actor.tenant_id,
         AIAgent.role_code == str(role).upper(),
@@ -104,16 +112,50 @@ def _enforce_agent_configuration(
     ).first()
     if not agent:
         raise HTTPException(status_code=403, detail="AI Employee is unavailable")
-    allowed = set(agent.tools_access or [])
-    permitted_actions = set(agent.allowed_actions or [])
-    denied = set(agent.disallowed_actions or [])
-    if tool_name in denied or tool_name not in allowed or (
-        permitted_actions and tool_name not in permitted_actions
+    return agent
+
+
+def _agent_permits(
+    db: Session, agent: AIAgent | None, tool_name: str
+) -> bool:
+    if agent is None:
+        return True
+    if tool_name not in effective_tool_grants(
+        agent.tools_access, agent.allowed_actions, agent.disallowed_actions
     ):
+        return False
+    # The same narrowing the chat path applies, enforced again here. This is the second
+    # door into the tools, so a plugin restriction honoured only in the executor would
+    # be no restriction at all.
+    return resolve_skill_restriction(db, agent.tenant_id, agent.role_code).permits(tool_name)
+
+
+def _enforce_agent_configuration(
+    db: Session,
+    actor: User,
+    claims: dict[str, Any],
+    tool_name: str,
+) -> AIAgent | None:
+    """Check the AI Employee's own grants and return the row they came from."""
+    agent = _acting_agent(db, actor, claims)
+    if not _agent_permits(db, agent, tool_name):
         raise HTTPException(status_code=403, detail=f"AI Employee cannot use '{tool_name}'")
+    return agent
 
 
-def _audit_payload(validated: Any, definition: Any) -> dict[str, Any]:
+def _request_fingerprint(validated: BaseModel) -> str:
+    """Stable digest of everything but the trace metadata.
+
+    An idempotency key on its own says "this is a repeat"; it does not say a repeat of
+    what. Recording the digest lets a replay prove it is the same call instead of handing
+    back the first call's result for a different request.
+    """
+    body = validated.model_dump(mode="json", exclude={"audit"})
+    canonical = json.dumps(body, sort_keys=True, separators=(",", ":"), default=str)
+    return hashlib.sha256(canonical.encode("utf-8")).hexdigest()
+
+
+def _audit_payload(validated: Any, definition: ToolDefinition, fingerprint: str) -> dict[str, Any]:
     return {
         "correlation_id": str(validated.audit.correlation_id),
         "conversation_id": str(validated.audit.conversation_id) if validated.audit.conversation_id else None,
@@ -121,34 +163,124 @@ def _audit_payload(validated: Any, definition: Any) -> dict[str, Any]:
         "idempotency_key": validated.audit.idempotency_key,
         "action_class": definition.action.value,
         "input_fields": sorted(validated.model_fields_set - {"tenant_id", "audit"}),
+        "request_fingerprint": fingerprint,
     }
 
 
-def _idempotent_result(
+def _audit_output(definition: ToolDefinition, result: Any) -> dict[str, Any]:
+    """What the audit trail keeps of a tool result.
+
+    A read tool's result is the governed data itself -- salary, private profile fields,
+    whole document chunks including restricted ones -- and `redact_sensitive` only removes
+    credential-shaped keys. Audit rows are readable by Manager and above through /audit, so
+    storing those payloads would hand out exactly what the HR section policy and the
+    document ACL just decided to withhold. Reads therefore record shape, not content.
+
+    Mutating results are kept: they are the identifiers a replay has to return, and they
+    contain no data the caller did not already supply.
+    """
+    if definition.action == ToolAction.READ_ONLY:
+        return {
+            "result_type": type(result).__name__,
+            "result_count": len(result) if isinstance(result, (list, dict)) else None,
+            "result_recorded": False,
+        }
+    return {"result_type": type(result).__name__, "result": result}
+
+
+def _idempotent_event(
     db: Session,
     actor: User,
     tool_name: str,
-    idempotency_key: str | None,
-) -> Any | None:
-    if not idempotency_key:
-        return None
-    event = db.query(AuditLog).filter(
+    idempotency_key: str,
+) -> AuditLog | None:
+    return db.query(AuditLog).filter(
         AuditLog.tenant_id == actor.tenant_id,
         AuditLog.actor_user_id == actor.id,
         AuditLog.tool_name == tool_name,
         AuditLog.status == "SUCCESS",
         AuditLog.input_parameters["idempotency_key"].astext == idempotency_key,
     ).order_by(AuditLog.created_at.desc()).first()
-    output = event.output_result if event else None
+
+
+def _replayed_result(
+    db: Session,
+    actor: User,
+    definition: ToolDefinition,
+    idempotency_key: str,
+    fingerprint: str,
+) -> Any | None:
+    """The first call's result, but only if this really is the same call."""
+    event = _idempotent_event(db, actor, definition.name, idempotency_key)
+    if event is None:
+        return None
+    stored = (event.input_parameters or {}).get("request_fingerprint")
+    if stored and stored != fingerprint:
+        raise HTTPException(
+            status_code=409,
+            detail="Idempotency key was already used with different arguments",
+        )
+    output = event.output_result
     return output.get("result") if isinstance(output, dict) else None
+
+
+def _is_statement_timeout(exc: BaseException) -> bool:
+    return "statement timeout" in str(getattr(exc, "orig", exc)).lower()
+
+
+def _record_refusal(
+    db: Session,
+    actor: User,
+    claims: dict[str, Any],
+    definition: ToolDefinition,
+    http_request: Request,
+    exc: HTTPException,
+    input_parameters: dict[str, Any],
+    started: float,
+) -> None:
+    """Write the audit row for a call that never reached its executor.
+
+    Only executor failures used to be recorded, so the events an auditor most wants -- a
+    role denied a tool, an AI Employee reaching past its grants, a token pointed at another
+    tenant -- left no trace at all. They are refusals by the same policy the successful
+    calls are logged under, and they belong in the same trail.
+    """
+    db.rollback()
+    add_audit_event(
+        db,
+        tenant_id=actor.tenant_id,
+        actor_user=actor,
+        actor_type="AGENT" if claims.get("agent_role") else "USER",
+        agent_role=str(claims.get("agent_role") or "SYSTEM").upper(),
+        action=definition.audit_action,
+        tool_name=definition.name,
+        resource_type="TOOL_EXECUTION",
+        input_parameters=input_parameters,
+        request=http_request,
+        status="DENIED" if exc.status_code in (401, 403) else "FAILED",
+        error_message=str(exc.detail),
+        execution_time_ms=int((time.monotonic() - started) * 1000),
+    )
+    db.commit()
 
 
 @router.get("", summary="List authoritative backend tool contracts")
 def list_tools(
+    db: Session = Depends(get_db),
     actor_and_claims: tuple[User, dict[str, Any]] = Depends(_internal_actor),
 ) -> list[dict[str, Any]]:
-    actor, _ = actor_and_claims
-    return [definition.public_metadata() for definition in tool_registry.all() if definition.acl.permits(actor)]
+    """Only what this caller could actually invoke.
+
+    Listing a tool the agent configuration denies would let a consumer advertise it to a
+    model, which then spends a turn choosing a call the invoke route refuses.
+    """
+    actor, claims = actor_and_claims
+    agent = _acting_agent(db, actor, claims)
+    return [
+        definition.public_metadata()
+        for definition in tool_registry.all()
+        if definition.acl.permits(actor) and _agent_permits(db, agent, definition.name)
+    ]
 
 
 @router.post("/model-usage", summary="Persist authoritative model usage and latency")
@@ -302,15 +434,38 @@ def invoke_tool(
 ) -> ToolInvocationResponse:
     actor, claims = actor_and_claims
     definition = tool_registry.get(tool_name)
-    definition.authorize(actor)
-    _enforce_agent_configuration(db, actor, claims, tool_name)
+    started = time.monotonic()
+    try:
+        definition.authorize(actor)
+        agent = _enforce_agent_configuration(db, actor, claims, tool_name)
+    except HTTPException as exc:
+        _record_refusal(
+            db, actor, claims, definition, http_request, exc,
+            {"action_class": definition.action.value, "stage": "AUTHORIZATION"},
+            started,
+        )
+        raise
     try:
         validated = definition.input_schema.model_validate(invocation.input)
     except ValidationError as exc:
-        raise HTTPException(status_code=422, detail=exc.errors()) from exc
+        # A validator that raises ValueError puts the exception object itself in `ctx`, and
+        # the input in `input`; neither is JSON serializable, so the default error list
+        # turned every custom-validator rejection into a 500. Missing `audit.idempotency_key`
+        # on a mutating tool was the first one to hit it.
+        raise HTTPException(
+            status_code=422,
+            detail=exc.errors(include_url=False, include_context=False, include_input=False),
+        ) from exc
     if validated.tenant_id != actor.tenant_id:
-        raise HTTPException(status_code=403, detail="Tenant mismatch")
+        mismatch = HTTPException(status_code=403, detail="Tenant mismatch")
+        _record_refusal(
+            db, actor, claims, definition, http_request, mismatch,
+            {"action_class": definition.action.value, "stage": "TENANT_CHECK"},
+            started,
+        )
+        raise mismatch
 
+    fingerprint = _request_fingerprint(validated)
     if definition.action != ToolAction.READ_ONLY and validated.audit.idempotency_key:
         lock_key = (
             f"{actor.tenant_id}:{actor.id}:{definition.name}:"
@@ -320,24 +475,31 @@ def invoke_tool(
             text("SELECT pg_advisory_xact_lock(hashtext(:lock_key))"),
             {"lock_key": lock_key},
         )
-    existing_result = _idempotent_result(
-        db,
-        actor,
-        definition.name,
-        validated.audit.idempotency_key,
-    )
-    if definition.action != ToolAction.READ_ONLY and existing_result is not None:
-        return ToolInvocationResponse(
-            tool_name=definition.name,
-            action=definition.action,
-            correlation_id=str(validated.audit.correlation_id),
-            result=existing_result,
+        existing_result = _replayed_result(
+            db,
+            actor,
+            definition,
+            validated.audit.idempotency_key,
+            fingerprint,
         )
+        if existing_result is not None:
+            return ToolInvocationResponse(
+                tool_name=definition.name,
+                action=definition.action,
+                correlation_id=str(validated.audit.correlation_id),
+                result=existing_result,
+            )
 
-    started = time.monotonic()
-    audit_input = _audit_payload(validated, definition)
+    audit_input = _audit_payload(validated, definition, fingerprint)
     try:
-        result = definition.executor(db, actor, validated)
+        # The declared timeout is enforced where the work actually happens. Without this it
+        # bounded only the AI service's HTTP wait, so a read that timed out client-side kept
+        # running here while the client retried it two more times.
+        db.execute(
+            text("SELECT set_config('statement_timeout', :budget, true)"),
+            {"budget": str(int(definition.timeout_seconds * 1000))},
+        )
+        result = definition.executor(ToolContext(db=db, actor=actor, agent=agent), validated)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         add_audit_event(
             db,
@@ -349,7 +511,7 @@ def invoke_tool(
             tool_name=definition.name,
             resource_type="TOOL_EXECUTION",
             input_parameters=audit_input,
-            output_result={"result_type": type(result).__name__, "result": result},
+            output_result=_audit_output(definition, result),
             request=http_request,
             status="SUCCESS",
             execution_time_ms=elapsed_ms,
@@ -388,10 +550,15 @@ def invoke_tool(
             input_parameters=audit_input,
             request=http_request,
             status="FAILED",
-            error_message=type(exc).__name__,
+            error_message="STATEMENT_TIMEOUT" if _is_statement_timeout(exc) else type(exc).__name__,
             execution_time_ms=int((time.monotonic() - started) * 1000),
         )
         db.commit()
+        if _is_statement_timeout(exc):
+            raise HTTPException(
+                status_code=504,
+                detail=f"Tool '{definition.name}' exceeded its {definition.timeout_seconds:g}s budget",
+            ) from exc
         raise HTTPException(status_code=500, detail="Tool execution failed") from exc
     return ToolInvocationResponse(
         tool_name=definition.name,

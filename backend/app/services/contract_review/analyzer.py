@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import re
 from collections import Counter
 from typing import Any
@@ -81,6 +82,39 @@ def _sources(source_ids: list[str], contract_type: str) -> list[dict[str, str]]:
     return result
 
 
+def _finding_key(
+    *,
+    contract_type: str,
+    category: str,
+    finding_type: str,
+    issue: str,
+    clause: dict[str, Any] | None,
+) -> str:
+    """A content-derived id for one finding, stable across re-runs.
+
+    ``id`` cannot serve this purpose: it is assigned as findings are appended and
+    then reassigned by the sort, so a reviewer decision recorded against
+    ``finding-3`` would silently reattach to a different finding the next time the
+    same contract is analysed. Every part hashed here comes from the contract text
+    or from the rule that fired. Clause *text* is hashed rather than
+    ``clause["id"]`` because ``clause-N`` is positional in exactly the same way.
+    """
+    clause_number = clause["number"] if clause else "MISSING"
+    clause_text = _compact(clause["text"], 160) if clause else ""
+    payload = "\x1f".join(
+        part.casefold()
+        for part in (
+            contract_type,
+            category,
+            finding_type,
+            _compact(issue, 200),
+            clause_number,
+            clause_text,
+        )
+    )
+    return f"f-{hashlib.sha256(payload.encode('utf-8')).hexdigest()[:16]}"
+
+
 def _finding(
     findings: list[dict[str, Any]],
     *,
@@ -100,6 +134,13 @@ def _finding(
 ) -> None:
     findings.append({
         "id": f"finding-{len(findings) + 1}",
+        "finding_key": _finding_key(
+            contract_type=contract_type,
+            category=category,
+            finding_type=finding_type,
+            issue=issue,
+            clause=clause,
+        ),
         "clause_id": clause["id"] if clause else None,
         "clause": clause["number"] if clause else "MISSING",
         "clause_title": clause["title"] if clause else "Điều khoản bị thiếu",
@@ -374,6 +415,16 @@ def review_contract(
     findings.sort(key=lambda item: (-SEVERITY_ORDER[item["severity"]], item["category"], item["clause"]))
     for index, finding in enumerate(findings, 1):
         finding["id"] = f"finding-{index}"
+    # Two findings share a key only when the same rule fired on two clauses whose
+    # opening text is identical -- indistinguishable to the reviewer as well. The
+    # suffix is applied after the sort so the same contract always produces the
+    # same assignment, which is what a stored decision depends on.
+    key_counts: Counter[str] = Counter()
+    for finding in findings:
+        key_counts[finding["finding_key"]] += 1
+        occurrence = key_counts[finding["finding_key"]]
+        if occurrence > 1:
+            finding["finding_key"] = f"{finding['finding_key']}-{occurrence}"
     risk_score, risk_level, severity_counts = _risk_summary(findings)
     missing_count = sum(item["status"] == "MISSING" for item in checklist)
     conflict_count = sum(item["finding_type"] == "INTERNAL_CONFLICT" for item in findings)

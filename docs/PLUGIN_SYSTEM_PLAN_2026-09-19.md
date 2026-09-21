@@ -126,7 +126,7 @@ Giai đoạn này không thể bỏ qua. Không có ổ cắm thì plugin không
 | Hạng mục | Nội dung |
 |---|---|
 | Mục tiêu | Tạo và cài plugin thủ công trên máy lập trình viên |
-| Nội dung | Đọc và kiểm tra `plugin.yaml`; lệnh `install` và `uninstall` cho một tenant qua dòng lệnh |
+| Nội dung | Đọc và kiểm tra `plugin.yaml`; bảng `tenant_plugin_installs` kèm migration; lệnh `install` và `uninstall` cho một tenant qua dòng lệnh |
 | Tiêu chí hoàn thành | Tạo plugin cho công ty A, cài vào tenant A, chat thử và thấy câu trả lời khác tenant B trên cùng một máy |
 | Rủi ro | Thấp — chưa chạm giao diện, chưa chạm phân quyền |
 
@@ -137,7 +137,7 @@ Kết thúc P2 là đã chứng minh được toàn bộ ý tưởng sản phẩ
 | Hạng mục | Nội dung |
 |---|---|
 | Mục tiêu | Người vận hành cài plugin mà không cần lập trình viên |
-| Nội dung | Bảng `tenant_plugin_installs` kèm migration Alembic; API cài, gỡ, liệt kê; màn hình quản lý |
+| Nội dung | API cài, gỡ, liệt kê, xem trước prompt; màn hình quản lý |
 | Tiêu chí hoàn thành | Cài và gỡ plugin hoàn toàn trên giao diện; mỗi thao tác có ghi audit log |
 | Rủi ro | Trung bình — cần quyết định ai được phép cài plugin. Đề xuất giới hạn trong `AGENT_CONFIG_ROLES` đã có sẵn |
 
@@ -191,3 +191,161 @@ Ví dụ cụ thể: một khách hàng muốn quy trình duyệt nghỉ phép h
 - Chưa có mã hạ tầng dạng khai báo, chưa có load balancer kèm TLS, chưa có phương án sao lưu cho PostgreSQL.
 
 Điểm thuận lợi: `backend/Dockerfile:28` đã chạy `alembic upgrade head` khi khởi động container, nên migration tự động đã sẵn sàng cho triển khai.
+
+---
+
+## 9. Trạng thái triển khai
+
+Cập nhật: 2026-09-21. P1 đến P4 đã được hiện thực hoá ở môi trường local. Toàn bộ 527 test của backend chạy qua, không có test nào bị sửa để lách.
+
+### 9.1 Mã nguồn đã thêm
+
+| Thành phần | Vị trí |
+|---|---|
+| Prompt mặc định và danh sách slot | `backend/app/services/agents/hr_prompts.py` |
+| Đọc và kiểm tra manifest | `backend/app/plugins/manifest.py` |
+| Quét gói trên đĩa | `backend/app/plugins/loader.py` |
+| Phân giải overlay và thu hẹp quyền | `backend/app/plugins/resolver.py` |
+| Cài và gỡ | `backend/app/plugins/service.py` |
+| Dòng lệnh | `backend/app/plugins/cli.py` |
+| API | `backend/app/api/v1/plugins.py` |
+| Bảng dữ liệu | `backend/app/models/models.py`, migration `t53a8c0d4e62` |
+| Giao diện | `frontend/app/plugins/page.tsx` |
+| Gói mẫu | `backend/plugins/company-a-hr/`, `backend/plugins/company-b-hr/` |
+| Ô prompt riêng của tenant | cột `ai_agents.prompt_overlay`, migration `u64b9d1e5f73` |
+| Kiểm thử | `backend/tests/test_plugins.py` (41 test) |
+
+### 9.2 Ba điểm lệch so với kế hoạch ban đầu, và lý do
+
+**Bảng dữ liệu chuyển từ P3 lên P2.** Lệnh `install` phải ghi trạng thái ở đâu đó thì mới có nghĩa, nên bảng `tenant_plugin_installs` thuộc về P2. P3 còn lại đúng phần API và giao diện.
+
+**Registry không nằm trong `hr_llm_flow.py`.** Kế hoạch ban đầu viết `get_prompt(tenant_id, role, slot)` đặt ngay trong module đó. Không làm vậy được: `hr_llm_flow.py` có ghi chú rõ rằng nó cố tình không import cơ sở dữ liệu, và một hàm nhận `tenant_id` thì buộc phải truy vấn. Thay vào đó lớp gọi — vốn đã giữ session — phân giải overlay rồi truyền chuỗi đã sẵn sàng xuống qua tham số `prompts`. Chiều tenant vẫn có, ranh giới module vẫn giữ.
+
+**Thu hẹp quyền được gắn vào đối tượng agent, không truyền qua tham số.** Có 23 chỗ gọi `_require_tool`/`_can_use_tool` trong `agent_executor.py`. Thêm tham số vào cả 23 chỗ thì chỉ cần bỏ sót một chỗ là quyền không bị thu hẹp ở đúng chỗ đó — đây là kiểu hỏng nguy hiểm nhất với một cơ chế bảo mật. Vì vậy phần thu hẹp được phân giải một lần ngay sau khi nạp hàng `ai_agents`, gắn lên đối tượng dưới dạng thuộc tính thường, và mọi lần kiểm tra đều đọc nó.
+
+Thuộc tính này **không phải cột ánh xạ**. Đây là điểm quan trọng: nếu ghi danh sách đã thu hẹp trở lại bảng `ai_agents`, thì sau khi gỡ plugin tenant sẽ mất vĩnh viễn những công cụ mà gói chỉ định giấu tạm thời. Có một test riêng khoá hành vi này (`test_narrowing_is_not_written_back_to_the_agent_row`).
+
+### 9.3 Hai cửa vào công cụ, cả hai đều phải chặn
+
+Phần thu hẹp quyền được thực thi ở hai nơi, vì có hai đường đi tới công cụ:
+
+1. `agent_executor._require_tool` và `_can_use_tool` — đường chat trực tiếp.
+2. `backend/app/api/v1/tool_gateway.py::_agent_permits` — đường AI service gọi ngược lại.
+
+Chặn một nơi mà bỏ nơi còn lại thì coi như không chặn.
+
+### 9.4 Hai lỗi phát hiện khi chạy thật
+
+**Vòng import.** `app/services/agents/__init__.py` nạp sẵn `agent_executor`, nên import một module lá như `hr_prompts` kéo theo cả tầng service, khép thành vòng khi CLI là điểm khởi đầu. Bộ test không phát hiện ra vì pytest nạp các module theo thứ tự khác. Đã gỡ bằng cách cho `manifest.py` và `resolver.py` import muộn, giữ hai module này ở vị trí lá.
+
+**Console Windows.** Gói được viết bằng ngôn ngữ của khách hàng, nên tên và prompt chứa ký tự ngoài ASCII. Console Windows mặc định dùng cp1252 và ném `UnicodeEncodeError` ngay ký tự tiếng Việt đầu tiên. CLI hiện tự chuyển stdout và stderr sang UTF-8.
+
+### 9.5 Lưu ý vận hành: plugin cài cho tenant sẽ ảnh hưởng tới bộ test
+
+Bộ test dùng tenant `acme.com` có sẵn trong cơ sở dữ liệu phát triển, và bản ghi cài plugin là dữ liệu bền, không bị cuốn theo transaction rollback của test. Trong lúc làm, việc cài thử `company-a-hr` cho `acme.com` đã làm hai test export gãy vì gói này cấm `export_hr_directory`.
+
+Đây không phải lỗi mã nguồn — chính xác là tính năng đang hoạt động — nhưng cần nhớ: **sau khi thử plugin trên tenant mà bộ test dùng, phải gỡ ra trước khi chạy test.**
+
+```
+cd backend
+./.venv/Scripts/python.exe -m app.plugins.cli installed --tenant acme.com
+./.venv/Scripts/python.exe -m app.plugins.cli uninstall <tên gói> --tenant acme.com
+```
+
+### 9.6 Cách dùng nhanh
+
+```
+cd backend
+./.venv/Scripts/python.exe -m app.plugins.cli list
+./.venv/Scripts/python.exe -m app.plugins.cli validate
+./.venv/Scripts/python.exe -m app.plugins.cli install company-a-hr --tenant <domain>
+./.venv/Scripts/python.exe -m app.plugins.cli preview --tenant <domain> --role HR --slot answer
+```
+
+Trên giao diện: mục **Plugin Prompt & Skill** ở thanh bên trái. Khung bên phải hiển thị đúng chuỗi prompt mà model sẽ nhận, kèm cảnh báo riêng cho hai slot nguy hiểm là `classifier` và `leave_slot`.
+
+### 9.7 Ba việc tồn đọng — đã xử lý xong
+
+Cập nhật 2026-09-21. Cả ba mục đã khép lại. Toàn bộ 534 test backend và 66 test ai-service chạy qua.
+
+#### a) Nợ kỹ thuật mục 2.1 — đã xử lý bằng cột overlay mới
+
+Hướng "nối thẳng cột `system_prompt` vào registry" **không dùng được**. Khảo sát cho thấy mọi tenant đều đã có sẵn giá trị khác rỗng trong cột đó, sinh từ hai công thức khác nhau: `init_db` viết tay riêng cho từng role, còn `auth_service` ghép chuỗi lúc đăng ký. Nối thẳng vào sẽ đổi hành vi của toàn bộ tenant đang chạy, vi phạm nguyên tắc số 2.
+
+Cách làm thay thế: thêm cột mới `ai_agents.prompt_overlay`, **mặc định rỗng** (migration `u64b9d1e5f73`). Rỗng nghĩa là không đổi gì, nên tenant cũ an toàn tuyệt đối. Hai màn hình `/agents/[role]` và `/ai-editor` chuyển sang sửa ô này, nhãn đổi thành "Quy ước riêng của công ty". Trường `system_prompt` bị gỡ khỏi request cập nhật của API; cột cũ giữ nguyên trong cơ sở dữ liệu, không migrate, vì giá trị trong đó là hỗn hợp giữa text seed và những lần sửa đã bị bỏ rơi.
+
+Thứ tự xếp lớp cho slot `answer`: **prompt mặc định → plugin đã cài → text riêng của tenant**. Text của người vận hành đứng cuối để chữ họ vừa gõ thắng được chữ trong gói.
+
+**Ràng buộc quan trọng: ô text này chỉ chạm tới slot `answer`.** Một ô nhập liệu duy nhất không có cách nào diễn đạt nó muốn sửa slot nào trong ba slot; để free text lọt vào `classifier` hoặc `leave_slot` thì người chỉ định sửa cách xưng hô có thể phá hỏng định tuyến ý định hoặc bóc sai ngày nghỉ. Muốn sửa theo từng slot thì dùng gói plugin, nơi mỗi slot được khai báo tường minh. Có test khoá riêng ràng buộc này (`test_the_overlay_never_reaches_the_routing_or_slot_prompts`).
+
+Một lỗi phát hiện nhờ test trong lúc làm việc này: endpoint xem trước trước đó chỉ dựng overlay từ plugin, bỏ qua text của tenant. Tức là khung "prompt thực tế gửi cho model" sẽ hiển thị sai — đúng thứ nó sinh ra để chống. Nay nó gọi chung một hàm `resolve_prompt_overlay` với luồng chat.
+
+#### b) Mã chết mục 2.2 — đã xoá
+
+Đã xoá toàn bộ `apps/ai-service/app/prompts/` gồm `loader.py` và bảy file `.txt`/`__init__.py`, cùng trường `system_prompt_key` trên `BaseAgent` và ở năm agent module khai báo nó. Trước khi xoá đã xác nhận `chains/rag_answer.py` dùng hằng số nội bộ riêng của nó chứ không đọc file nào trong cây này. Các agent module vẫn giữ nguyên vì `agent_registry` còn dùng.
+
+#### c) Chỉ role HR nhận overlay — không phải việc còn lại
+
+Grep toàn bộ backend cho thấy cả hệ thống chỉ có **đúng ba** lời gọi LLM kèm system prompt, cả ba nằm trong `hr_llm_flow` và cả ba đã nhận overlay. LEGAL, IT, FINANCE, SALES, KNOWLEDGE, CEO **không có system prompt nào** trong luồng chạy thật.
+
+Nghĩa là đây không phải plugin thiếu hỗ trợ các role đó, mà các role đó chưa có prompt để override. Mở rộng overlay sang chúng đòi hỏi trước hết phải xây luồng prompt LLM cho chúng — là tính năng mới, không phải việc tồn đọng. Việc manifest từ chối `prompts` cho role khác HR vẫn giữ nguyên và vẫn đúng.
+
+### 9.8 Việc còn lại thật sự
+
+- Các role ngoài HR chưa có luồng prompt LLM nào. Nếu muốn bán tuỳ biến prompt cho Legal hay Sales thì phải xây luồng đó trước, xem mục c ở trên.
+- Prompt vẫn không đổi được luồng nghiệp vụ, xem mục 8.1. Giới hạn này không thay đổi.
+
+---
+
+## 10. Thêm, sửa, xoá gói ngay trong sản phẩm
+
+Cập nhật 2026-09-21. Trước phần này, gói plugin chỉ có thể do lập trình viên viết thành file trong repo. Nay quản trị viên tự soạn gói riêng cho công ty mình trên giao diện. 545 test backend chạy qua.
+
+### 10.1 Hai loại gói, khác nhau ở nơi lưu
+
+| | Gói dựng sẵn | Gói tự soạn |
+|---|---|---|
+| Nơi lưu | File YAML trong `backend/plugins/` | Bảng `tenant_plugins` |
+| Ai sửa | Lập trình viên, qua release | Quản trị viên, ngay trên giao diện |
+| Phạm vi | Mọi tenant đều thấy | Chỉ tenant sở hữu |
+| Sửa được trên UI | Không | Có |
+
+Lý do không ghi file YAML từ API: container là ephemeral nên file mất khi khởi động lại, nhiều instance sẽ lệch nhau, và ghi file từ input web là bề mặt tấn công không cần thiết. Gói tự soạn vì vậy nằm trong cơ sở dữ liệu (migration `v75c0e2f6a84`).
+
+### 10.2 Một đường kiểm tra duy nhất
+
+Manifest gõ vào ô text đi qua đúng hàm `parse_manifest_yaml` mà file trên đĩa đi qua. Không có đường kiểm tra lỏng hơn cho gói tự soạn: vẫn từ chối khoá lạ, tên slot lạ, tên công cụ lạ, và vẫn áp luật chỉ-thu-hẹp-quyền ở resolver.
+
+Trường `source_yaml` lưu đúng chuỗi người dùng gõ và là nguồn sự thật duy nhất; manifest được phân giải lại lúc đọc thay vì lưu thành hai dạng có thể lệch nhau.
+
+### 10.3 Bốn ràng buộc và lý do
+
+**Không trùng tên gói dựng sẵn.** Nếu cho trùng thì một tenant có thể chiếm tên của gói chuẩn và đổi hành vi mà nhìn vào danh sách không thấy gì bất thường.
+
+**Không đổi tên khi sửa.** Bản ghi cài trỏ tới gói bằng tên. Cho phép đổi tên sẽ làm bản ghi đó trỏ vào hư không, và tenant lặng lẽ rơi về prompt mặc định.
+
+**Không xoá khi đang cài.** Xoá một gói đang bật sẽ đổi cách agent trả lời ngay lúc đó mà trên màn hình không có gì nối hai việc lại với nhau. Bắt gỡ trước biến việc đó thành một bước nhìn thấy được. API trả 409 kèm lý do.
+
+**Sửa gói đang cài thì có hiệu lực ngay**, không cần cài lại. Bản ghi cài được cập nhật số phiên bản trong cùng transaction nên không báo lệch phiên bản giả.
+
+### 10.4 API
+
+| Phương thức | Đường dẫn | Việc |
+|---|---|---|
+| GET | `/api/v1/plugins/` | Danh mục cả hai loại, kèm cờ `editable` |
+| POST | `/api/v1/plugins/validate` | Kiểm tra manifest mà không lưu |
+| GET | `/api/v1/plugins/authored` | Liệt kê gói của workspace |
+| GET | `/api/v1/plugins/authored/{name}` | Đọc YAML để sửa |
+| POST | `/api/v1/plugins/authored` | Tạo |
+| PUT | `/api/v1/plugins/authored/{name}` | Ghi đè |
+| DELETE | `/api/v1/plugins/authored/{name}` | Xoá |
+
+Tất cả nằm sau `RoleRequired("Owner", "Admin", "CEO")` và đều ghi audit log. Giới hạn: 64 KB mỗi manifest, 100 gói mỗi workspace.
+
+Endpoint `validate` tách riêng khỏi lưu để người soạn sửa được lỗi gõ nhầm mà không phải tạo rồi xoá gói để biết mình sai chỗ nào.
+
+### 10.5 Giao diện
+
+Nút **Tạo gói** ở đầu cột danh mục. Gói do workspace sở hữu có thêm nút sửa và nút xoá; gói dựng sẵn không có, vì chúng thuộc về repo.
+
+Trình soạn nhận YAML trực tiếp chứ không dựng form. Form sẽ phải phản chiếu lại toàn bộ quy tắc mà parser ở backend đã có, và hai bên chắc chắn sẽ lệch nhau theo thời gian; ở đây nút **Kiểm tra** gọi đúng parser sẽ chạy lúc lưu, nên thứ người soạn thấy chính là thứ sẽ được chấp nhận.

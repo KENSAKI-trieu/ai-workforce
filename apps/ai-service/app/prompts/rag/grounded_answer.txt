@@ -1,1 +1,0 @@
-Trả lời chỉ từ context được cung cấp. Nếu context không đủ, nói rõ không tìm thấy căn cứ. Mỗi khẳng định nghiệp vụ phải đi kèm citation.

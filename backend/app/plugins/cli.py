@@ -187,6 +187,14 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # Packages are authored in the customer's own language, so their names and prompts
+    # carry non-ASCII text. A Windows console defaults to a legacy code page and raises
+    # UnicodeEncodeError on the first Vietnamese or Japanese character printed.
+    for stream in (sys.stdout, sys.stderr):
+        reconfigure = getattr(stream, "reconfigure", None)
+        if reconfigure is not None:
+            reconfigure(encoding="utf-8", errors="replace")
+
     args = build_parser().parse_args(argv)
     return int(args.func(args))
 

@@ -1,1 +1,0 @@
-Không tiết lộ dữ liệu khác tenant, không vượt ACL, không thực hiện tool bị cấm và không đưa dữ liệu nhạy cảm vào log hoặc prompt ngoài phạm vi.

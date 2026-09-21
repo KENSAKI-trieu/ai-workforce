@@ -339,6 +339,15 @@ class AIAgent(Base):
         String(50), nullable=False
     )  # CEO, HR, LEGAL, IT, FINANCE, SALES, KNOWLEDGE
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
+    # Free text an administrator adds on top of the shipped answer prompt for this
+    # tenant. Empty for every existing row and every new one, which is what makes it
+    # safe: a tenant that sets nothing keeps the shipped prompt byte for byte.
+    #
+    # It reaches the `answer` slot only. A single text box has no way to express which
+    # of the three prompt slots it means, and letting free text into `classifier` or
+    # `leave_slot` would let somebody adjusting wording break intent routing or date
+    # parsing instead. Per-slot edits are what a plugin package is for.
+    prompt_overlay: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_name: Mapped[str] = mapped_column(String(100), default="gpt-4o")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     tools_access: Mapped[dict] = mapped_column(JSONB, default=list)
@@ -1614,4 +1623,47 @@ class TenantPluginInstall(Base):
     )
     installed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
+    )
+
+
+# ============================================================
+# 31. TENANT_PLUGINS — plugin packages a tenant authors itself
+# ============================================================
+class TenantPlugin(Base):
+    """A plugin package written by a tenant's own administrators.
+
+    The packages shipped in `backend/plugins/` stay on disk: they are versioned with
+    the code, reviewed like code, and shared by every tenant. These are the other kind
+    -- authored in the product, owned by one tenant, and editable without a release.
+
+    ``source_yaml`` is the manifest exactly as the author typed it, and it is the single
+    source of truth. It is validated by the same parser as a disk package before it is
+    ever stored, so an invalid manifest cannot reach the database, and it is re-parsed
+    when read rather than being stored twice in two shapes that could disagree.
+    """
+
+    __tablename__ = "tenant_plugins"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "name", name="uq_tenant_plugin_name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), primary_key=True, default=uuid.uuid4
+    )
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    name: Mapped[str] = mapped_column(String(100), nullable=False)
+    version: Mapped[str] = mapped_column(String(50), nullable=False)
+    display_name: Mapped[str] = mapped_column(String(200), nullable=False)
+    target_role: Mapped[str] = mapped_column(String(50), nullable=False)
+    source_yaml: Mapped[str] = mapped_column(Text, nullable=False)
+    created_by: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL"), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -20,10 +20,8 @@ from typing import Iterable, Mapping
 
 from sqlalchemy.orm import Session
 
-from app.models.models import TenantPluginInstall
-from app.plugins.loader import plugin_catalogue
+from app.models.models import AIAgent, TenantPluginInstall
 from app.plugins.manifest import PluginManifest
-from app.services.agents.hr_prompts import default_prompt
 
 logger = logging.getLogger(__name__)
 
@@ -58,9 +56,10 @@ def installed_manifests(
     """Validated manifests for a tenant's installed packages, in install order.
 
     Install order is stable and is what makes two packages that touch the same slot
-    layer predictably. A row whose package has since been deleted from disk is skipped
-    with a warning: the disk is the source of truth for behaviour, so a missing file
-    means the tenant falls back to defaults rather than to stale text.
+    layer predictably. A row whose package no longer exists -- a built-in file removed
+    in a release, or a tenant package deleted -- is skipped with a warning: the package
+    is the source of truth, so a missing one drops the tenant back to the shipped
+    prompt rather than to stale text the install row remembered.
     """
     rows = (
         db.query(TenantPluginInstall)
@@ -74,23 +73,29 @@ def installed_manifests(
     if not rows:
         return ()
 
-    catalogue = plugin_catalogue()
+    # Both sources, because an install row does not record which kind it points at.
+    # Imported here rather than at module level: the authoring module reaches back into
+    # the loader, and this module is on the loader's own import path.
+    from app.plugins.authoring import available_manifests
+
+    catalogue = available_manifests(db, tenant_id)
     manifests: list[PluginManifest] = []
     for row in rows:
         manifest = catalogue.get(row.plugin_name)
         if manifest is None:
             logger.warning(
-                "Tenant %s has plugin '%s' installed but no package on disk provides it",
+                "Tenant %s has plugin '%s' installed but no package provides it",
                 tenant_id,
                 row.plugin_name,
             )
             continue
         if manifest.version != row.plugin_version:
-            # Not an error: local development edits packages in place constantly. It is
-            # logged so a production surprise is traceable to the drift rather than to
-            # the model.
+            # Only built-in packages reach here: editing a tenant package updates its
+            # install row in the same transaction. Not an error -- development edits
+            # files in place constantly -- but logged so a production surprise is
+            # traceable to the drift rather than to the model.
             logger.info(
-                "Plugin '%s' on disk is version %s, tenant %s installed %s",
+                "Plugin '%s' provides version %s, tenant %s installed %s",
                 manifest.name,
                 manifest.version,
                 tenant_id,
@@ -102,6 +107,10 @@ def installed_manifests(
 
 def build_prompt_overlay(manifests: Iterable[PluginManifest]) -> dict[str, str]:
     """Fold prompt overrides onto the shipped defaults, in the order given."""
+    # Deferred for the same reason as in manifest.py: importing the agents package at
+    # module level would close an import cycle back into this module.
+    from app.services.agents.hr_prompts import default_prompt
+
     overlay: dict[str, str] = {}
     for manifest in manifests:
         for override in manifest.prompts:
@@ -126,15 +135,45 @@ def build_skill_restriction(manifests: Iterable[PluginManifest]) -> SkillRestric
     return SkillRestriction(allowed=allowed, denied=frozenset(denied))
 
 
+def tenant_answer_overlay(db: Session, tenant_id: uuid.UUID, role_code: str) -> str:
+    """The administrator's own free text for this agent, or an empty string.
+
+    Read straight from `ai_agents.prompt_overlay`. Blank and whitespace-only are the
+    same as unset, so an operator who clears the box is back on the shipped prompt
+    exactly, not on a prompt with a stray blank line appended.
+    """
+    value = (
+        db.query(AIAgent.prompt_overlay)
+        .filter(
+            AIAgent.tenant_id == tenant_id,
+            AIAgent.role_code == role_code.upper(),
+        )
+        .scalar()
+    )
+    return (value or "").strip()
+
+
 def resolve_prompt_overlay(
     db: Session, tenant_id: uuid.UUID, role_code: str
 ) -> Mapping[str, str] | None:
     """Tenant-specific prompt text for an agent role, or None when nothing overrides it.
 
+    Two sources are layered, packages first and the administrator's own text last, so a
+    person editing the text box can see their wording win over what a package said. The
+    text box only ever reaches the `answer` slot; see the column's comment for why.
+
     Returning None rather than an empty mapping keeps the default path free of any
-    string work for the overwhelming majority of tenants, which install nothing.
+    string work for the overwhelming majority of tenants, which customise nothing.
     """
+    from app.services.agents.hr_prompts import default_prompt
+
     overlay = build_prompt_overlay(installed_manifests(db, tenant_id, role_code))
+
+    own_text = tenant_answer_overlay(db, tenant_id, role_code)
+    if own_text:
+        base = overlay.get("answer") or default_prompt("answer")
+        overlay["answer"] = f"{base}\n\n{own_text}"
+
     return overlay or None
 
 

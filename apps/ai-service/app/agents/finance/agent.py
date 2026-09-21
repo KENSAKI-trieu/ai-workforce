@@ -5,5 +5,4 @@ agent = BaseAgent(
     name="Finance AI",
     description="Analyze invoices, budgets and finance policies.",
     capabilities=("search_finance_policy", "extract_invoice", "reconcile_purchase_order"),
-    system_prompt_key="system/finance",
 )

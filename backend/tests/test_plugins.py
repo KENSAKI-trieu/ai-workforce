@@ -341,3 +341,140 @@ def test_preview_shows_the_default_until_a_package_is_installed(client, ceo_toke
 def test_preview_rejects_an_unknown_slot(client, ceo_token_headers):
     res = client.get("/api/v1/plugins/preview/HR/not_a_slot", headers=ceo_token_headers)
     assert res.status_code == 404
+
+
+# --------------------------------------------------------------------------
+# The tenant's own free-text overlay (ai_agents.prompt_overlay)
+# --------------------------------------------------------------------------
+
+def _hr_agent_row(db, tenant_id):
+    return (
+        db.query(AIAgent)
+        .filter(AIAgent.tenant_id == tenant_id, AIAgent.role_code == "HR")
+        .first()
+    )
+
+
+def test_an_empty_overlay_leaves_the_shipped_prompt_untouched(
+    transactional_db_session, client, ceo_token_headers
+):
+    """The state every tenant starts in, and the one that must not drift."""
+    res = client.get("/api/v1/plugins/preview/HR/answer", headers=ceo_token_headers)
+    body = res.json()
+    assert body["is_overridden"] is False
+    assert body["resolved_prompt"] == default_prompt("answer")
+
+
+def test_the_overlay_is_appended_to_the_answer_prompt(
+    transactional_db_session, client, ceo_token_headers
+):
+    res = client.patch(
+        "/api/v1/agents/HR",
+        headers=ceo_token_headers,
+        json={"prompt_overlay": "Xưng hô với người dùng là anh/chị."},
+    )
+    assert res.status_code == 200, res.text
+    try:
+        preview = client.get(
+            "/api/v1/plugins/preview/HR/answer", headers=ceo_token_headers
+        ).json()
+        assert preview["is_overridden"] is True
+        assert preview["resolved_prompt"].startswith(default_prompt("answer"))
+        assert preview["resolved_prompt"].endswith("Xưng hô với người dùng là anh/chị.")
+    finally:
+        client.patch(
+            "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": ""}
+        )
+
+
+def test_the_overlay_never_reaches_the_routing_or_slot_prompts(
+    transactional_db_session, client, ceo_token_headers
+):
+    """The constraint that makes a single free-text box safe to expose."""
+    marker = "MARKER_THAT_MUST_NOT_ROUTE"
+    res = client.patch(
+        "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": marker}
+    )
+    assert res.status_code == 200
+    try:
+        for slot in ("classifier", "leave_slot"):
+            preview = client.get(
+                f"/api/v1/plugins/preview/HR/{slot}", headers=ceo_token_headers
+            ).json()
+            assert marker not in preview["resolved_prompt"]
+            assert preview["resolved_prompt"] == default_prompt(slot)
+    finally:
+        client.patch(
+            "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": ""}
+        )
+
+
+def test_clearing_the_overlay_restores_the_shipped_prompt_exactly(
+    transactional_db_session, client, ceo_token_headers
+):
+    client.patch(
+        "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": "tạm thời"}
+    )
+    client.patch(
+        "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": "   "}
+    )
+    preview = client.get(
+        "/api/v1/plugins/preview/HR/answer", headers=ceo_token_headers
+    ).json()
+    assert preview["resolved_prompt"] == default_prompt("answer")
+
+
+def test_the_overlay_layers_after_an_installed_package(
+    transactional_db_session, client, ceo_token_headers
+):
+    """Order matters: the operator's own wording has to win over the package's."""
+    client.post("/api/v1/plugins/company-a-hr/install", headers=ceo_token_headers)
+    client.patch(
+        "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": "TENANT_TEXT"}
+    )
+    try:
+        resolved = client.get(
+            "/api/v1/plugins/preview/HR/answer", headers=ceo_token_headers
+        ).json()["resolved_prompt"]
+        assert resolved.index("Công ty A") < resolved.index("TENANT_TEXT")
+        assert resolved.endswith("TENANT_TEXT")
+    finally:
+        client.delete("/api/v1/plugins/company-a-hr", headers=ceo_token_headers)
+        client.patch(
+            "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": ""}
+        )
+
+
+def test_the_dead_system_prompt_field_is_no_longer_accepted(
+    transactional_db_session, client, ceo_token_headers
+):
+    """Silently accepting it again would recreate the bug this work removed."""
+    before = client.get("/api/v1/agents/", headers=ceo_token_headers).json()
+    hr_before = next(a for a in before if a["role_code"] == "HR")
+
+    res = client.patch(
+        "/api/v1/agents/HR",
+        headers=ceo_token_headers,
+        json={"system_prompt": "this must not be stored"},
+    )
+    assert res.status_code in (200, 422)
+
+    after = client.get("/api/v1/agents/", headers=ceo_token_headers).json()
+    hr_after = next(a for a in after if a["role_code"] == "HR")
+    assert hr_after["system_prompt"] == hr_before["system_prompt"]
+
+
+def test_an_employee_cannot_read_another_tenants_overlay_text(
+    transactional_db_session, client, ceo_token_headers, employee_token_headers
+):
+    client.patch(
+        "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": "nội bộ"}
+    )
+    try:
+        agents = client.get("/api/v1/agents/", headers=employee_token_headers).json()
+        hr = next(a for a in agents if a["role_code"] == "HR")
+        assert hr["prompt_overlay"] is None
+    finally:
+        client.patch(
+            "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": ""}
+        )

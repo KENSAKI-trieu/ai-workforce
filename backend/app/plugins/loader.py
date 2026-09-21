@@ -44,28 +44,43 @@ def _known_tools_and_roles() -> tuple[frozenset[str], frozenset[str]]:
     return frozenset(tools), frozenset(DEFAULT_AGENT_TOOLS)
 
 
-def load_manifest_file(path: Path) -> PluginManifest:
-    """Read and validate one manifest file. Raises PluginManifestError on bad input."""
+def parse_manifest_yaml(
+    text: str, *, expected_name: str | None = None, source: str = ""
+) -> PluginManifest:
+    """Validate a manifest written as YAML text, wherever it came from.
+
+    Disk packages and tenant-authored ones go through this one function, so a package
+    typed into the product is held to exactly the same rules as one shipped in the
+    repository -- same unknown-key rejection, same tool-name check, same slot check.
+    """
     try:
-        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        raw = yaml.safe_load(text)
     except yaml.YAMLError as exc:
-        raise PluginManifestError(f"{path.name} is not valid YAML: {exc}") from exc
-    except OSError as exc:
-        raise PluginManifestError(f"Cannot read {path}: {exc}") from exc
+        raise PluginManifestError(f"Not valid YAML: {exc}") from exc
 
     known_tools, known_roles = _known_tools_and_roles()
     manifest = parse_manifest(
         raw,
         known_tools=known_tools,
         known_roles=known_roles,
-        source_path=str(path),
+        source_path=source,
     )
-    if manifest.name != path.parent.name:
+    if expected_name is not None and manifest.name != expected_name:
         raise PluginManifestError(
-            f"Plugin name '{manifest.name}' does not match its directory "
-            f"'{path.parent.name}'"
+            f"Plugin name '{manifest.name}' does not match '{expected_name}'"
         )
     return manifest
+
+
+def load_manifest_file(path: Path) -> PluginManifest:
+    """Read and validate one manifest file. Raises PluginManifestError on bad input."""
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise PluginManifestError(f"Cannot read {path}: {exc}") from exc
+    return parse_manifest_yaml(
+        text, expected_name=path.parent.name, source=str(path)
+    )
 
 
 def discover_plugins(root: Path | None = None) -> dict[str, PluginManifest]:

@@ -5,5 +5,4 @@ agent = BaseAgent(
     name="Software Engineer AI",
     description="Diagnose and implement software changes with verification.",
     capabilities=("analyze_code", "propose_patch", "review_tests"),
-    system_prompt_key="system/software_engineer",
 )

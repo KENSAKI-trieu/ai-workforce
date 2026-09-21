@@ -9,10 +9,8 @@ rejection, not a warning -- so a typo cannot quietly disable part of a package.
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass, field
-from typing import Any, Mapping
-
-from app.services.agents.hr_prompts import HR_PROMPT_SLOTS
+from dataclasses import dataclass
+from typing import Any
 
 
 class PluginManifestError(ValueError):
@@ -24,12 +22,23 @@ VERSION_PATTERN = re.compile(r"^\d+\.\d+\.\d+$")
 
 PROMPT_MODES = frozenset({"append", "replace"})
 
-# Slots are declared per agent role. A role absent from this map cannot carry prompt
-# overrides at all yet, which is deliberate: only the HR flow reads a resolved overlay,
-# so accepting prompts for another role would store text nothing ever applies.
-PROMPT_SLOTS_BY_ROLE: Mapping[str, tuple[str, ...]] = {
-    "HR": HR_PROMPT_SLOTS,
-}
+
+def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:
+    """Slot names a role accepts overrides for, or None when it accepts none.
+
+    The import is deferred because `app.services.agents` eagerly loads the agent
+    executor, which loads the plugin resolver, which loads this module. Reaching for
+    the slot names only when a manifest is actually parsed keeps this module a leaf and
+    that cycle unformed.
+
+    A role absent from the map cannot carry prompt overrides at all, which is
+    deliberate: only the HR flow reads a resolved overlay, so accepting prompts for
+    another role would store text nothing ever applies.
+    """
+    from app.services.agents.hr_prompts import HR_PROMPT_SLOTS
+
+    return {"HR": HR_PROMPT_SLOTS}.get(role_code)
+
 
 MANIFEST_KEYS = frozenset({
     "name",
@@ -106,7 +115,7 @@ def _string_list(value: Any, where: str) -> tuple[str, ...]:
 
 def _parse_prompts(raw: Any, target_role: str) -> tuple[PromptOverride, ...]:
     prompts = _require_mapping(raw, "prompts")
-    known_slots = PROMPT_SLOTS_BY_ROLE.get(target_role)
+    known_slots = prompt_slots_for_role(target_role)
     if known_slots is None:
         raise PluginManifestError(
             f"Role '{target_role}' does not support prompt overrides yet"

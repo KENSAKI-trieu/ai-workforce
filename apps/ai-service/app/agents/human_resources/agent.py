@@ -23,5 +23,4 @@ agent = BaseAgent(
         "get_contract_expiry",
         "list_pending_hr_approvals",
     ),
-    system_prompt_key="system/human_resources",
 )

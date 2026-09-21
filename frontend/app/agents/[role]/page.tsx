@@ -38,6 +38,7 @@ interface Agent {
   name: string;
   role_code: string;
   system_prompt: string;
+  prompt_overlay: string | null;
   model_name: string;
   is_active: boolean;
   tools_access: string[];
@@ -197,7 +198,7 @@ export default function AgentPage() {
       } else {
         setMessages([]);
       }
-      setPrompt(value.system_prompt);
+      setPrompt(value.prompt_overlay ?? "");
       setDeniedTools(value.disallowed_actions);
       setTools(value.tools_access.filter((tool) => !value.disallowed_actions.includes(tool)));
       setKnowledgeAccess(value.knowledge_access.length ? value.knowledge_access : ["*"]);
@@ -380,7 +381,7 @@ export default function AgentPage() {
     setError(null);
     try {
       const { data } = await api.patch<Agent>(`/api/v1/agents/${role}`, {
-        system_prompt: prompt,
+        prompt_overlay: prompt,
         tools_access: tools,
         allowed_actions: tools,
         disallowed_actions: deniedTools.filter((tool) => !tools.includes(tool)),
@@ -738,8 +739,18 @@ export default function AgentPage() {
             </header>
             <div className="ai-chat-settings-content">
               <label>
-                System prompt
-                <textarea rows={7} value={prompt} onChange={(event) => setPrompt(event.target.value)} />
+                Quy ước riêng của công ty
+                <textarea
+                  rows={7}
+                  value={prompt}
+                  placeholder="Ví dụ: xưng hô với người dùng là anh/chị; luôn nhắc liên hệ phòng Nhân sự khi nói về lương."
+                  onChange={(event) => setPrompt(event.target.value)}
+                />
+                <small>
+                  Phần này được nối thêm vào cuối prompt trả lời mặc định, chỉ ảnh hưởng tới
+                  cách diễn đạt câu trả lời. Để trống thì agent chạy đúng prompt gốc. Muốn
+                  can thiệp vào định tuyến ý định hoặc bóc tham số thì dùng trang Plugin.
+                </small>
               </label>
               <section className="ai-agent-config-section">
                 <div className="ai-agent-config-heading">

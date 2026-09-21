@@ -12,7 +12,6 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import TenantPluginInstall
-from app.plugins.loader import plugin_catalogue
 from app.plugins.manifest import PluginManifest
 
 
@@ -50,7 +49,9 @@ def install_plugin(
     installed_by: uuid.UUID | None = None,
 ) -> tuple[TenantPluginInstall, PluginManifest]:
     """Enable a package for a tenant, or re-point an existing install at a new version."""
-    manifest = plugin_catalogue().get(plugin_name)
+    from app.plugins.authoring import available_manifests
+
+    manifest = available_manifests(db, tenant_id).get(plugin_name)
     if manifest is None:
         raise PluginInstallError(f"No plugin package named '{plugin_name}' was found")
 

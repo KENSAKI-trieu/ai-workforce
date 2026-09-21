@@ -21,6 +21,7 @@ import {
   BookOpen,
   ChevronDown,
   Database,
+  Package,
   Settings,
   HelpCircle,
   Ticket,
@@ -52,6 +53,7 @@ const SIDEBAR_TEXT = {
     dashboard: "Bảng điều khiển CEO",
     analytics: "Phân tích quản trị",
     costs: "Quản lý Chi phí AI",
+    plugins: "Plugin Prompt & Skill",
     knowledge: "Kho Tri thức (RAG)",
     tasks: "Quản lý Task (Kanban)",
     calendar: "Lịch Công việc",
@@ -77,6 +79,7 @@ const SIDEBAR_TEXT = {
     dashboard: "CEOダッシュボード",
     analytics: "経営分析",
     costs: "AIコスト管理",
+    plugins: "プロンプト・スキルプラグイン",
     knowledge: "ナレッジベース（RAG）",
     tasks: "タスク管理（Kanban）",
     calendar: "業務カレンダー",
@@ -336,6 +339,15 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           label={text.costs}
           href="/costs"
           active={pathname === "/costs"}
+          badge="NEW"
+        />
+
+        {/* Plugin Prompt & Skill */}
+        <NavItem
+          icon={<Package size={18} />}
+          label={text.plugins}
+          href="/plugins"
+          active={pathname === "/plugins"}
           badge="NEW"
         />
 

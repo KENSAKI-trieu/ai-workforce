@@ -79,6 +79,7 @@ class AIAgentBase(BaseModel):
     name: str
     role_code: str
     system_prompt: str
+    prompt_overlay: Optional[str] = None
     model_name: str = "gpt-4o"
     is_active: bool = True
     tools_access: list = Field(default_factory=list)

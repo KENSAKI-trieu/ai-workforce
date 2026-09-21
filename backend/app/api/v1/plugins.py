@@ -5,14 +5,29 @@ from __future__ import annotations
 from typing import Any, List
 
 from fastapi import APIRouter, Depends, HTTPException
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import RoleRequired, get_current_active_user
 from app.models.models import User
-from app.plugins.loader import plugin_catalogue
-from app.plugins.resolver import installed_manifests, build_prompt_overlay
+from app.plugins.authoring import (
+    MAX_MANIFEST_BYTES,
+    PluginAuthoringError,
+    available_manifests,
+    create_tenant_plugin,
+    delete_tenant_plugin,
+    get_tenant_plugin,
+    list_tenant_plugins,
+    update_tenant_plugin,
+)
+from app.plugins.loader import parse_manifest_yaml, plugin_catalogue
+from app.plugins.manifest import PluginManifestError
+from app.plugins.resolver import (
+    installed_manifests,
+    resolve_prompt_overlay,
+    tenant_answer_overlay,
+)
 from app.plugins.service import (
     PluginInstallError,
     install_plugin,
@@ -40,11 +55,172 @@ class InstalledPluginResponse(BaseModel):
     missing_on_disk: bool = False
 
 
+class PluginSourceRequest(BaseModel):
+    source_yaml: str = Field(min_length=1, max_length=MAX_MANIFEST_BYTES)
+
+
 @router.get("/", summary="List available plugin packages")
 def list_catalogue(
+    db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> List[dict[str, Any]]:
-    return [manifest.public_metadata() for manifest in plugin_catalogue().values()]
+    """Built-in packages and this workspace's own, in one list.
+
+    `editable` is what the UI needs to know: a built-in package is versioned with the
+    code and cannot be changed here, while a package this workspace wrote can be.
+    """
+    built_in = set(plugin_catalogue())
+    return [
+        {**manifest.public_metadata(), "editable": name not in built_in}
+        for name, manifest in available_manifests(db, current_user.tenant_id).items()
+    ]
+
+
+@router.post(
+    "/validate",
+    summary="Check a manifest without saving it",
+    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+)
+def validate_source(req: PluginSourceRequest) -> dict[str, Any]:
+    """Report what a manifest would do, or why it is rejected.
+
+    Separate from saving so an author can correct a typo without creating, deleting and
+    recreating a package to find out what was wrong.
+    """
+    try:
+        manifest = parse_manifest_yaml(req.source_yaml)
+    except PluginManifestError as exc:
+        return {"valid": False, "error": str(exc)}
+    return {"valid": True, "manifest": manifest.public_metadata()}
+
+
+@router.get(
+    "/authored",
+    summary="List the packages this workspace wrote",
+    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+)
+def list_authored(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> List[dict[str, Any]]:
+    return [
+        {
+            "name": row.name,
+            "version": row.version,
+            "display_name": row.display_name,
+            "target_role": row.target_role,
+            "updated_at": row.updated_at.isoformat() if row.updated_at else "",
+        }
+        for row in list_tenant_plugins(db, current_user.tenant_id)
+    ]
+
+
+@router.get(
+    "/authored/{plugin_name}",
+    summary="Read one authored package for editing",
+    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+)
+def read_authored(
+    plugin_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    row = get_tenant_plugin(db, current_user.tenant_id, plugin_name)
+    if row is None:
+        raise HTTPException(status_code=404, detail=f"No package named '{plugin_name}'")
+    return {
+        "name": row.name,
+        "version": row.version,
+        "display_name": row.display_name,
+        "target_role": row.target_role,
+        "source_yaml": row.source_yaml,
+    }
+
+
+@router.post(
+    "/authored",
+    summary="Create a package for this workspace",
+    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+)
+def create_authored(
+    req: PluginSourceRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    try:
+        row, manifest = create_tenant_plugin(
+            db, current_user.tenant_id, req.source_yaml, created_by=current_user.id
+        )
+    except PluginAuthoringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    log_audit_action(
+        db,
+        current_user.tenant_id,
+        manifest.target_role,
+        "plugin.authored.create",
+        {"plugin_name": manifest.name, "plugin_version": manifest.version},
+        {"created_by": str(current_user.id)},
+    )
+    return {"name": row.name, "manifest": manifest.public_metadata()}
+
+
+@router.put(
+    "/authored/{plugin_name}",
+    summary="Rewrite a package this workspace wrote",
+    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+)
+def update_authored(
+    plugin_name: str,
+    req: PluginSourceRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    try:
+        row, manifest = update_tenant_plugin(
+            db, current_user.tenant_id, plugin_name, req.source_yaml
+        )
+    except PluginAuthoringError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+    log_audit_action(
+        db,
+        current_user.tenant_id,
+        manifest.target_role,
+        "plugin.authored.update",
+        {"plugin_name": manifest.name, "plugin_version": manifest.version},
+        {"updated_by": str(current_user.id)},
+    )
+    return {"name": row.name, "manifest": manifest.public_metadata()}
+
+
+@router.delete(
+    "/authored/{plugin_name}",
+    summary="Delete a package this workspace wrote",
+    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+)
+def delete_authored(
+    plugin_name: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> dict[str, Any]:
+    try:
+        delete_tenant_plugin(db, current_user.tenant_id, plugin_name)
+    except PluginAuthoringError as exc:
+        # 409 rather than 422 for the still-installed case: the manifest is fine, the
+        # workspace state is what refuses.
+        status = 409 if "still installed" in str(exc) else 404
+        raise HTTPException(status_code=status, detail=str(exc)) from exc
+
+    log_audit_action(
+        db,
+        current_user.tenant_id,
+        "",
+        "plugin.authored.delete",
+        {"plugin_name": plugin_name},
+        {"deleted_by": str(current_user.id)},
+    )
+    return {"name": plugin_name, "status": "deleted"}
 
 
 @router.get("/installed", summary="List plugins installed for this tenant")
@@ -87,13 +263,17 @@ def preview_prompt(
     except KeyError as exc:
         raise HTTPException(status_code=404, detail=str(exc)) from exc
 
-    manifests = installed_manifests(db, current_user.tenant_id, role_code)
-    overlay = build_prompt_overlay(manifests)
+    # Resolved through exactly the path the chat turn uses, packages and the tenant's
+    # own text together. Rebuilding only the package half here would make this panel
+    # disagree with what the model is actually sent, which is the failure it exists to
+    # prevent.
+    overlay = resolve_prompt_overlay(db, current_user.tenant_id, role_code) or {}
     resolved = overlay.get(slot) or base
+    manifests = installed_manifests(db, current_user.tenant_id, role_code)
     return {
         "role_code": role_code.upper(),
         "slot": slot,
-        "is_overridden": slot in overlay,
+        "is_overridden": resolved != base,
         "default_prompt": base,
         "resolved_prompt": resolved,
         "contributing_plugins": [
@@ -101,6 +281,9 @@ def preview_prompt(
             for manifest in manifests
             if any(override.slot == slot for override in manifest.prompts)
         ],
+        "has_tenant_text": bool(
+            slot == "answer" and tenant_answer_overlay(db, current_user.tenant_id, role_code)
+        ),
     }
 
 

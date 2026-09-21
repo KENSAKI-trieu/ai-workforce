@@ -83,10 +83,15 @@
 /* ─────────────────────────────────────────────────
    Reset & Base
 ───────────────────────────────────────────────── */
-*, *::before, *::after {
-  box-sizing: border-box;
-  margin: 0;
-  padding: 0;
+/* Phải nằm trong @layer base: CSS không thuộc layer nào sẽ thắng utilities của
+   Tailwind v4, nên `padding: 0` để trần ở đây đã âm thầm vô hiệu hoá mọi class
+   p-* / m-* (trang /plugins vì thế dính chữ sát viền). */
+@layer base {
+  *, *::before, *::after {
+    box-sizing: border-box;
+    margin: 0;
+    padding: 0;
+  }
 }
 
 html {

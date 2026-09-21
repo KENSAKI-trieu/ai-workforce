@@ -52,7 +52,12 @@ TOOL_DESCRIPTIONS = {
 class AIAgentUpdateRequest(BaseModel):
     name: Optional[str] = Field(None, min_length=2, max_length=100)
     description: Optional[str] = Field(None, max_length=4000)
-    system_prompt: Optional[str] = Field(None, min_length=10)
+    # `system_prompt` is intentionally absent. It was accepted and stored here for a
+    # long time while no part of the runtime ever read it, so every edit made through
+    # this field silently did nothing. `prompt_overlay` replaces it and is applied for
+    # real; the old column is left untouched rather than migrated, because its stored
+    # values are a mix of seed text and abandoned edits.
+    prompt_overlay: Optional[str] = Field(None, max_length=8000)
     model_name: Optional[str] = Field(None, min_length=2, max_length=100)
     tools_access: Optional[list[str]] = None
     allowed_actions: Optional[list[str]] = None
@@ -77,6 +82,7 @@ def _public_agent_response(agent: AIAgent, current_user: User) -> AIAgentRespons
         return response
     return response.model_copy(update={
         "system_prompt": "Managed by workspace administrators.",
+        "prompt_overlay": None,
         "tools_access": [],
         "allowed_actions": [],
         "disallowed_actions": [],

@@ -29,6 +29,7 @@ interface Agent {
   name: string;
   role_code: string;
   system_prompt: string;
+  prompt_overlay: string | null;
   model_name: string;
   is_active: boolean;
   tools_access: string[];
@@ -74,7 +75,7 @@ interface ConfigurationOptions {
 interface AgentDraft {
   name: string;
   description: string;
-  system_prompt: string;
+  prompt_overlay: string;
   model_name: string;
   is_active: boolean;
   tools: string[];
@@ -161,7 +162,7 @@ export default function AIEditorPage() {
       setDraft({
         name: agent.name,
         description: agent.description || "",
-        system_prompt: agent.system_prompt,
+        prompt_overlay: agent.prompt_overlay ?? "",
         model_name: agent.model_name,
         is_active: agent.is_active,
         tools: (agent.tools_access || []).filter(
@@ -280,7 +281,7 @@ export default function AIEditorPage() {
       const { data } = await api.patch<Agent>(`/api/v1/agents/${selectedRole}`, {
         name: draft.name.trim(),
         description: draft.description.trim(),
-        system_prompt: draft.system_prompt.trim(),
+        prompt_overlay: draft.prompt_overlay.trim(),
         model_name: draft.model_name.trim(),
         is_active: draft.is_active,
         tools_access: draft.tools,
@@ -374,7 +375,7 @@ export default function AIEditorPage() {
                       <label style={{ display: "grid", gap: 5, fontSize: 11, fontWeight: 700 }}>Model<input className="ta-input" value={draft.model_name} onChange={(event) => setDraft({ ...draft, model_name: event.target.value })} /></label>
                     </div>
                     <label style={{ display: "grid", gap: 5, marginTop: 12, fontSize: 11, fontWeight: 700 }}>Mô tả<input className="ta-input" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
-                    <label style={{ display: "grid", gap: 5, marginTop: 12, fontSize: 11, fontWeight: 700 }}>System prompt<textarea className="ta-input" value={draft.system_prompt} onChange={(event) => setDraft({ ...draft, system_prompt: event.target.value })} rows={6} style={{ resize: "vertical", lineHeight: 1.55 }} /></label>
+                    <label style={{ display: "grid", gap: 5, marginTop: 12, fontSize: 11, fontWeight: 700 }}>Quy ước riêng của công ty<textarea className="ta-input" value={draft.prompt_overlay} onChange={(event) => setDraft({ ...draft, prompt_overlay: event.target.value })} rows={6} placeholder="Để trống thì agent chạy đúng prompt gốc." style={{ resize: "vertical", lineHeight: 1.55 }} /><span style={{ fontWeight: 400, fontSize: 10, lineHeight: 1.5, opacity: 0.75 }}>Nối thêm vào cuối prompt trả lời mặc định, chỉ đổi cách diễn đạt. Muốn can thiệp định tuyến ý định thì dùng trang Plugin.</span></label>
                   </section>
 
                   <section className="ta-card" style={{ padding: 20 }}>
@@ -470,7 +471,7 @@ export default function AIEditorPage() {
 
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 9, paddingBottom: 10 }}>
                     <button className="ta-btn" onClick={() => void loadEditor(selectedRole)} disabled={saving}><RefreshCw size={15} /> Hoàn tác</button>
-                    <button className="ta-btn ta-btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim() || !draft.system_prompt.trim() || !draft.model_name.trim()}><Save size={15} /> {saving ? "Đang lưu..." : "Lưu cấu hình"}</button>
+                    <button className="ta-btn ta-btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim() || !draft.model_name.trim()}><Save size={15} /> {saving ? "Đang lưu..." : "Lưu cấu hình"}</button>
                   </div>
                 </>
               )}

@@ -1,0 +1,64 @@
+# Production overlay for the Cloudflare Tunnel + VPS deployment.
+#
+#   docker compose -f docker-compose.yml -f deploy/docker-compose.prod.yml up -d
+#
+# Differences from the base stack:
+#   - No host ports are published. cloudflared reaches every service over the
+#     compose network, so the VPS exposes nothing but SSH.
+#   - Frontend is rebuilt against the public hostnames (NEXT_PUBLIC_* are baked
+#     into the bundle at build time, so they cannot be changed at runtime).
+#   - APP_ENV=production turns on the secure refresh cookie and drops localhost
+#     from the CORS allowlist.
+services:
+  postgres:
+    ports: !reset []
+
+  redis:
+    ports: !reset []
+
+  ai-service:
+    ports: !reset []
+    build:
+      args:
+        # This host has no NVIDIA GPU and runs arm64, where the CUDA wheel index
+        # has no build. Embedding and reranking both go out to an API, so the
+        # CPU build of torch is only ever imported, never used for inference.
+        PYTORCH_INDEX_URL: https://download.pytorch.org/whl/cpu
+    # Same reason: there is no GPU here to reserve, and asking for one makes the
+    # container fail to start. A GPU host should drop this override.
+    deploy: !reset null
+    environment:
+      FRONTEND_URL: https://${APP_HOSTNAME}
+
+  backend:
+    ports: !reset []
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+      FRONTEND_URL: https://${APP_HOSTNAME}
+
+  worker:
+    environment:
+      APP_ENV: production
+      APP_DEBUG: "false"
+
+  frontend:
+    ports: !reset []
+    build:
+      args:
+        NEXT_PUBLIC_API_URL: https://${API_HOSTNAME}
+        NEXT_PUBLIC_AI_SERVICE_URL: https://${AI_HOSTNAME}
+    environment:
+      NEXT_PUBLIC_API_URL: https://${API_HOSTNAME}
+      NEXT_PUBLIC_AI_SERVICE_URL: https://${AI_HOSTNAME}
+
+  cloudflared:
+    image: cloudflare/cloudflared:latest
+    container_name: ai_workforce_tunnel
+    restart: always
+    command: ["tunnel", "--no-autoupdate", "run"]
+    environment:
+      TUNNEL_TOKEN: ${TUNNEL_TOKEN:?TUNNEL_TOKEN is required - copy it from the Cloudflare Zero Trust dashboard}
+    depends_on:
+      backend:
+        condition: service_healthy

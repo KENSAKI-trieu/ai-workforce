@@ -1,0 +1,79 @@
+{
+  "_comment": "Statements to ADD to the KENSAKI-AIWorkforceDeployer permission set for Method B (Bedrock in the app account). Keep the existing statements; append these to the Statement array.",
+  "Statement": [
+    {
+      "Sid": "BedrockInvokeAndDiscover",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:ListFoundationModels",
+        "bedrock:GetFoundationModel",
+        "bedrock:ListInferenceProfiles",
+        "bedrock:GetInferenceProfile",
+        "bedrock:InvokeModel",
+        "bedrock:InvokeModelWithResponseStream"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "BedrockModelAccessEnablement",
+      "Effect": "Allow",
+      "Action": [
+        "bedrock:GetFoundationModelAvailability",
+        "bedrock:ListFoundationModelAgreementOffers",
+        "bedrock:CreateFoundationModelAgreement",
+        "bedrock:GetUseCaseForModelAccess",
+        "bedrock:PutUseCaseForModelAccess",
+        "aws-marketplace:Subscribe",
+        "aws-marketplace:ViewSubscriptions"
+      ],
+      "Resource": "*"
+    },
+    {
+      "Sid": "ManageAiWorkforceRoles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateRole",
+        "iam:GetRole",
+        "iam:TagRole",
+        "iam:PutRolePolicy",
+        "iam:GetRolePolicy",
+        "iam:ListRolePolicies",
+        "iam:DeleteRolePolicy",
+        "iam:DeleteRole"
+      ],
+      "Resource": "arn:aws:iam::376129847426:role/ai-workforce-*"
+    },
+    {
+      "Sid": "ManageAiWorkforceInstanceProfiles",
+      "Effect": "Allow",
+      "Action": [
+        "iam:CreateInstanceProfile",
+        "iam:GetInstanceProfile",
+        "iam:AddRoleToInstanceProfile",
+        "iam:RemoveRoleFromInstanceProfile",
+        "iam:DeleteInstanceProfile"
+      ],
+      "Resource": "arn:aws:iam::376129847426:instance-profile/ai-workforce-*"
+    },
+    {
+      "Sid": "PassRoleToEc2Only",
+      "Effect": "Allow",
+      "Action": "iam:PassRole",
+      "Resource": "arn:aws:iam::376129847426:role/ai-workforce-*",
+      "Condition": {
+        "StringEquals": {"iam:PassedToService": "ec2.amazonaws.com"}
+      }
+    },
+    {
+      "Sid": "AttachInstanceProfileToEc2",
+      "Effect": "Allow",
+      "Action": [
+        "ec2:AssociateIamInstanceProfile",
+        "ec2:DisassociateIamInstanceProfile",
+        "ec2:ReplaceIamInstanceProfileAssociation",
+        "ec2:DescribeIamInstanceProfileAssociations"
+      ],
+      "Resource": "*"
+    }
+  ]
+}

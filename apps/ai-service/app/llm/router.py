@@ -1,5 +1,6 @@
 from app.config import settings
 from app.llm.base import LLMProvider
+from app.llm.bedrock_provider import BedrockProvider
 from app.llm.gemini_provider import GeminiProvider
 from app.llm.local_provider import LocalProvider
 from app.llm.openai_provider import OpenAIProvider
@@ -11,19 +12,25 @@ class LLMRouter:
         configured_default = settings.LLM_DEFAULT_PROVIDER
         default_name = "" if configured_default == "auto" else configured_default
         selected = (name or default_name).lower()
-        if selected not in {"", "openai", "gemini", "local"}:
+        if selected not in {"", "openai", "gemini", "bedrock", "local"}:
             return [LocalProvider()]
         if selected == "local":
             return [LocalProvider()]
 
         order = [selected] if selected else []
-        order.extend(item for item in ("openai", "gemini") if item not in order)
+        order.extend(
+            item for item in ("bedrock", "openai", "gemini") if item not in order
+        )
         providers: list[LLMProvider] = []
         for provider_name in order:
             if provider_name == "openai" and settings.OPENAI_API_KEY:
                 providers.append(OpenAIProvider(settings.OPENAI_API_KEY))
             if provider_name == "gemini" and settings.GOOGLE_AI_API_KEY:
                 providers.append(GeminiProvider(settings.GOOGLE_AI_API_KEY))
+            # Bedrock is gated on a flag rather than a key, because its
+            # credentials come from the boto3 chain rather than configuration.
+            if provider_name == "bedrock" and settings.BEDROCK_ENABLED:
+                providers.append(BedrockProvider())
         providers.append(LocalProvider())
         return providers
 

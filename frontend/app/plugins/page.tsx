@@ -66,6 +66,9 @@ const SLOT_LABELS: Record<string, string> = {
   classifier: "Định tuyến ý định",
   answer: "Sinh câu trả lời",
   leave_slot: "Bóc tham số đơn nghỉ",
+  leave_draft: "Đọc lượt trả lời đơn nghỉ",
+  legal_classifier: "Định tuyến ý định (Legal)",
+  legal_perspective: "Đọc góc nhìn bên A/B",
 };
 
 const SLOT_WARNINGS: Record<string, string> = {
@@ -73,6 +76,12 @@ const SLOT_WARNINGS: Record<string, string> = {
     "Slot này quyết định nhánh nghiệp vụ nào được chạy. Sửa sai sẽ làm agent đi nhầm nhánh, không chỉ đổi giọng văn.",
   leave_slot:
     "Slot này bóc ngày tháng và lý do nghỉ. Sửa sai sẽ làm đơn nghỉ ghi sai ngày.",
+  leave_draft:
+    "Slot này quyết định một câu trả lời giữa chừng là tiếp tục, hủy hay chuyện khác. Sửa sai sẽ làm đơn nghỉ bị hủy nhầm hoặc ghi nhầm lý do.",
+  legal_classifier:
+    "Slot này quyết định Legal Agent rà soát hợp đồng hay trả lời câu hỏi. Sửa sai sẽ làm agent bỏ qua hợp đồng cần rà soát.",
+  legal_perspective:
+    "Slot này đọc người dùng đại diện bên nào. Sửa sai sẽ làm điểm rủi ro bị đảo chiều.",
 };
 
 export default function PluginsPage() {

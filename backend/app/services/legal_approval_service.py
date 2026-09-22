@@ -8,11 +8,12 @@ in chat notified nobody while the identical file uploaded to the Legal page did.
 
 from __future__ import annotations
 
+import uuid
 from typing import Any
 
 from sqlalchemy.orm import Session
 
-from app.models.models import AgentWorkflow, User, WorkflowApproval
+from app.models.models import AgentWorkflow, ContractReview, User, WorkflowApproval
 
 
 REASON_BY_ACTION = {
@@ -20,6 +21,34 @@ REASON_BY_ACTION = {
     "LEGAL_PRIVACY_APPROVAL": "Sensitive or restricted personal data was detected.",
     "LEGAL_LICENSE_APPROVAL": "A reciprocal open-source license requires commercial-use review.",
 }
+
+
+def _open_workflow_for_review(
+    db: Session, current_user: User, contract_review_id: str
+) -> str | None:
+    """The workflow of the escalation already waiting on this exact review, if any.
+
+    `save_contract_review` is idempotent, so reviewing the same contract from the
+    same perspective returns the same row -- but every run used to open a new
+    approval against it, giving approvers duplicate cards for one contract and
+    leaving the earlier workflow orphaned when `review.workflow_id` was overwritten.
+    A decided approval is not reused: re-escalating after a decision is a new ask.
+    """
+    try:
+        review_uuid = uuid.UUID(str(contract_review_id))
+    except (ValueError, AttributeError, TypeError):
+        return None
+    review = db.query(ContractReview).filter(
+        ContractReview.id == review_uuid,
+        ContractReview.tenant_id == current_user.tenant_id,
+    ).first()
+    if not review or not review.workflow_id:
+        return None
+    waiting = db.query(WorkflowApproval).filter(
+        WorkflowApproval.workflow_id == review.workflow_id,
+        WorkflowApproval.status == "WAITING",
+    ).first()
+    return str(review.workflow_id) if waiting else None
 
 
 def create_legal_approval(
@@ -36,6 +65,10 @@ def create_legal_approval(
         result.get("risk_level") in {"HIGH", "CRITICAL"},
     ):
         return None
+    if contract_review_id:
+        existing_workflow = _open_workflow_for_review(db, current_user, contract_review_id)
+        if existing_workflow:
+            return existing_workflow
     document_name = result.get("document_name") or result.get("manifest") or "Legal review"
     findings = result.get("risks") or result.get("findings") or []
     workflow = AgentWorkflow(

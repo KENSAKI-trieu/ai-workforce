@@ -65,8 +65,30 @@ interface DocumentItem {
 }
 interface ApprovalItem { id: string; action_type: string; risk_level: Severity | "CRITICAL"; workflow_title: string; }
 interface Citation { document_name?: string; section_title?: string; citation_tag?: string; }
-interface ChatResult { reply: string; citations: Citation[]; conversation_id: string; }
-interface LegalChatMessage { role: "USER" | "ASSISTANT"; content: string; citations?: Citation[]; }
+// The slot-filling card the agent sends while it still needs something from the
+// user: which party they act for, or whether the text is even meant to be reviewed.
+interface ContractReviewDraftCard {
+  type: "CONTRACT_REVIEW_DRAFT";
+  status: "COLLECTING" | "AWAITING_INTENT" | "CANCELLED" | "DISMISSED";
+  represented_party: string | null;
+  contract_fingerprint: string;
+  contract_char_count: number;
+  contract_excerpt: string;
+}
+// A finished review arrives as the analyzer output itself, which carries no `type`.
+type LegalRiskCard = ContractReviewDraftCard | ContractReview;
+interface ChatResult {
+  reply: string;
+  citations: Citation[];
+  conversation_id: string;
+  legal_risk_card?: LegalRiskCard | null;
+}
+interface LegalChatMessage {
+  role: "USER" | "ASSISTANT";
+  content: string;
+  citations?: Citation[];
+  card?: LegalRiskCard | null;
+}
 interface LegalDraft {
   artifact_id: string;
   approval_id: string;
@@ -220,6 +242,10 @@ function messageFrom(error: unknown) {
   return typeof detail === "string" ? detail : error.message;
 }
 
+function isDraftCard(card: LegalRiskCard): card is ContractReviewDraftCard {
+  return (card as ContractReviewDraftCard).type === "CONTRACT_REVIEW_DRAFT";
+}
+
 function riskClass(level: string) {
   if (level === "HIGH" || level === "CRITICAL") return styles.high;
   if (level === "MEDIUM") return styles.medium;
@@ -294,9 +320,7 @@ export default function LegalAgentPage() {
     .sort((a, b) => String(a.expiration_date).localeCompare(String(b.expiration_date)))
     .slice(0, 4);
 
-  const askLegal = async (event?: FormEvent) => {
-    event?.preventDefault();
-    const content = question.trim();
+  const sendToLegal = async (content: string) => {
     if (!content || busy) return;
     setBusy(true);
     setError(null);
@@ -309,12 +333,24 @@ export default function LegalAgentPage() {
         conversation_id: conversationId || undefined,
       });
       setConversationId(data.conversation_id);
-      setChatMessages((current) => [...current, { role: "ASSISTANT", content: data.reply, citations: data.citations }]);
+      const card = data.legal_risk_card ?? null;
+      setChatMessages((current) => [
+        ...current,
+        { role: "ASSISTANT", content: data.reply, citations: data.citations, card },
+      ]);
+      // A review run in chat is stored server-side exactly like an uploaded one, so
+      // refresh the saved list: that is where its decisions and redline live.
+      if (card && !isDraftCard(card)) await loadData();
     } catch (reason) {
       setError(messageFrom(reason));
     } finally {
       setBusy(false);
     }
+  };
+
+  const askLegal = (event?: FormEvent) => {
+    event?.preventDefault();
+    void sendToLegal(question.trim());
   };
 
   const openTool = (mode: ReviewMode) => {
@@ -354,12 +390,15 @@ export default function LegalAgentPage() {
     }
   };
 
-  const openSavedReview = async (summary: SavedReviewSummary) => {
+  // Takes an id rather than a list row: chat reaches the same panel through the
+  // review_id on its risk card, so accept/reject and the redline are one screen away
+  // from the conversation instead of being unreachable from it.
+  const openSavedReview = async (reviewId: string) => {
     setBusy(true);
     setError(null);
     try {
       const { data } = await api.get<ContractReview>(
-        `/api/v1/legal/contract-reviews/${summary.review_id}`,
+        `/api/v1/legal/contract-reviews/${reviewId}`,
       );
       setReviewMode("contract");
       setReviewResult(data);
@@ -433,7 +472,7 @@ export default function LegalAgentPage() {
           <main className={styles.main}>
             {error && <div className={styles.error}><AlertTriangle size={17} /><span>{error}</span><button onClick={() => setError(null)} title="Đóng"><X size={15} /></button></div>}
 
-            {view === "chat" && <ChatWorkspace messages={chatMessages} question={question} setQuestion={setQuestion} busy={busy} send={askLegal} inputRef={questionRef} onNewChat={() => { setChatMessages([]); setConversationId(null); setQuestion(""); }} />}
+            {view === "chat" && <ChatWorkspace messages={chatMessages} question={question} setQuestion={setQuestion} busy={busy} send={askLegal} onQuickReply={(text) => void sendToLegal(text)} onOpenReview={(reviewId) => void openSavedReview(reviewId)} inputRef={questionRef} onNewChat={() => { setChatMessages([]); setConversationId(null); setQuestion(""); }} />}
 
             {view === "overview" && (
               <>
@@ -493,7 +532,7 @@ export default function LegalAgentPage() {
               />
             )}
 
-            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item)} startReview={() => openTool("contract")} />}
+            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item.review_id)} startReview={() => openTool("contract")} />}
 
             {view === "drafts" && <DraftWorkspace drafts={drafts} role={user?.role || "Employee"} notice={draftNotice} openGenerator={() => { setDraftNotice(null); setShowGenerator(true); }} preview={(draft) => void previewDraft(draft)} download={(draft) => void downloadDraft(draft)} openApprovals={() => router.push("/approvals")} busy={busy} />}
           </main>
@@ -506,21 +545,104 @@ export default function LegalAgentPage() {
   );
 }
 
-function ChatWorkspace({ messages, question, setQuestion, busy, send, inputRef, onNewChat }: {
+function ChatWorkspace({ messages, question, setQuestion, busy, send, onQuickReply, onOpenReview, inputRef, onNewChat }: {
   messages: LegalChatMessage[]; question: string; setQuestion: (value: string) => void; busy: boolean;
-  send: (event?: FormEvent) => void; inputRef: RefObject<HTMLInputElement | null>; onNewChat: () => void;
+  send: (event?: FormEvent) => void; onQuickReply: (text: string) => void;
+  onOpenReview: (reviewId: string) => void;
+  inputRef: RefObject<HTMLInputElement | null>; onNewChat: () => void;
 }) {
   return <section className={styles.chatWorkspace}>
     <header><div><span><Bot size={19} /></span><div><strong>Chat với Legal Counsel AI</strong><small>Hỏi đáp pháp lý trong phạm vi cấu hình và quyền truy cập của Agent</small></div></div><button type="button" onClick={onNewChat}><MessageSquareText size={14} />Cuộc trò chuyện mới</button></header>
     <div className={styles.chatMessages}>
       {messages.length === 0 && <div className={styles.chatEmpty}><span><ShieldCheck size={28} /></span><h2>Tôi có thể hỗ trợ gì về pháp lý?</h2><p>Hỏi về hợp đồng, quy trình, policy hoặc tài liệu mà bạn được cấp quyền truy cập.</p><div>{["Tóm tắt nghĩa vụ trong hợp đồng", "Giải thích điều khoản chấm dứt", "Policy công ty quy định thế nào?"].map((suggestion) => <button key={suggestion} onClick={() => { setQuestion(suggestion); inputRef.current?.focus(); }}>{suggestion}</button>)}</div></div>}
-      {messages.map((message, index) => <article key={`${message.role}-${index}`} className={message.role === "USER" ? styles.userMessage : styles.agentMessage}>
-        <span>{message.role === "USER" ? "Bạn" : <Bot size={15} />}</span>
-        <div>{message.role === "ASSISTANT" ? <ChatMessageContent content={message.content} /> : <p>{message.content}</p>}{message.citations && message.citations.length > 0 && <footer>{message.citations.map((citation, citationIndex) => <span key={citationIndex}><FileText size={11} />{citation.citation_tag || citation.document_name}{citation.section_title ? ` · ${citation.section_title}` : ""}</span>)}</footer>}</div>
-      </article>)}
+      {messages.map((message, index) => {
+        // The last card is the only live one: answering an older perspective question
+        // would send a reply the agent has already moved past.
+        const isLatest = index === messages.length - 1;
+        return <article key={`${message.role}-${index}`} className={`${message.role === "USER" ? styles.userMessage : styles.agentMessage} ${message.card ? styles.cardMessage : ""}`}>
+          <span>{message.role === "USER" ? "Bạn" : <Bot size={15} />}</span>
+          <div>{message.role === "ASSISTANT" ? <ChatMessageContent content={message.content} /> : <p>{message.content}</p>}{message.card && <ChatRiskCard card={message.card} live={isLatest && !busy} onQuickReply={onQuickReply} onOpenReview={onOpenReview} />}{message.citations && message.citations.length > 0 && <footer>{message.citations.map((citation, citationIndex) => <span key={citationIndex}><FileText size={11} />{citation.citation_tag || citation.document_name}{citation.section_title ? ` · ${citation.section_title}` : ""}</span>)}</footer>}</div>
+        </article>;
+      })}
       {busy && <article className={styles.agentMessage}><span><Bot size={15} /></span><div className={styles.typing}><i /><i /><i /></div></article>}
     </div>
     <form className={styles.chatComposer} onSubmit={send}><input ref={inputRef} value={question} onChange={(event) => setQuestion(event.target.value)} placeholder="Nhập câu hỏi cho Legal Agent…" /><button type="submit" disabled={busy || !question.trim()}>{busy ? <Loader2 className={styles.spin} size={17} /> : <Send size={17} />}</button></form>
+  </section>;
+}
+
+const PERSPECTIVE_REPLIES = [
+  { label: "Bên A", message: "Bên A", hint: "công ty / nhà cung cấp / bên bán" },
+  { label: "Bên B", message: "Bên B", hint: "khách hàng / bên mua" },
+  { label: "Trung lập", message: "trung lập", hint: "đánh giá khách quan" },
+];
+
+// The chat risk card. Without it the agent answered "mỗi phát hiện bên dưới" with
+// nothing below: findings, the escalation and the link to the saved review were all
+// computed, stored and then dropped by the client.
+function ChatRiskCard({ card, live, onQuickReply, onOpenReview }: {
+  card: LegalRiskCard; live: boolean;
+  onQuickReply: (text: string) => void; onOpenReview: (reviewId: string) => void;
+}) {
+  if (isDraftCard(card)) {
+    if (card.status === "CANCELLED" || card.status === "DISMISSED") {
+      return <p className={styles.chatCardClosed}>
+        <X size={12} />
+        {card.status === "CANCELLED"
+          ? "Đã hủy rà soát — không nội dung nào được phân tích hay lưu lại."
+          : "Yêu cầu rà soát đang treo đã được đóng."}
+      </p>;
+    }
+    const collecting = card.status === "COLLECTING";
+    return <section className={styles.chatCard}>
+      <header>
+        <span className={styles.chatCardMark}><FileSearch size={15} /></span>
+        <div>
+          <strong>{collecting ? "Chờ chọn góc nhìn rà soát" : "Chưa rõ bạn muốn rà soát hay hỏi"}</strong>
+          <small>{card.contract_char_count.toLocaleString("vi-VN")} ký tự · chưa phân tích, chưa lưu</small>
+        </div>
+      </header>
+      {card.contract_excerpt && <blockquote className={styles.chatCardExcerpt}>{card.contract_excerpt}…</blockquote>}
+      <div className={styles.chatQuickReplies}>
+        {collecting
+          ? PERSPECTIVE_REPLIES.map((item) => <button key={item.message} type="button" disabled={!live} title={item.hint} onClick={() => onQuickReply(item.message)}>{item.label}</button>)
+          : <>
+            <button type="button" disabled={!live} onClick={() => onQuickReply("rà soát")}>Rà soát nội dung này</button>
+            <button type="button" disabled={!live} onClick={() => onQuickReply("Đừng rà soát, tôi chỉ hỏi thôi")}>Tôi chỉ hỏi thôi</button>
+          </>}
+        {collecting && <button type="button" className={styles.chatCancelReply} disabled={!live} onClick={() => onQuickReply("hủy")}>Hủy</button>}
+      </div>
+    </section>;
+  }
+
+  const findings = card.findings || card.risks || [];
+  const preview = findings.slice(0, 3);
+  return <section className={`${styles.chatCard} ${styles.chatReviewCard}`}>
+    <header>
+      <span className={`${styles.chatScore} ${riskClass(card.risk_level)}`}><strong>{card.risk_score}</strong><small>/100</small></span>
+      <div>
+        <span className={`${styles.riskBadge} ${riskClass(card.risk_level)}`}>{card.risk_level} RISK</span>
+        <strong>{card.total_risks_found} phát hiện</strong>
+        <small>{card.contract_type_label} · {card.represented_party_label}</small>
+      </div>
+    </header>
+    <div className={styles.chatSeverities}>
+      {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as Severity[]).map((level) => <span key={level}><b className={riskClass(level)}>{card.severity_counts?.[level] || 0}</b>{level}</span>)}
+    </div>
+    {card.approval_created && <p className={styles.chatCardAlert}><ShieldAlert size={13} />Đã tạo approval workflow — Legal phải duyệt trước khi ký.</p>}
+    <ul className={styles.chatFindings}>
+      {preview.map((item) => <li key={item.id}>
+        <span className={`${styles.severityDot} ${riskClass(item.severity)}`} />
+        <div>
+          <strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong>
+          <small>{item.recommendation}</small>
+        </div>
+      </li>)}
+    </ul>
+    {findings.length > preview.length && <small className={styles.chatMoreFindings}>+{findings.length - preview.length} phát hiện nữa trong bản đầy đủ</small>}
+    {card.review_id && <div className={styles.chatCardActions}>
+      <button type="button" className={styles.primaryButton} onClick={() => onOpenReview(card.review_id)}><FileSearch size={13} />Mở bản rà soát đầy đủ</button>
+      <small>Accept · Reject · tải redline ở màn hình đầy đủ</small>
+    </div>}
   </section>;
 }
 

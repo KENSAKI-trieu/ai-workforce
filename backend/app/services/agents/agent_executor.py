@@ -72,8 +72,14 @@ from app.services.agents.hr_llm_flow import (
     UsageReporter,
     SYNTHESIZABLE_INTENTS,
     classify_hr_request,
+    classify_leave_draft_turn,
     extract_leave_request_slots,
     generate_grounded_hr_answer,
+)
+from app.services.agents.legal_llm_flow import (
+    LegalPerspective,
+    classify_legal_request,
+    extract_represented_party,
 )
 
 logger = logging.getLogger(__name__)
@@ -795,13 +801,13 @@ def _extract_leave_slots(
     return slots
 
 
-def _hr_llm_usage_recorder(db: Session, user: User) -> UsageReporter:
-    """Meter every billed HR model call into ``LLMCostLog``.
+def _llm_usage_recorder(db: Session, user: User, agent_role: str) -> UsageReporter:
+    """Meter every billed router or answer call into ``LLMCostLog``.
 
-    The HR agent talks to the provider directly instead of going through the internal
-    tool gateway, which is where every other agent's usage is recorded. Until this
-    existed the cost dashboard reported the HR agent as free, while it was in fact
-    making up to three calls per chat turn.
+    The HR and Legal agents talk to the provider directly instead of going through the
+    internal tool gateway, which is where every other agent's usage is recorded. Until
+    this existed the cost dashboard reported those agents as free, while they were in
+    fact making up to three calls per chat turn.
 
     The department is resolved from the user rather than passed in: ``log_llm_cost``
     validates an explicitly supplied department against a fixed list, so a tenant that
@@ -822,7 +828,7 @@ def _hr_llm_usage_recorder(db: Session, user: User) -> UsageReporter:
             log_llm_cost(
                 db,
                 user.tenant_id,
-                "HR",
+                agent_role,
                 model_name,
                 prompt_tokens,
                 completion_tokens,
@@ -833,18 +839,28 @@ def _hr_llm_usage_recorder(db: Session, user: User) -> UsageReporter:
         except UnsupportedModelPricingError:
             # Naming the model matters: the fix is a pricing row, not a code change.
             logger.warning(
-                "HR LLM usage not metered: no pricing configured for model '%s'",
+                "%s LLM usage not metered: no pricing configured for model '%s'",
+                agent_role,
                 model_name,
             )
         except ValueError:
-            logger.warning("HR LLM usage not metered: rejected usage payload", exc_info=True)
+            logger.warning(
+                "%s LLM usage not metered: rejected usage payload", agent_role, exc_info=True
+            )
         except SQLAlchemyError:
             # The session is unusable after a failed flush, so hand back a clean one:
             # the answer this turn already produced still has to be persisted.
-            logger.warning("HR LLM usage not metered: database error", exc_info=True)
+            logger.warning(
+                "%s LLM usage not metered: database error", agent_role, exc_info=True
+            )
             db.rollback()
 
     return record
+
+
+def _hr_llm_usage_recorder(db: Session, user: User) -> UsageReporter:
+    """The HR-scoped meter. Kept as its own name because the HR gate calls it by name."""
+    return _llm_usage_recorder(db, user, "HR")
 
 
 def _extract_leave_slots_with_llm(
@@ -1120,7 +1136,12 @@ _NEUTRAL_MARKERS = (
 _FIRST_PERSON_MARKERS = ("chung toi", "cong ty toi", "ben toi", "toi", "minh", "em")
 
 LEGAL_CANCEL_MARKERS = ("huy ra soat", "thoi khong ra soat", "bo qua", "khong ra soat nua")
-_REVIEW_CONFIRM_MARKERS = ("ra soat", "review", "phan tich", "dung", "co", "kiem tra")
+_REVIEW_CONFIRM_PHRASES = ("ra soat", "review", "phan tich", "kiem tra", "danh gia")
+_REVIEW_CONFIRM_WORDS = frozenset({"dung", "co", "ok", "oke", "yes", "duoc", "dong y"})
+# Read off the original text, not the normalized one: stripping tone marks collapses
+# "đừng" (don't) and "đúng" (yes) onto the same "dung", so the decline can only be
+# recognised before normalization.
+_REVIEW_DECLINE_MARKERS = ("đừng", "không", "khỏi", "chỉ hỏi", "don't", "no thanks")
 
 
 def _parse_represented_party(message: str) -> str | None:
@@ -1176,10 +1197,23 @@ def _is_legal_review_cancel(normalized_message: str) -> bool:
     )
 
 
-def _is_review_confirmation(normalized_message: str) -> bool:
-    stripped = normalized_message.strip(" .!?")
-    return stripped in {"dung", "co", "ok", "yes"} or any(
-        marker in normalized_message for marker in _REVIEW_CONFIRM_MARKERS
+def _is_review_confirmation(message: str) -> bool:
+    """Did the user say yes to reviewing the text the agent asked about?
+
+    Takes the raw message because the decline markers only survive with their tone
+    marks. The confirm phrases are matched on word boundaries: as bare substrings
+    "co" matched "công ty" and "dung" matched "sử dụng", so nearly any reply --
+    including "đừng rà soát" -- was read as a yes.
+    """
+    lowered = message.lower()
+    if any(marker in lowered for marker in _REVIEW_DECLINE_MARKERS):
+        return False
+    normalized = _normalize_intent_text(message)
+    if normalized.strip(" .!?") in _REVIEW_CONFIRM_WORDS:
+        return True
+    return any(
+        re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized)
+        for phrase in _REVIEW_CONFIRM_PHRASES
     )
 
 
@@ -1240,6 +1274,14 @@ def _load_legal_review_draft(
         for attachment in chat_message.attachments or []:
             payload = attachment.get("payload") or {}
             if payload.get("type") != "CONTRACT_REVIEW_DRAFT":
+                # A finished review closes the question that led to it. Its card is the
+                # analyzer output, which carries no "type", so scanning past it would
+                # resurrect the COLLECTING card from before the review and re-ask a
+                # question the user already answered -- leaving the thread unable to
+                # answer anything else, and re-running the audit on the old contract
+                # as soon as a later message happened to name a party.
+                if attachment.get("type") == "LEGAL_RISK_CARD":
+                    return None
                 continue
             if payload.get("status") not in {"COLLECTING", "AWAITING_INTENT"}:
                 # The newest card is already resolved or cancelled; nothing pending.
@@ -1306,6 +1348,24 @@ def stream_hr_chat_events(
         and not leave_cancel_request
         and _is_leave_draft_continuation(message, leave_draft)
     )
+    if leave_draft:
+        # The keyword rules above only recognise dates, weekday words and four fixed
+        # cancel phrases. The router reads the sentence instead, and their answer is
+        # what it falls back to.
+        draft_turn = classify_leave_draft_turn(
+            message,
+            draft=leave_draft,
+            fallback_turn=(
+                "CANCEL" if leave_cancel_request
+                else "CONTINUE" if leave_continuation
+                else "UNRELATED"
+            ),
+            on_usage=record_usage,
+            prompts=prompt_overlay,
+        )
+        # Cancelling is the outcome that writes nothing, so either reading of it wins.
+        leave_cancel_request = leave_cancel_request or draft_turn.turn == "CANCEL"
+        leave_continuation = not leave_cancel_request and draft_turn.turn == "CONTINUE"
     stateful_leave_action = leave_cancel_request or leave_continuation
     if stateful_leave_action:
         detailed_intent = "ACTION_LEAVE_REQUEST"
@@ -2207,6 +2267,8 @@ def _execute_agent_chat_core(
             return response_data
         normalized_legal_message = message.lower()
         normalized_legal_intent = _normalize_intent_text(message)
+        legal_prompt_overlay = resolve_prompt_overlay(db, user.tenant_id, role_code_upper)
+        record_legal_usage = _llm_usage_recorder(db, user, "LEGAL")
 
         # The tool gate above runs on every turn, so it covers the perspective
         # question and the answer alike: an admin revoking the tool mid-conversation
@@ -2218,7 +2280,26 @@ def _execute_agent_chat_core(
 
         if pending_review:
             draft, pending_text = pending_review
-            if _is_legal_review_cancel(normalized_legal_intent):
+            keyword_cancel = _is_legal_review_cancel(normalized_legal_intent)
+            pending_status = str(draft.get("status") or "")
+            llm_cancel = False
+            perspective: LegalPerspective | None = None
+            if pending_status == "COLLECTING" and not keyword_cancel:
+                # One call answers both questions this state can face: did they name a
+                # side, or are they calling the review off? Skipped when the keywords
+                # already read a cancellation, since the answer could not change it.
+                perspective = extract_represented_party(
+                    message,
+                    fallback_party=_parse_represented_party(message),
+                    fallback_cancel=keyword_cancel,
+                    on_usage=record_legal_usage,
+                    prompts=legal_prompt_overlay,
+                )
+                llm_cancel = perspective.decision == "CANCEL"
+            # Either reading of a cancellation is honoured. Stopping is the outcome that
+            # analyses nothing and stores nothing, so a false positive costs a retry
+            # while a false negative reviews a contract the user asked to be left alone.
+            if keyword_cancel or llm_cancel:
                 response_data["reply"] = (
                     "Tôi đã hủy yêu cầu rà soát. Chưa có nội dung nào được phân tích hay lưu lại."
                 )
@@ -2228,8 +2309,19 @@ def _execute_agent_chat_core(
                     contract_char_count=int(draft.get("contract_char_count") or 0),
                 )
                 return response_data
-            if draft.get("status") == "AWAITING_INTENT":
-                if _is_review_confirmation(normalized_legal_intent):
+            if pending_status == "AWAITING_INTENT":
+                pending_decision = classify_legal_request(
+                    message,
+                    pending_state="AWAITING_INTENT",
+                    fallback_intent=(
+                        "CONFIRM_REVIEW"
+                        if _is_review_confirmation(message)
+                        else "DECLINE_REVIEW"
+                    ),
+                    on_usage=record_legal_usage,
+                    prompts=legal_prompt_overlay,
+                )
+                if pending_decision.intent == "CONFIRM_REVIEW":
                     response_data["reply"] = LEGAL_PERSPECTIVE_QUESTION
                     response_data["legal_risk_card"] = _legal_review_card(
                         status="COLLECTING",
@@ -2238,8 +2330,21 @@ def _execute_agent_chat_core(
                         excerpt=pending_text,
                     )
                     return response_data
+                # Not a yes: this turn is its own request. Close the open question
+                # here rather than leaving it for a later message to answer by
+                # accident. A REVIEW or UNSURE card produced below simply replaces
+                # this one, since only the newest card counts.
+                response_data["legal_risk_card"] = _legal_review_card(
+                    status="DISMISSED",
+                    contract_fingerprint=str(draft.get("contract_fingerprint") or ""),
+                    contract_char_count=int(draft.get("contract_char_count") or 0),
+                )
             else:
-                represented_party = _parse_represented_party(message)
+                # perspective is always set here: COLLECTING is the only other state a
+                # loaded draft can be in, and that branch above computed it.
+                represented_party = (
+                    perspective.represented_party if perspective else None
+                )
                 if represented_party is None:
                     response_data["reply"] = (
                         "Tôi chưa xác định được bạn đại diện bên nào.\n\n"
@@ -2255,7 +2360,16 @@ def _execute_agent_chat_core(
                 contract_text = pending_text
 
         if contract_text is None:
-            intent, detection_signals = _classify_legal_contract_intent(message)
+            keyword_intent, detection_signals = _classify_legal_contract_intent(message)
+            # The scorer still runs: its signals are reported on the UNSURE card, it
+            # gates the glossary below, and it is what the router falls back to.
+            intent = classify_legal_request(
+                message,
+                pending_state="NONE",
+                fallback_intent=keyword_intent,
+                on_usage=record_legal_usage,
+                prompts=legal_prompt_overlay,
+            ).intent
             if intent == "REVIEW":
                 response_data["reply"] = LEGAL_PERSPECTIVE_QUESTION
                 response_data["legal_risk_card"] = _legal_review_card(
@@ -2321,6 +2435,16 @@ def _execute_agent_chat_core(
                 review.workflow_id = uuid.UUID(workflow_id)
                 audit_res["workflow_id"] = workflow_id
                 audit_res["approval_created"] = True
+                # The row was flushed before the escalation existed, and a plain JSON
+                # column does not track mutations of the dict it was given -- so the
+                # blob has to be reassigned, or reopening the review from the saved
+                # list would show no sign that it had raised an approval.
+                review.result = {
+                    **(review.result or {}),
+                    "review_id": str(review.id),
+                    "workflow_id": workflow_id,
+                    "approval_created": True,
+                }
             log_audit_action(
                 db,
                 user.tenant_id,

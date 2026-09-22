@@ -6,22 +6,28 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Callable, Mapping
+from collections.abc import Mapping
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
 
 from app.services.agents.hr_prompts import resolve_slot
+from app.services.agents.llm_json import (
+    UsageReporter,
+    extract_json_object,
+    is_echo_provider,
+    report_usage,
+)
 from app.services.ai_service_client import AIServiceClient, AIServiceError, get_ai_service_client
 
 logger = logging.getLogger(__name__)
 
 HRRequestKind = Literal["QUESTION", "ACTION"]
 
-# Called with the raw `/v1/llm/generate` payload after a billable call returns, so the
-# caller -- which is the layer holding the database session -- can meter the token usage.
-# This module stays free of database imports; it only reports what the provider charged.
-UsageReporter = Callable[[dict[str, Any]], None]
+# Kept as module attributes because this module's readers expect them here; the
+# implementations are shared with the Legal router in `llm_json`.
+_extract_json_object = extract_json_object
+_report_usage = report_usage
 
 ACTION_INTENTS = frozenset({
     "ACTION_EXPORT",
@@ -65,46 +71,11 @@ SYNTHESIZABLE_INTENTS = frozenset({
 })
 
 
-def _report_usage(on_usage: UsageReporter | None, result: dict[str, Any]) -> None:
-    """Hand a completed provider response to the meter, if one was supplied.
-
-    Metering must never cost the user their answer, so a failing reporter is logged and
-    swallowed here rather than being allowed to abort a turn that already succeeded.
-    """
-    if on_usage is None:
-        return
-    try:
-        on_usage(result)
-    except Exception:  # noqa: BLE001 - telemetry must not break the chat turn
-        logger.warning("HR LLM usage reporting failed", exc_info=True)
-
-
 @dataclass(frozen=True)
 class HRRequestClassification:
     kind: HRRequestKind
     source: Literal["llm", "fallback"]
     intent: str | None = None
-
-
-def _extract_json_object(content: str) -> dict[str, Any] | None:
-    text = content.strip()
-    if text.startswith("```"):
-        lines = text.splitlines()
-        if len(lines) >= 3:
-            text = "\n".join(lines[1:-1]).strip()
-            if text.lower().startswith("json"):
-                text = text[4:].lstrip()
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        start, end = text.find("{"), text.rfind("}")
-        if start < 0 or end <= start:
-            return None
-        try:
-            value = json.loads(text[start:end + 1])
-        except json.JSONDecodeError:
-            return None
-    return value if isinstance(value, dict) else None
 
 
 def classify_hr_request(
@@ -151,6 +122,70 @@ def classify_hr_request(
     except (AIServiceError, TypeError, ValueError):
         logger.warning("HR LLM intent classification failed; using safe fallback", exc_info=True)
     return HRRequestClassification(fallback_kind, "fallback")
+
+
+LEAVE_DRAFT_TURNS = frozenset({"CONTINUE", "CANCEL", "UNRELATED"})
+
+
+@dataclass(frozen=True)
+class LeaveDraftTurn:
+    turn: str
+    source: Literal["llm", "fallback"]
+
+
+def classify_leave_draft_turn(
+    raw_message: str,
+    *,
+    draft: dict[str, Any],
+    fallback_turn: str,
+    client: AIServiceClient | None = None,
+    on_usage: UsageReporter | None = None,
+    prompts: Mapping[str, str] | None = None,
+) -> LeaveDraftTurn:
+    """Decide what this turn does to an open leave draft: continue, cancel or neither.
+
+    This used to be two keyword rules. They read any date-like token as an answer to the
+    slot the assistant last asked for, and recognised a cancellation only from four fixed
+    phrases -- so "thôi tôi không xin nữa đâu" kept the draft open while "hôm nay công ty
+    có họp không?" was filed as the reason for leave. ``fallback_turn`` is what those
+    rules concluded, and it is returned untouched whenever the model cannot be used.
+    """
+    fallback = LeaveDraftTurn(fallback_turn, "fallback")
+    ai_client = client or get_ai_service_client()
+    if not ai_client.enabled:
+        return fallback
+
+    try:
+        result = ai_client.generate_text([
+            {"role": "system", "content": resolve_slot(prompts, "leave_draft")},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "draft": {
+                            key: draft.get(key)
+                            for key in ("start_date", "end_date", "reason")
+                        },
+                        "missing_fields": draft.get("missing_fields") or [],
+                        "message": raw_message,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ])
+        if is_echo_provider(result):
+            return fallback
+        report_usage(on_usage, result)
+        payload = extract_json_object(str(result.get("content") or ""))
+        turn = str((payload or {}).get("turn") or "").strip().upper()
+        if turn in LEAVE_DRAFT_TURNS:
+            return LeaveDraftTurn(turn, "llm")
+    except (AIServiceError, TypeError, ValueError):
+        logger.warning(
+            "HR LLM leave-draft turn classification failed; using keyword fallback",
+            exc_info=True,
+        )
+    return fallback
 
 
 def _validated_iso_date(value: Any) -> str | None:

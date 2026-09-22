@@ -343,26 +343,34 @@ async def review_legal_document(
         result = review_contract(text, filename, represented_party, references)
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    result["workflow_id"] = _create_legal_approval(db, current_user, result)
-    result["approval_created"] = result["workflow_id"] is not None
     # Saved here rather than by a follow-up call from the browser: a second call
     # would have to accept the review body back from the client, which would let
     # anyone post a fabricated result and have it become the audit record.
+    #
+    # The review is stored before the escalation so its id can be handed to
+    # create_legal_approval, which uses it to reuse the approval already waiting on
+    # this same review instead of opening a second card for one contract. The
+    # approval then carries the id too, so the approvals screen can open the review.
     review = contract_review_store.save_contract_review(
         db,
         user=current_user,
         result=result,
         contract_text=text,
         source="UPLOAD",
-        workflow_id=uuid.UUID(result["workflow_id"]) if result["workflow_id"] else None,
     )
-    if review.workflow_id:
-        # Let the approvals screen open the saved review behind this escalation.
-        approval = db.query(WorkflowApproval).filter(
-            WorkflowApproval.workflow_id == review.workflow_id
-        ).first()
-        if approval and not (approval.payload or {}).get("contract_review_id"):
-            approval.payload = {**(approval.payload or {}), "contract_review_id": str(review.id)}
+    result["workflow_id"] = _create_legal_approval(
+        db, current_user, result, contract_review_id=str(review.id)
+    )
+    result["approval_created"] = result["workflow_id"] is not None
+    if result["workflow_id"]:
+        review.workflow_id = uuid.UUID(result["workflow_id"])
+        # The stored blob is what a reopened review renders from, so it has to carry
+        # the escalation as well as the analyzer output.
+        review.result = {
+            **(review.result or {}),
+            "workflow_id": result["workflow_id"],
+            "approval_created": True,
+        }
     db.commit()
     result["review_id"] = str(review.id)
     result["decisions"] = contract_review_store.serialize_decisions(db, review)

@@ -478,3 +478,34 @@ def test_an_employee_cannot_read_another_tenants_overlay_text(
         client.patch(
             "/api/v1/agents/HR", headers=ceo_token_headers, json={"prompt_overlay": ""}
         )
+
+
+# --------------------------------------------------------------------------
+# The Legal router's prompts join the same registry
+# --------------------------------------------------------------------------
+
+def test_legal_slots_are_registered_and_previewable(client, ceo_token_headers):
+    """LEGAL accepts overrides now that a Legal flow reads a resolved overlay.
+
+    A role absent from the registry silently drops any prompt a package declares for it,
+    so registration and preview are checked together.
+    """
+    from app.services.agents.legal_prompts import LEGAL_PROMPT_SLOTS
+    from app.services.agents.prompt_registry import (
+        default_prompt as registry_default_prompt,
+        prompt_slots_for_role,
+    )
+
+    assert prompt_slots_for_role("LEGAL") == tuple(LEGAL_PROMPT_SLOTS)
+
+    res = client.get(
+        "/api/v1/plugins/preview/LEGAL/legal_classifier", headers=ceo_token_headers
+    )
+
+    assert res.status_code == 200
+    body = res.json()
+    assert body["is_overridden"] is False
+    assert body["resolved_prompt"] == registry_default_prompt("legal_classifier")
+    # The slot names must not collide with HR's, or one role would be served the
+    # other's prompt by a registry that only sees the slot name.
+    assert body["resolved_prompt"] != registry_default_prompt("classifier")

@@ -35,7 +35,7 @@ from app.plugins.service import (
     list_installs,
     uninstall_plugin,
 )
-from app.services.agents.hr_prompts import default_prompt
+from app.services.agents.prompt_registry import default_prompt
 
 
 def _resolve_tenant(db: Session, token: str) -> Tenant:

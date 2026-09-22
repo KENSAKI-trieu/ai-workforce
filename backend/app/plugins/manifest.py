@@ -32,12 +32,12 @@ def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:
     that cycle unformed.
 
     A role absent from the map cannot carry prompt overrides at all, which is
-    deliberate: only the HR flow reads a resolved overlay, so accepting prompts for
-    another role would store text nothing ever applies.
+    deliberate: only a flow that reads a resolved overlay can honour one, so accepting
+    prompts for another role would store text nothing ever applies.
     """
-    from app.services.agents.hr_prompts import HR_PROMPT_SLOTS
+    from app.services.agents.prompt_registry import prompt_slots_for_role as slots
 
-    return {"HR": HR_PROMPT_SLOTS}.get(role_code)
+    return slots(role_code)
 
 
 MANIFEST_KEYS = frozenset({

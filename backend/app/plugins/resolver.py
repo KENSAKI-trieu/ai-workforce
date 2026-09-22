@@ -109,7 +109,7 @@ def build_prompt_overlay(manifests: Iterable[PluginManifest]) -> dict[str, str]:
     """Fold prompt overrides onto the shipped defaults, in the order given."""
     # Deferred for the same reason as in manifest.py: importing the agents package at
     # module level would close an import cycle back into this module.
-    from app.services.agents.hr_prompts import default_prompt
+    from app.services.agents.prompt_registry import default_prompt
 
     overlay: dict[str, str] = {}
     for manifest in manifests:
@@ -165,7 +165,7 @@ def resolve_prompt_overlay(
     Returning None rather than an empty mapping keeps the default path free of any
     string work for the overwhelming majority of tenants, which customise nothing.
     """
-    from app.services.agents.hr_prompts import default_prompt
+    from app.services.agents.prompt_registry import default_prompt
 
     overlay = build_prompt_overlay(installed_manifests(db, tenant_id, role_code))
 

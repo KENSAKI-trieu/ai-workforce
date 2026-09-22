@@ -73,9 +73,22 @@ class Settings(BaseSettings):
     OPENAI_API_KEY_2: Optional[str] = None
     GOOGLE_AI_API_KEY: Optional[str] = None
     GOOGLE_AI_API_KEY_2: Optional[str] = None
-    LLM_DEFAULT_PROVIDER: Literal["auto", "openai", "gemini", "local"] = "auto"
+    LLM_DEFAULT_PROVIDER: Literal["auto", "openai", "gemini", "bedrock", "local"] = "auto"
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
     GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
+
+    # Bedrock authenticates through the standard boto3 credential chain (instance
+    # profile, environment, or a mounted AWS config), so there is no API key to
+    # set. BEDROCK_ENABLED is the explicit switch: without it the provider stays
+    # out of the rotation even on a host that happens to have AWS credentials.
+    BEDROCK_ENABLED: bool = False
+    BEDROCK_REGION: str = "ap-northeast-1"
+    BEDROCK_CHAT_MODEL: str = "jp.anthropic.claude-haiku-4-5-20251001-v1:0"
+    # Set when Bedrock lives in a different account than the host. Credentials are
+    # refreshed automatically, so the process can outlive a single STS session.
+    BEDROCK_ASSUME_ROLE_ARN: Optional[str] = None
+    BEDROCK_ROLE_SESSION_NAME: str = "ai-workforce"
+    BEDROCK_MAX_TOKENS: int = Field(default=4096, gt=0)
     LLM_TIMEOUT_SECONDS: float = Field(default=90.0, gt=0)
     LLM_MAX_RETRIES: int = Field(default=2, ge=0, le=10)
     AGENT_MAX_MODEL_CALLS: int = Field(default=8, ge=1, le=100)

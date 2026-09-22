@@ -13,7 +13,8 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.config import Settings, _configured_keys
+from app.config import Settings, _configured_keys, settings
+from app.llm.bedrock_provider import BedrockProvider
 from app.llm.fallback import generate_with_fallback
 from app.llm.openai_provider import OpenAIProvider
 from app.llm.router import LLMRouter
@@ -126,9 +127,26 @@ def test_blank_and_duplicate_credentials_are_dropped():
     assert _configured_keys(None, "key2") == ("key2",)
 
 
-def test_a_provider_cannot_be_built_without_any_credential():
-    with pytest.raises(ValueError):
-        OpenAIProvider(())
+def test_a_vendor_without_any_credential_still_gets_one_slot():
+    """Bedrock authenticates its boto3 client, not the request, so it has no key.
+
+    Rejecting the empty case made enabling Bedrock raise while the router was still
+    being assembled, which took every other vendor down with it.
+    """
+    provider = BedrockProvider(model_factory=_KeyedFactory())
+
+    assert provider.api_keys == ("",)
+    assert provider.api_key == ""
+
+
+def test_a_keyless_vendor_calls_its_factory_exactly_once():
+    factory = _KeyedFactory(**{"": _response()})
+    provider = BedrockProvider(model_factory=factory)
+
+    result = provider.generate([{"role": "user", "content": "hello"}])
+
+    assert result.provider == "bedrock"
+    assert factory.calls == [("", settings.BEDROCK_CHAT_MODEL)]
 
 
 def test_the_router_builds_one_vendor_entry_carrying_both_keys(monkeypatch):
@@ -140,7 +158,7 @@ def test_the_router_builds_one_vendor_entry_carrying_both_keys(monkeypatch):
 
     providers = LLMRouter().providers()
 
-    assert [provider.name for provider in providers] == ["openai", "local"]
+    assert [provider.name for provider in providers] == ["openai", "bedrock", "local"]
     assert providers[0].api_keys == ("key1", "key2")
 
 

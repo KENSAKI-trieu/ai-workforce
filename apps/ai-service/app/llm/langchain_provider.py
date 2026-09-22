@@ -61,11 +61,14 @@ class LangChainChatProvider(LLMProvider):
         # so the requested model has to survive the switch -- which is why the retry
         # belongs here rather than as another entry in that chain.
         keys = (api_key,) if isinstance(api_key, str) else tuple(api_key)
+        # A vendor with no API key at all is legitimate: Bedrock authenticates its
+        # boto3 client rather than the request, so it is constructed with an empty
+        # credential on purpose. It still gets exactly one slot, which is what keeps
+        # the loop below identical for every provider -- rejecting the empty case
+        # here would make enabling Bedrock raise before a single call was made.
         self.api_keys: tuple[str, ...] = tuple(
             dict.fromkeys(key for key in keys if key)
-        )
-        if not self.api_keys:
-            raise ValueError(f"{provider} provider requires at least one API key")
+        ) or ("",)
         # Kept for callers that read the primary credential; the list above is what
         # generate() actually walks.
         self.api_key = self.api_keys[0]

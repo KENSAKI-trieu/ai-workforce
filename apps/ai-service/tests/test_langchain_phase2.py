@@ -115,11 +115,23 @@ def test_router_honors_configured_default_provider(monkeypatch) -> None:
     monkeypatch.setattr("app.llm.router.settings.OPENAI_API_KEY", "openai-key")
     monkeypatch.setattr("app.llm.router.settings.GOOGLE_AI_API_KEY", "gemini-key")
 
-    assert [provider.name for provider in LLMRouter().providers()] == [
-        "gemini",
-        "openai",
-        "local",
-    ]
+    # Bedrock is on for the suite, so it sits in the chain wherever its own order
+    # puts it; what this test is about is the chosen default coming first.
+    names = [provider.name for provider in LLMRouter().providers()]
+    assert names[0] == "gemini"
+    assert names[-1] == "local"
+    assert set(names) == {"gemini", "openai", "bedrock", "local"}
+
+
+@pytest.mark.bedrock_flag
+def test_router_leaves_bedrock_out_while_the_flag_is_off(monkeypatch) -> None:
+    """The flag is the only thing gating it: there is no key to be missing."""
+    monkeypatch.setattr("app.llm.router.settings.BEDROCK_ENABLED", False)
+    monkeypatch.setattr("app.llm.router.settings.LLM_DEFAULT_PROVIDER", "auto")
+    monkeypatch.setattr("app.llm.router.settings.OPENAI_API_KEY", "openai-key")
+    monkeypatch.setattr("app.llm.router.settings.GOOGLE_AI_API_KEY", "gemini-key")
+
+    assert "bedrock" not in [provider.name for provider in LLMRouter().providers()]
 
 
 def test_structured_output_returns_validated_pydantic_model() -> None:

@@ -1,6 +1,27 @@
 import pytest
 
+from app.config import settings
 from app.main import app, require_internal_token
+
+
+@pytest.fixture(autouse=True)
+def bedrock_enabled(request: pytest.FixtureRequest):
+    """Run the whole suite with Bedrock switched on.
+
+    The flag defaulting to off meant nothing exercised the provider, and the first
+    thing it hit in production would have been a ValueError raised while the router
+    was still being built -- taking every vendor down with it, not just Bedrock.
+    A test that is about the flag itself marks `bedrock_flag` and sets its own value.
+    """
+    if request.node.get_closest_marker("bedrock_flag"):
+        yield
+        return
+    original = settings.BEDROCK_ENABLED
+    settings.BEDROCK_ENABLED = True
+    try:
+        yield
+    finally:
+        settings.BEDROCK_ENABLED = original
 
 
 @pytest.fixture(autouse=True)

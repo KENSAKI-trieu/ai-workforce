@@ -7,7 +7,7 @@ from langchain_openai import ChatOpenAI
 from app.config import settings
 
 
-LangChainProvider = Literal["openai", "gemini"]
+LangChainProvider = Literal["openai", "gemini", "bedrock"]
 
 
 def default_model_for(provider: LangChainProvider) -> str:
@@ -15,6 +15,8 @@ def default_model_for(provider: LangChainProvider) -> str:
         return settings.OPENAI_CHAT_MODEL
     if provider == "gemini":
         return settings.GEMINI_CHAT_MODEL
+    if provider == "bedrock":
+        return settings.BEDROCK_CHAT_MODEL
     raise ValueError(f"Unsupported LangChain provider: {provider}")
 
 
@@ -45,6 +47,20 @@ def create_chat_model(
             timeout=request_timeout,
             max_retries=retries,
         )
+    if provider == "bedrock":
+        # Imported here so a deployment that never enables Bedrock does not pay
+        # the boto3 import cost, and so the other providers keep working if the
+        # optional dependency is missing.
+        from langchain_aws import ChatBedrockConverse
+
+        from app.aws_clients import bedrock_runtime_client
+
+        # api_key is ignored: Bedrock authenticates the client, not the request.
+        return ChatBedrockConverse(
+            model=selected_model,
+            client=bedrock_runtime_client(),
+            max_tokens=settings.BEDROCK_MAX_TOKENS,
+        )
     raise ValueError(f"Unsupported LangChain provider: {provider}")
 
 
@@ -56,18 +72,20 @@ def configured_chat_models(
 ) -> list[BaseChatModel]:
     """Build configured external models in provider-fallback order."""
     selected = (provider or "").lower()
-    if selected not in {"", "openai", "gemini"}:
+    if selected not in {"", "openai", "gemini", "bedrock"}:
         return []
     order = [selected] if selected else []
-    order.extend(item for item in ("openai", "gemini") if item not in order)
+    order.extend(item for item in ("openai", "gemini", "bedrock") if item not in order)
     result: list[BaseChatModel] = []
     for index, provider_name in enumerate(order):
-        api_key = (
-            settings.OPENAI_API_KEY
-            if provider_name == "openai"
-            else settings.GOOGLE_AI_API_KEY
-        )
-        if not api_key:
+        if provider_name == "bedrock":
+            # Bedrock has no per-request key; BEDROCK_ENABLED is what gates it.
+            api_key = "" if settings.BEDROCK_ENABLED else None
+        elif provider_name == "openai":
+            api_key = settings.OPENAI_API_KEY
+        else:
+            api_key = settings.GOOGLE_AI_API_KEY
+        if api_key is None or (provider_name != "bedrock" and not api_key):
             continue
         result.append(create_chat_model(
             cast(LangChainProvider, provider_name),

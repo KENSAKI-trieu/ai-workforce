@@ -20,10 +20,13 @@ class LLMRouter:
         order.extend(item for item in ("openai", "gemini") if item not in order)
         providers: list[LLMProvider] = []
         for provider_name in order:
-            if provider_name == "openai" and settings.OPENAI_API_KEY:
-                providers.append(OpenAIProvider(settings.OPENAI_API_KEY))
-            if provider_name == "gemini" and settings.GOOGLE_AI_API_KEY:
-                providers.append(GeminiProvider(settings.GOOGLE_AI_API_KEY))
+            # One provider per vendor carrying every credential configured for it. A
+            # spare key is not a separate entry here: entries in this list are vendors,
+            # and moving between them drops the requested model.
+            if provider_name == "openai" and settings.openai_api_keys:
+                providers.append(OpenAIProvider(settings.openai_api_keys))
+            if provider_name == "gemini" and settings.google_api_keys:
+                providers.append(GeminiProvider(settings.google_api_keys))
         providers.append(LocalProvider())
         return providers
 

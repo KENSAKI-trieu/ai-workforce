@@ -6,6 +6,15 @@ from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
+def _configured_keys(*values: Optional[str]) -> tuple[str, ...]:
+    """Credentials for one vendor in priority order, without blanks or duplicates.
+
+    A duplicate would otherwise be retried after the first one failed, which wastes a
+    call and makes the log read as if a spare key existed when it does not.
+    """
+    return tuple(dict.fromkeys(value.strip() for value in values if value and value.strip()))
+
+
 class Settings(BaseSettings):
     APP_ENV: str = "development"
     AI_SERVICE_HOST: str = "0.0.0.0"
@@ -58,7 +67,12 @@ class Settings(BaseSettings):
     )
 
     OPENAI_API_KEY: Optional[str] = None
+    # A spare credential for the same vendor. Free and low tiers are rate limited per
+    # project, so one exhausted key otherwise takes the whole provider down and every
+    # caller silently drops to the deterministic echo provider.
+    OPENAI_API_KEY_2: Optional[str] = None
     GOOGLE_AI_API_KEY: Optional[str] = None
+    GOOGLE_AI_API_KEY_2: Optional[str] = None
     LLM_DEFAULT_PROVIDER: Literal["auto", "openai", "gemini", "local"] = "auto"
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
     GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
@@ -82,6 +96,16 @@ class Settings(BaseSettings):
     POSTGRES_DB: str = "ai_workforce_db"
     POSTGRES_USER: str = "postgres"
     POSTGRES_PASSWORD: Optional[str] = None
+
+    @property
+    def openai_api_keys(self) -> tuple[str, ...]:
+        """Every configured OpenAI credential, primary first, blanks dropped."""
+        return _configured_keys(self.OPENAI_API_KEY, self.OPENAI_API_KEY_2)
+
+    @property
+    def google_api_keys(self) -> tuple[str, ...]:
+        """Every configured Google AI credential, primary first, blanks dropped."""
+        return _configured_keys(self.GOOGLE_AI_API_KEY, self.GOOGLE_AI_API_KEY_2)
 
     @property
     def langgraph_checkpoint_database_url(self) -> str | None:

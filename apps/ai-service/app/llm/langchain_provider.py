@@ -1,10 +1,13 @@
-from collections.abc import Callable
+import logging
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
 from app.llm.base import LLMProvider, LLMResult
 from app.models.factory import LangChainProvider, create_chat_model
+
+logger = logging.getLogger(__name__)
 
 
 def _message_text(response: Any) -> str:
@@ -44,38 +47,74 @@ class LangChainChatProvider(LLMProvider):
     def __init__(
         self,
         provider: LangChainProvider,
-        api_key: str,
+        api_key: str | Sequence[str],
         default_model: str,
         *,
         model_factory: Callable[..., BaseChatModel] = create_chat_model,
     ) -> None:
         self.name = provider
-        self.api_key = api_key
+        # More than one credential may be configured for the same provider. They are
+        # tried in order within a single generate() call, which is not the same thing
+        # as the provider chain in `fallback.py`: that one moves to a different vendor
+        # and drops the requested model with it, because a model name does not travel
+        # across vendors. A second key of the same vendor serves the same catalogue,
+        # so the requested model has to survive the switch -- which is why the retry
+        # belongs here rather than as another entry in that chain.
+        keys = (api_key,) if isinstance(api_key, str) else tuple(api_key)
+        self.api_keys: tuple[str, ...] = tuple(
+            dict.fromkeys(key for key in keys if key)
+        )
+        if not self.api_keys:
+            raise ValueError(f"{provider} provider requires at least one API key")
+        # Kept for callers that read the primary credential; the list above is what
+        # generate() actually walks.
+        self.api_key = self.api_keys[0]
         self.default_model = default_model
         self._model_factory = model_factory
-        self._models: dict[str, BaseChatModel] = {}
+        self._models: dict[tuple[int, str], BaseChatModel] = {}
 
-    def _model(self, name: str) -> BaseChatModel:
-        if name not in self._models:
-            self._models[name] = self._model_factory(
+    def _model(self, key_index: int, name: str) -> BaseChatModel:
+        cache_key = (key_index, name)
+        if cache_key not in self._models:
+            self._models[cache_key] = self._model_factory(
                 self.name,
-                api_key=self.api_key,
+                api_key=self.api_keys[key_index],
                 model=name,
             )
-        return self._models[name]
+        return self._models[cache_key]
 
     def generate(self, messages: list[dict[str, str]], *, model: str | None = None) -> LLMResult:
         selected = model or self.default_model
-        response = self._model(selected).invoke(messages)
-        response_metadata = getattr(response, "response_metadata", None) or {}
-        resolved_model = (
-            response_metadata.get("model_name")
-            or response_metadata.get("model")
-            or selected
-        )
-        return LLMResult(
-            content=_message_text(response),
-            model=str(resolved_model),
-            provider=self.name,
-            usage=_usage(response),
-        )
+        last_error: Exception | None = None
+        for index in range(len(self.api_keys)):
+            try:
+                response = self._model(index, selected).invoke(messages)
+            except Exception as exc:
+                last_error = exc
+                remaining = len(self.api_keys) - index - 1
+                if not remaining:
+                    raise
+                # The key is never logged, only its position. Any failure moves on:
+                # telling an exhausted quota apart from a malformed request would mean
+                # parsing vendor-specific error shapes, and the cost of being wrong is
+                # one extra doomed call rather than a wrong answer.
+                logger.warning(
+                    "LLM provider '%s' credential #%d failed with %s; trying the next key",
+                    self.name,
+                    index + 1,
+                    exc.__class__.__name__,
+                )
+                continue
+            response_metadata = getattr(response, "response_metadata", None) or {}
+            resolved_model = (
+                response_metadata.get("model_name")
+                or response_metadata.get("model")
+                or selected
+            )
+            return LLMResult(
+                content=_message_text(response),
+                model=str(resolved_model),
+                provider=self.name,
+                usage=_usage(response),
+            )
+        raise last_error if last_error else RuntimeError("no credential was tried")

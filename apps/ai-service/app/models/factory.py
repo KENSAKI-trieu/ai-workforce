@@ -70,8 +70,14 @@ def configured_chat_models(
     model: str | None = None,
     max_retries: int | None = None,
 ) -> list[BaseChatModel]:
-    """Build configured external models in provider-fallback order."""
-    selected = (provider or "").lower()
+    """Build configured external models in provider-fallback order.
+
+    With no explicit provider the configured default leads, as it does for
+    `LLMRouter`: "auto" keeps the built-in order and "local" builds no external
+    model, so callers fall back to their deterministic path.
+    """
+    configured_default = settings.LLM_DEFAULT_PROVIDER
+    selected = (provider or ("" if configured_default == "auto" else configured_default)).lower()
     if selected not in {"", "openai", "gemini", "bedrock"}:
         return []
     order = [selected] if selected else []

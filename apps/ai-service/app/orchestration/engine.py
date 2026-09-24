@@ -31,6 +31,7 @@ REQUESTED_AGENT_ALIASES = {
     "SALES": "CUSTOMER_SUPPORT",
 }
 CITATION_PATTERN = re.compile(r"\[Citation:\s*([^\]]+)\]", re.IGNORECASE)
+CHUNK_REFERENCE_PATTERN = re.compile(r";?\s*chunk\s*=\s*([^\s;,\]]+)", re.IGNORECASE)
 
 PUBLIC_PHASE_BY_NODE = {
     "input_guard": "ANALYZING",
@@ -402,13 +403,46 @@ def _allowed_citation_sources(context: list[dict[str, Any]]) -> set[str]:
     }
 
 
+def _citation_text(value: Any) -> str:
+    text = str(value or "").strip()
+    wrapped = CITATION_PATTERN.fullmatch(text)
+    return (wrapped.group(1) if wrapped else text).strip().casefold()
+
+
 def _supplied_citations(state: WorkforceAgentState) -> set[str]:
     text_citations = {value.strip().casefold() for value in CITATION_PATTERN.findall(state.get("final_answer") or "")}
     structured_sources = {
-        str(citation.get("source") or citation.get("document_title") or citation.get("document_id") or citation.get("chunk_id") or "").casefold()
+        _citation_text(
+            citation.get("source")
+            or citation.get("document_title")
+            or citation.get("document_id")
+            or citation.get("chunk_id")
+            or citation.get("citation_tag")
+        )
         for citation in state.get("citations") or []
     } - {""}
     return text_citations | structured_sources
+
+
+def _citation_is_verified(citation: str, context: list[dict[str, Any]]) -> bool:
+    """Whether one supplied citation points at a retrieved source.
+
+    Besides a bare title, name or id, a citation may repeat the tag retrieval hands
+    the model -- "<document>, v<version>, <section>; chunk=<chunk id>". Its document
+    must be retrieved, and a chunk it names must be a retrieved chunk of that same
+    document, so a real chunk id cannot vouch for an invented document. The version
+    and section in between describe the source; they do not identify it.
+    """
+    if citation in _allowed_citation_sources(context):
+        return True
+    chunk = CHUNK_REFERENCE_PATTERN.search(citation)
+    document = CHUNK_REFERENCE_PATTERN.sub("", citation).split(",", 1)[0].strip()
+    if chunk is None:
+        return bool(document) and document in _allowed_citation_sources(context)
+    owners = [item for item in context if str(item.get("id") or "").casefold() == chunk.group(1).casefold()]
+    if not document:
+        return bool(owners)
+    return any(document in _allowed_citation_sources([item]) for item in owners)
 
 
 def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
@@ -423,6 +457,11 @@ def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
 def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     if state.get("tool_calls") or not state.get("citation_required"):
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
+    if any(item.get("node") == "model_decision" for item in state.get("errors") or []):
+        # The answer is the engine's own failure notice, not model output, so there is
+        # nothing to verify. Checking it anyway replaced the real cause -- a provider
+        # outage, a denied tool -- with "citations could not be verified".
+        return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
     context = state.get("retrieved_context") or []
     supplied = _supplied_citations(state)
     if not context:
@@ -435,7 +474,7 @@ def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
         if supplied:
             return _withhold_answer(state, "CITATION_WITHOUT_CONTEXT")
         return {"citations": [], "execution_trace": _trace(state, "citation_verification", "NO_CONTEXT")}
-    if not supplied or not supplied.issubset(_allowed_citation_sources(context)):
+    if not supplied or not all(_citation_is_verified(citation, context) for citation in supplied):
         return _withhold_answer(state, "UNVERIFIED_CITATION")
     return {"execution_trace": _trace(state, "citation_verification")}
 

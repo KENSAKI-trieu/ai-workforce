@@ -13,7 +13,7 @@ from app.llm.base import LLMProvider, LLMResult
 from app.llm.fallback import generate_with_fallback
 from app.llm.openai_provider import OpenAIProvider
 from app.llm.router import LLMRouter
-from app.models.factory import create_chat_model
+from app.models.factory import configured_chat_models, create_chat_model
 from app.schemas.citations import RAGAnswer
 from app.schemas.routing import AgentRoutingDecision
 
@@ -121,6 +121,31 @@ def test_router_honors_configured_default_provider(monkeypatch) -> None:
     assert names[0] == "gemini"
     assert names[-1] == "local"
     assert set(names) == {"gemini", "openai", "bedrock", "local"}
+
+
+@pytest.mark.bedrock_flag
+def test_chat_models_follow_the_configured_default_provider(monkeypatch) -> None:
+    """The graph, routing and extraction build their models here with no provider.
+
+    Ignoring the default put OpenAI first on a Gemini deployment, so every turn spent
+    a failing call before reaching the provider it was configured for.
+    """
+    monkeypatch.setattr("app.models.factory.settings.OPENAI_API_KEY", "openai-key")
+    monkeypatch.setattr("app.models.factory.settings.GOOGLE_AI_API_KEY", "gemini-key")
+    monkeypatch.setattr("app.models.factory.settings.BEDROCK_ENABLED", False)
+
+    monkeypatch.setattr("app.models.factory.settings.LLM_DEFAULT_PROVIDER", "gemini")
+    assert [type(model).__name__ for model in configured_chat_models()] == [
+        "ChatGoogleGenerativeAI", "ChatOpenAI",
+    ]
+    # An explicit provider still wins over the configured default.
+    assert type(configured_chat_models("openai")[0]).__name__ == "ChatOpenAI"
+
+    monkeypatch.setattr("app.models.factory.settings.LLM_DEFAULT_PROVIDER", "auto")
+    assert type(configured_chat_models()[0]).__name__ == "ChatOpenAI"
+
+    monkeypatch.setattr("app.models.factory.settings.LLM_DEFAULT_PROVIDER", "local")
+    assert configured_chat_models() == []
 
 
 @pytest.mark.bedrock_flag

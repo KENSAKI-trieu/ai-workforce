@@ -36,6 +36,33 @@ class GovernedAgentConfig:
     complex_threshold: int = 4
 
 
+# Statuses a retry a few seconds later cannot change: an exhausted or rate-limited
+# quota (the provider asks for tens of seconds, the backoff here is at most two),
+# a rejected key, an unknown model. Retrying them only spends more of the quota;
+# the fallback middleware moves on to the next provider instead.
+NON_RETRYABLE_MODEL_STATUSES = frozenset({401, 403, 404, 429})
+
+
+def is_retryable_model_error(exc: BaseException) -> bool:
+    """Whether a failed model call is worth repeating against the same provider.
+
+    Provider SDKs wrap the HTTP error (LangChain's Gemini error wraps the
+    google-genai `ClientError`), so the status is read along the cause chain.
+    Everything else, including a response that failed output validation, is
+    retried as before.
+    """
+    seen: set[int] = set()
+    current: BaseException | None = exc
+    while current is not None and id(current) not in seen:
+        seen.add(id(current))
+        for attribute in ("status_code", "code"):
+            status = getattr(current, attribute, None)
+            if isinstance(status, int) and status in NON_RETRYABLE_MODEL_STATUSES:
+                return False
+        current = current.__cause__ or current.__context__
+    return True
+
+
 def governed_middleware(
     *,
     simple_model: BaseChatModel,
@@ -69,6 +96,7 @@ def governed_middleware(
     middleware.extend([
         ModelRetryMiddleware(
             max_retries=policy.model_retries,
+            retry_on=is_retryable_model_error,
             on_failure="error",
             initial_delay=policy.retry_initial_delay,
             max_delay=policy.retry_max_delay,

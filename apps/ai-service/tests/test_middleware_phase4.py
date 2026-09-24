@@ -22,7 +22,7 @@ from app.middleware.context import AgentRuntimeContext
 from app.middleware.model_selection import ComplexityModelSelectionMiddleware
 from app.middleware.observability import InMemoryTelemetrySink, ModelTelemetryMiddleware
 from app.middleware.output_validation import OutputCitationValidationMiddleware
-from app.middleware.stack import governed_middleware
+from app.middleware.stack import GovernedAgentConfig, governed_middleware, is_retryable_model_error
 from app.middleware.tenant_acl import TenantACLContextMiddleware
 from app.schemas.citations import Citation, RAGAnswer
 
@@ -235,3 +235,71 @@ def test_governed_stack_contains_pii_limits_retry_and_fallback() -> None:
         Runtime(),
     )
     assert update["messages"][0].content == "Contact [REDACTED_EMAIL]"
+
+
+def _provider_errors() -> dict[str, Exception]:
+    import httpx
+    import openai
+    from google.genai.errors import ClientError
+    from langchain_google_genai.chat_models import ChatGoogleGenerativeAIError
+
+    def gemini(status: int, reason: str) -> Exception:
+        # LangChain re-raises the google-genai error as its own, keeping it as the cause.
+        wrapped = ChatGoogleGenerativeAIError(f"Error calling model ({reason})")
+        wrapped.__cause__ = ClientError(status, {"error": {"code": status, "message": reason, "status": reason}})
+        return wrapped
+
+    request = httpx.Request("POST", "https://api.openai.com/v1/chat/completions")
+    return {
+        "gemini_quota": gemini(429, "RESOURCE_EXHAUSTED"),
+        "gemini_unknown_model": gemini(404, "NOT_FOUND"),
+        "openai_no_credit": openai.RateLimitError(
+            "You have no credits remaining", response=httpx.Response(429, request=request), body=None
+        ),
+        "openai_bad_key": openai.AuthenticationError(
+            "Incorrect API key", response=httpx.Response(401, request=request), body=None
+        ),
+    }
+
+
+def _governed_retry() -> ModelRetryMiddleware:
+    base = FakeListChatModel(responses=["base"])
+    middleware = governed_middleware(
+        simple_model=base,
+        complex_model=base,
+        telemetry_sink=InMemoryTelemetrySink(),
+        config=GovernedAgentConfig(model_retries=2, retry_initial_delay=0, retry_max_delay=0),
+    )
+    return next(item for item in middleware if isinstance(item, ModelRetryMiddleware))
+
+
+@pytest.mark.parametrize("name", ["gemini_quota", "gemini_unknown_model", "openai_no_credit", "openai_bad_key"])
+def test_a_call_no_retry_can_fix_is_not_repeated(name: str) -> None:
+    """An exhausted quota answered the same way three times over, spending three
+    requests of a 20-a-day free tier on every failed turn."""
+    error = _provider_errors()[name]
+    assert is_retryable_model_error(error) is False
+    calls = []
+
+    def failing(_request):
+        calls.append(1)
+        raise error
+
+    with pytest.raises(type(error)):
+        _governed_retry().wrap_model_call(_model_request(_context()), failing)
+    assert len(calls) == 1
+
+
+def test_a_transient_or_rejected_response_is_still_retried() -> None:
+    calls = []
+
+    def flaky(_request):
+        calls.append(1)
+        if len(calls) < 3:
+            raise ValueError("Grounded output requires at least one [Citation: source] marker")
+        return ModelResponse(result=[AIMessage("ok")])
+
+    response = _governed_retry().wrap_model_call(_model_request(_context()), flaky)
+    assert response.result[0].content == "ok"
+    assert len(calls) == 3
+    assert is_retryable_model_error(TimeoutError("read timed out")) is True

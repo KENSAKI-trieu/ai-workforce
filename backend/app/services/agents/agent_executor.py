@@ -10,7 +10,7 @@ gateway that meters every other agent.
 import logging
 import re
 import unicodedata
-import uuid
+from dataclasses import replace
 from datetime import date, datetime
 from typing import Dict, Any, Iterator, List, Mapping
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
@@ -48,10 +48,8 @@ from app.services.hr_employee_tools import (
 )
 from app.services.position_service import supervisory_role_names
 from app.services.rag_service import hybrid_search_documents
-from app.services.legal_service import audit_contract_text
 from app.services.contract_review import split_contract_clauses
 from app.services import contract_review_store
-from app.services.legal_approval_service import create_legal_approval
 from app.services.it_service import handle_it_request
 from app.services.finance_service import audit_invoice_and_reconcile
 from app.services.sales_service import handle_sales_request
@@ -76,8 +74,11 @@ from app.services.agents.hr_llm_flow import (
     extract_leave_request_slots,
     generate_grounded_hr_answer,
 )
+from app.services.chat_contract_review import review_reply, run_chat_contract_review
 from app.services.agents.legal_llm_flow import (
+    LegalIntentClassification,
     LegalPerspective,
+    answer_from_legal_evidence,
     classify_legal_request,
     extract_represented_party,
 )
@@ -1037,18 +1038,36 @@ _LEGAL_CONTRACT_NOUNS = (
 _LEGAL_REVIEW_VERBS = (
     "ra soat", "review", "kiem tra", "audit", "xem giup", "xem ho", "check", "danh gia",
 )
+# "phat" alone is also the first half of "phát triển" and "phát hành", so a penalty is
+# only recognised in the phrasings contracts actually use for one.
 _LEGAL_RISK_TERMS = (
-    "rui ro", "phat", "penalty", "unlimited liability", "khong gioi han",
-    "don phuong cham dut", "boi thuong", "trach nhiem",
+    "rui ro", "phat vi pham", "muc phat", "tien phat", "chiu phat", "penalty",
+    "unlimited liability", "khong gioi han", "don phuong cham dut", "boi thuong",
+    "trach nhiem",
 )
+_LEGAL_PENALTY_AMOUNT = re.compile(r"(?<!\w)phat \d")
 _LEGAL_BOILERPLATE = (
     "can cu", "cac ben thoa thuan", "co hieu luc tu", "ky ket",
     "dai dien theo phap luat", "whereas", "hereby", "shall",
 )
+# "should" is left out: English contract prose uses it, and a question asked with it
+# almost always carries a "?" anyway.
 _LEGAL_QUESTION_OPENERS = (
-    "la gi", "the nao", "nhu the nao", "co duoc", "co nen", "khi nao", "tai sao",
-    "what", "how", "can i", "should",
+    "la gi", "the nao", "nhu the nao", "co nen", "khi nao", "tai sao",
+    "what", "how", "can i",
 )
+# "có được" is a question only when "không" closes the sentence ("có được phạt 30% không");
+# otherwise it is the ordinary contract grant "Bên B có được quyền ...".
+_LEGAL_CO_DUOC_QUESTION = re.compile(
+    r"(?<!\w)co duoc(?!\w)[^.?!\n]*(?<!\w)khong\s*(?:[.?!\n]|$)"
+)
+
+
+def _has_phrase(normalized: str, phrases: tuple[str, ...]) -> bool:
+    """Whole-word match: as substrings "nda" is in "standard" and "how" in "show"."""
+    return any(
+        re.search(rf"(?<!\w){re.escape(phrase)}(?!\w)", normalized) for phrase in phrases
+    )
 
 
 def _legal_clause_structure(message: str) -> int:
@@ -1074,8 +1093,8 @@ def _classify_legal_contract_intent(message: str) -> tuple[str, dict[str, Any]]:
     signals: dict[str, Any] = {"numbered_clauses": numbered_clauses}
     score = 0
 
-    names_contract = any(noun in normalized for noun in _LEGAL_CONTRACT_NOUNS)
-    asks_review = any(verb in normalized for verb in _LEGAL_REVIEW_VERBS)
+    names_contract = _has_phrase(normalized, _LEGAL_CONTRACT_NOUNS)
+    asks_review = _has_phrase(normalized, _LEGAL_REVIEW_VERBS)
     if names_contract and asks_review:
         score += 3
         signals["explicit_request"] = True
@@ -1088,18 +1107,24 @@ def _classify_legal_contract_intent(message: str) -> tuple[str, dict[str, Any]]:
     ):
         score += 3
         signals["contract_header"] = True
-    boilerplate = sum(1 for marker in _LEGAL_BOILERPLATE if marker in normalized)
+    boilerplate = sum(
+        1 for marker in _LEGAL_BOILERPLATE if _has_phrase(normalized, (marker,))
+    )
     if boilerplate >= 2:
         score += 2
         signals["legal_boilerplate"] = boilerplate
-    if any(term in normalized for term in _LEGAL_RISK_TERMS):
+    if _has_phrase(normalized, _LEGAL_RISK_TERMS) or _LEGAL_PENALTY_AMOUNT.search(
+        normalized
+    ):
         score += 1
         signals["risk_terms"] = True
 
     # A question mark anywhere counts: "... là bao lâu? Tôi muốn nắm rõ." is still a
     # question, and only checking the final character would miss it.
-    is_question = "?" in message or any(
-        opener in normalized for opener in _LEGAL_QUESTION_OPENERS
+    is_question = (
+        "?" in message
+        or _has_phrase(normalized, _LEGAL_QUESTION_OPENERS)
+        or bool(_LEGAL_CO_DUOC_QUESTION.search(normalized))
     )
     if is_question and not has_structure:
         score -= 3
@@ -1137,11 +1162,22 @@ _FIRST_PERSON_MARKERS = ("chung toi", "cong ty toi", "ben toi", "toi", "minh", "
 
 LEGAL_CANCEL_MARKERS = ("huy ra soat", "thoi khong ra soat", "bo qua", "khong ra soat nua")
 _REVIEW_CONFIRM_PHRASES = ("ra soat", "review", "phan tich", "kiem tra", "danh gia")
-_REVIEW_CONFIRM_WORDS = frozenset({"dung", "co", "ok", "oke", "yes", "duoc", "dong y"})
+_REVIEW_CONFIRM_WORDS = frozenset({
+    "dung", "co", "ok", "oke", "okay", "yes", "duoc", "dong y", "u", "uh", "um", "vang",
+})
 # Read off the original text, not the normalized one: stripping tone marks collapses
 # "đừng" (don't) and "đúng" (yes) onto the same "dung", so the decline can only be
 # recognised before normalization.
 _REVIEW_DECLINE_MARKERS = ("đừng", "không", "khỏi", "chỉ hỏi", "don't", "no thanks")
+# A reply's first word is its answer: "có, không vấn đề gì" is a yes and "không, chỉ hỏi
+# thôi" a no, although both contain "không". Matched with tone marks, for the same reason.
+# "thôi" is not a leading no: "thôi được, rà soát đi" agrees.
+_REVIEW_LEADING_YES = (
+    "ok", "oke", "okay", "có", "ừ", "ừm", "uh", "đúng", "được", "vâng", "yes",
+    "đồng ý", "rà soát",
+)
+_REVIEW_LEADING_NO = ("không", "đừng", "khỏi", "no")
+_REVIEW_WHOLE_NO = frozenset({"thôi", "thôi nhé", "thôi ạ"})
 
 
 def _parse_represented_party(message: str) -> str | None:
@@ -1197,6 +1233,22 @@ def _is_legal_review_cancel(normalized_message: str) -> bool:
     )
 
 
+def _review_reply_opens_with(lowered: str, words: tuple[str, ...]) -> bool:
+    return any(re.match(rf"\s*{re.escape(word)}(?!\w)", lowered) for word in words)
+
+
+def _is_review_decline(message: str) -> bool:
+    """Did the user turn down reviewing the text the agent asked about?"""
+    lowered = message.lower().strip()
+    if lowered.strip(" .!") in _REVIEW_WHOLE_NO:
+        return True
+    if _review_reply_opens_with(lowered, _REVIEW_LEADING_NO):
+        return True
+    if _review_reply_opens_with(lowered, _REVIEW_LEADING_YES):
+        return False
+    return any(marker in lowered for marker in _REVIEW_DECLINE_MARKERS)
+
+
 def _is_review_confirmation(message: str) -> bool:
     """Did the user say yes to reviewing the text the agent asked about?
 
@@ -1205,9 +1257,10 @@ def _is_review_confirmation(message: str) -> bool:
     "co" matched "công ty" and "dung" matched "sử dụng", so nearly any reply --
     including "đừng rà soát" -- was read as a yes.
     """
-    lowered = message.lower()
-    if any(marker in lowered for marker in _REVIEW_DECLINE_MARKERS):
+    if _is_review_decline(message):
         return False
+    if _review_reply_opens_with(message.lower(), _REVIEW_LEADING_YES):
+        return True
     normalized = _normalize_intent_text(message)
     if normalized.strip(" .!?") in _REVIEW_CONFIRM_WORDS:
         return True
@@ -1217,6 +1270,68 @@ def _is_review_confirmation(message: str) -> bool:
     )
 
 
+def _legal_pending_fallback(
+    message: str, keyword_intent: str, detection_signals: dict[str, Any]
+) -> str:
+    """The keyword reading of a reply to "review this, or were you asking?".
+
+    It covers the same five answers the model can give, so a model outage changes how
+    well the reply is read but never which branches exist. A reply that carries its own
+    contract is a new submission, never a yes: confirming would review the text the
+    question was asked about, not the one just sent.
+    """
+    if detection_signals.get("clause_structure"):
+        return "REVIEW"
+    if _is_legal_review_cancel(_normalize_intent_text(message)):
+        return "DECLINE_REVIEW"
+    if _is_review_confirmation(message):
+        return "CONFIRM_REVIEW"
+    # Long replies are read on their own terms: "không, cho tôi hỏi về thời hạn bảo hành
+    # theo luật hiện hành" declines, but it also asks something that deserves an answer.
+    if len(message.strip()) < 60 and _is_review_decline(message):
+        return "DECLINE_REVIEW"
+    return keyword_intent
+
+
+def _log_legal_routing(
+    *,
+    pending_state: str,
+    classification: LegalIntentClassification,
+    keyword_intent: str,
+) -> None:
+    """Record who routed this turn, and to what.
+
+    A tenant prompt override that stops producing JSON does not fail anything: every turn
+    quietly falls back to the keyword scorer, and without the source on record that
+    regression is invisible. This goes to the log rather than into tools_executed, which
+    is persisted as the tools a turn ran and switches the chat stream to TOOL_CALLING.
+    """
+    logger.info(
+        "Legal turn routed: pending_state=%s source=%s label=%s keyword=%s",
+        pending_state,
+        classification.source,
+        classification.intent,
+        keyword_intent,
+    )
+
+
+def _log_legal_overrule(label: str, intent: str, reason: str) -> None:
+    logger.info("Legal routing overruled: label=%s intent=%s reason=%s", label, intent, reason)
+
+
+def _legal_document_scope(
+    classification: LegalIntentClassification, detection_signals: dict[str, Any]
+) -> str:
+    """FULL or EXCERPT: the router's reading of the text, else the clause parser's.
+
+    The parser's answer is only the fallback for when no model read the turn: a document
+    it can split into numbered clauses is taken as whole, anything else as a piece.
+    """
+    if classification.document_scope:
+        return classification.document_scope
+    return "FULL" if detection_signals.get("clause_structure") else "EXCERPT"
+
+
 def _legal_review_card(
     *,
     status: str,
@@ -1224,6 +1339,7 @@ def _legal_review_card(
     contract_char_count: int,
     excerpt: str = "",
     represented_party: str | None = None,
+    document_scope: str | None = None,
 ) -> dict[str, Any]:
     return {
         "type": "CONTRACT_REVIEW_DRAFT",
@@ -1232,6 +1348,9 @@ def _legal_review_card(
         "contract_fingerprint": contract_fingerprint,
         "contract_char_count": contract_char_count,
         "contract_excerpt": excerpt[:200],
+        # Decided when the text arrived and carried to the review, which can be two
+        # turns later and no longer has the router's reading of it.
+        "document_scope": document_scope,
     }
 
 
@@ -1310,6 +1429,35 @@ LEGAL_PERSPECTIVE_QUESTION = (
     "- **Bên B** (khách hàng / bên mua)\n"
     "- **Trung lập** (đánh giá khách quan, không thiên vị)\n\n"
     "Bạn trả lời \"Bên A\", \"Bên B\" hoặc \"trung lập\". Gõ \"hủy\" nếu không muốn rà soát."
+)
+
+LEGAL_REVIEW_TOOL_OFF_REPLY = (
+    "Tôi là Legal Counsel AI và đã nhận nội dung bạn gửi. "
+    "Công cụ rà soát rủi ro hợp đồng `audit_contract_risk` hiện chưa "
+    "được bật cho AI Employee này, nên tôi không tự ý thực thi công cụ. "
+    "Admin hoặc Owner có thể bật công cụ trong phần Cấu hình nếu cần "
+    "phân tích điều khoản và tạo thẻ rủi ro."
+)
+
+LEGAL_SEARCH_TOOL_OFF_REPLY = (
+    "Công cụ tra cứu kho tri thức `hybrid_rag_search` hiện chưa được bật cho AI Employee "
+    "này, nên tôi không tra cứu tài liệu để trả lời câu hỏi. Admin hoặc Owner có thể bật "
+    "công cụ trong phần Cấu hình."
+)
+
+LEGAL_NO_TOOLS_REPLY = (
+    "Tôi là Legal Counsel AI nhưng hiện chưa được bật công cụ nào: cả rà soát hợp đồng "
+    "(`audit_contract_risk`) lẫn tra cứu kho tri thức (`hybrid_rag_search`) đều đang tắt. "
+    "Admin hoặc Owner có thể bật trong phần Cấu hình."
+)
+
+LEGAL_APPROVAL_REMINDER = (
+    "Nếu quyết định này tạo nghĩa vụ pháp lý hoặc chia sẻ dữ liệu nhạy cảm, hãy gửi Legal phê duyệt."
+)
+
+LEGAL_NOT_FOUND_REPLY = (
+    "Tôi chưa tìm thấy văn bản còn hiệu lực và phù hợp trong phạm vi ACL của bạn. "
+    "Tôi sẽ không tự suy diễn quy định; vui lòng bổ sung tài liệu hoặc gửi Legal Team xác nhận."
 )
 
 LEGAL_NOT_REVIEWED_NOTICE = (
@@ -2256,50 +2404,61 @@ def _execute_agent_chat_core(
     # 3. LEGAL Agent Processing (Contract Risk Audit & Redline)
     # -----------------------------------------------------------------------
     elif role_code_upper == "LEGAL":
-        if not _can_use_tool(agent, "audit_contract_risk"):
-            response_data["reply"] = (
-                "Tôi là Legal Counsel AI và đã nhận nội dung bạn gửi. "
-                "Công cụ rà soát rủi ro hợp đồng `audit_contract_risk` hiện chưa "
-                "được bật cho AI Employee này, nên tôi không tự ý thực thi công cụ. "
-                "Admin hoặc Owner có thể bật công cụ trong phần Cấu hình nếu cần "
-                "phân tích điều khoản và tạo thẻ rủi ro."
-            )
+        # Each capability is gated where it is used, so revoking one leaves the other
+        # working: reviewing needs audit_contract_risk, answering from the knowledge
+        # base needs hybrid_rag_search. The review gate used to front the whole agent,
+        # so switching reviews off silenced questions too.
+        can_review = _can_use_tool(agent, "audit_contract_risk")
+        can_search = _can_use_tool(agent, "hybrid_rag_search")
+        if not can_review and not can_search:
+            response_data["reply"] = LEGAL_NO_TOOLS_REPLY
             return response_data
-        normalized_legal_message = message.lower()
         normalized_legal_intent = _normalize_intent_text(message)
         legal_prompt_overlay = resolve_prompt_overlay(db, user.tenant_id, role_code_upper)
         record_legal_usage = _llm_usage_recorder(db, user, "LEGAL")
 
-        # The tool gate above runs on every turn, so it covers the perspective
-        # question and the answer alike: an admin revoking the tool mid-conversation
-        # cannot leave the user stranded in a slot-filling loop that goes nowhere.
         pending_review = _load_legal_review_draft(db, user, thread_id)
+        if pending_review and not can_review:
+            # The review tool was revoked while a review was waiting on the user. Close
+            # it rather than leave it to capture a later message once the tool is back;
+            # this turn is then read on its own terms.
+            draft, _ = pending_review
+            response_data["legal_risk_card"] = _legal_review_card(
+                status="DISMISSED",
+                contract_fingerprint=str(draft.get("contract_fingerprint") or ""),
+                contract_char_count=int(draft.get("contract_char_count") or 0),
+            )
+            pending_review = None
         contract_text: str | None = None
         represented_party: str | None = None
-        detection_signals: dict[str, Any] = {}
+        # The scorer still runs on every turn: its signals are reported on the UNSURE
+        # card, its clause structure stops a pasted contract from being read as a bare
+        # "yes" and scopes a review no model judged, and it is what the router falls
+        # back to.
+        keyword_intent, detection_signals = _classify_legal_contract_intent(message)
+        # Set when the pending-question branch has already routed this turn, so the
+        # same message is not billed to the router a second time.
+        routed: LegalIntentClassification | None = None
+        document_scope: str | None = None
 
         if pending_review:
             draft, pending_text = pending_review
-            keyword_cancel = _is_legal_review_cancel(normalized_legal_intent)
+            document_scope = draft.get("document_scope")
             pending_status = str(draft.get("status") or "")
-            llm_cancel = False
             perspective: LegalPerspective | None = None
-            if pending_status == "COLLECTING" and not keyword_cancel:
+            if pending_status == "COLLECTING":
                 # One call answers both questions this state can face: did they name a
-                # side, or are they calling the review off? Skipped when the keywords
-                # already read a cancellation, since the answer could not change it.
+                # side, or are they calling the review off? The cancel keywords are only
+                # its fallback: matched ahead of the model, "bỏ qua" in "tôi là bên A, bỏ
+                # qua phần bảo mật" called off a review the user had just answered.
                 perspective = extract_represented_party(
                     message,
                     fallback_party=_parse_represented_party(message),
-                    fallback_cancel=keyword_cancel,
+                    fallback_cancel=_is_legal_review_cancel(normalized_legal_intent),
                     on_usage=record_legal_usage,
                     prompts=legal_prompt_overlay,
                 )
-                llm_cancel = perspective.decision == "CANCEL"
-            # Either reading of a cancellation is honoured. Stopping is the outcome that
-            # analyses nothing and stores nothing, so a false positive costs a retry
-            # while a false negative reviews a contract the user asked to be left alone.
-            if keyword_cancel or llm_cancel:
+            if perspective is not None and perspective.decision == "CANCEL":
                 response_data["reply"] = (
                     "Tôi đã hủy yêu cầu rà soát. Chưa có nội dung nào được phân tích hay lưu lại."
                 )
@@ -2310,35 +2469,57 @@ def _execute_agent_chat_core(
                 )
                 return response_data
             if pending_status == "AWAITING_INTENT":
-                pending_decision = classify_legal_request(
+                pending_classification = classify_legal_request(
                     message,
                     pending_state="AWAITING_INTENT",
-                    fallback_intent=(
-                        "CONFIRM_REVIEW"
-                        if _is_review_confirmation(message)
-                        else "DECLINE_REVIEW"
+                    fallback_intent=_legal_pending_fallback(
+                        message, keyword_intent, detection_signals
                     ),
                     on_usage=record_legal_usage,
                     prompts=legal_prompt_overlay,
                 )
-                if pending_decision.intent == "CONFIRM_REVIEW":
+                _log_legal_routing(
+                    pending_state="AWAITING_INTENT",
+                    classification=pending_classification,
+                    keyword_intent=keyword_intent,
+                )
+                if (
+                    pending_classification.intent == "CONFIRM_REVIEW"
+                    and detection_signals.get("clause_structure")
+                ):
+                    # "Here is the full version, review it: <contract>" reads as a yes,
+                    # but a yes reviews the text the question was asked about. The
+                    # document in this message is the one the user wants examined.
+                    pending_classification = replace(pending_classification, intent="REVIEW")
+                    _log_legal_overrule("CONFIRM_REVIEW", "REVIEW", "clause_structure")
+                pending_intent = pending_classification.intent
+                if pending_intent == "CONFIRM_REVIEW":
                     response_data["reply"] = LEGAL_PERSPECTIVE_QUESTION
                     response_data["legal_risk_card"] = _legal_review_card(
                         status="COLLECTING",
                         contract_fingerprint=_contract_fingerprint(pending_text),
                         contract_char_count=len(pending_text),
                         excerpt=pending_text,
+                        document_scope=document_scope,
                     )
                     return response_data
-                # Not a yes: this turn is its own request. Close the open question
-                # here rather than leaving it for a later message to answer by
-                # accident. A REVIEW or UNSURE card produced below simply replaces
-                # this one, since only the newest card counts.
+                # Not a yes: close the open question here rather than leaving it for a
+                # later message to answer by accident. A REVIEW or UNSURE card produced
+                # below simply replaces this one, since only the newest card counts.
                 response_data["legal_risk_card"] = _legal_review_card(
                     status="DISMISSED",
                     contract_fingerprint=str(draft.get("contract_fingerprint") or ""),
                     contract_char_count=int(draft.get("contract_char_count") or 0),
                 )
+                if pending_intent == "DECLINE_REVIEW":
+                    # A bare "no" is an answer, not a query: searching the knowledge
+                    # base for "không cần đâu" can only report that nothing matched.
+                    response_data["reply"] = (
+                        "Được, tôi sẽ không rà soát nội dung đó. Bạn cứ đặt câu hỏi pháp "
+                        "lý, hoặc gửi hợp đồng khác khi cần rà soát."
+                    )
+                    return response_data
+                routed = pending_classification
             else:
                 # perspective is always set here: COLLECTING is the only other state a
                 # loaded draft can be in, and that branch above computed it.
@@ -2355,21 +2536,34 @@ def _execute_agent_chat_core(
                         contract_fingerprint=_contract_fingerprint(pending_text),
                         contract_char_count=len(pending_text),
                         excerpt=pending_text,
+                        document_scope=document_scope,
                     )
                     return response_data
                 contract_text = pending_text
 
         if contract_text is None:
-            keyword_intent, detection_signals = _classify_legal_contract_intent(message)
-            # The scorer still runs: its signals are reported on the UNSURE card, it
-            # gates the glossary below, and it is what the router falls back to.
-            intent = classify_legal_request(
-                message,
-                pending_state="NONE",
-                fallback_intent=keyword_intent,
-                on_usage=record_legal_usage,
-                prompts=legal_prompt_overlay,
-            ).intent
+            classification = routed
+            if classification is None:
+                classification = classify_legal_request(
+                    message,
+                    pending_state="NONE",
+                    fallback_intent=keyword_intent,
+                    on_usage=record_legal_usage,
+                    prompts=legal_prompt_overlay,
+                )
+                _log_legal_routing(
+                    pending_state="NONE",
+                    classification=classification,
+                    keyword_intent=keyword_intent,
+                )
+            intent = classification.intent
+            if not can_review and intent in {"REVIEW", "UNSURE"}:
+                if intent == "REVIEW":
+                    response_data["reply"] = LEGAL_REVIEW_TOOL_OFF_REPLY
+                    return response_data
+                # Asking "review it, or were you asking?" offers a review that cannot
+                # run; the one thing left to do with the turn is answer it.
+                intent = "QUESTION"
             if intent == "REVIEW":
                 response_data["reply"] = LEGAL_PERSPECTIVE_QUESTION
                 response_data["legal_risk_card"] = _legal_review_card(
@@ -2377,6 +2571,7 @@ def _execute_agent_chat_core(
                     contract_fingerprint=_contract_fingerprint(message),
                     contract_char_count=len(message),
                     excerpt=message,
+                    document_scope=_legal_document_scope(classification, detection_signals),
                 )
                 return response_data
             if intent == "UNSURE":
@@ -2394,57 +2589,30 @@ def _execute_agent_chat_core(
                     contract_fingerprint=_contract_fingerprint(message),
                     contract_char_count=len(message),
                     excerpt=message,
+                    document_scope=_legal_document_scope(classification, detection_signals),
                 )
                 return response_data
 
         if contract_text is not None and represented_party is not None:
-            audit_res = audit_contract_text(
+            # Drafts stored before the scope existed were reviewed as whole contracts.
+            document_scope = document_scope or "FULL"
+            audit_res, review = run_chat_contract_review(
+                db,
+                user,
                 contract_text,
-                document_name="Nội dung gửi qua chat",
                 represented_party=represented_party,
+                document_scope=document_scope,
             )
             response_data["tools_executed"].append({
                 "tool_name": "audit_contract_risk",
                 "input": {
                     "text_length": len(contract_text),
                     "represented_party": represented_party,
+                    "document_scope": document_scope,
                 },
                 "risks_found": audit_res["total_risks_found"],
                 "risk_score": audit_res["risk_score"],
             })
-            # Saved before the audit log on purpose: log_audit_action commits, and
-            # save_contract_review only flushes, so the audit call is what persists both.
-            review = contract_review_store.save_contract_review(
-                db,
-                user=user,
-                result=audit_res,
-                contract_text=contract_text,
-                source="CHAT",
-            )
-            audit_res["review_id"] = str(review.id)
-            audit_res["redline_url"] = (
-                f"/api/v1/legal/contract-reviews/{review.id}/redline"
-            )
-            # Chat used to skip this, so a CRITICAL contract pasted here notified
-            # nobody while the same file uploaded to the Legal page raised an
-            # approval. create_legal_approval commits, which also persists the review.
-            workflow_id = create_legal_approval(
-                db, user, audit_res, contract_review_id=str(review.id)
-            )
-            if workflow_id:
-                review.workflow_id = uuid.UUID(workflow_id)
-                audit_res["workflow_id"] = workflow_id
-                audit_res["approval_created"] = True
-                # The row was flushed before the escalation existed, and a plain JSON
-                # column does not track mutations of the dict it was given -- so the
-                # blob has to be reassigned, or reopening the review from the saved
-                # list would show no sign that it had raised an approval.
-                review.result = {
-                    **(review.result or {}),
-                    "review_id": str(review.id),
-                    "workflow_id": workflow_id,
-                    "approval_created": True,
-                }
             log_audit_action(
                 db,
                 user.tenant_id,
@@ -2457,16 +2625,13 @@ def _execute_agent_chat_core(
                 },
                 {"risks": audit_res["total_risks_found"], "risk_score": audit_res["risk_score"]},
             )
-            response_data["reply"] = (
-                f"Tôi đã rà soát nội dung hợp đồng theo góc nhìn "
-                f"**{audit_res['represented_party_label']}** và phát hiện "
-                f"**{audit_res['total_risks_found']} vấn đề**, với điểm rủi ro "
-                f"**{audit_res['risk_score']}/100 ({audit_res['risk_level']})**.\n\n"
-                "Mỗi phát hiện bên dưới kèm bằng chứng từ nội dung và hành động đề xuất."
-            )
+            response_data["reply"] = review_reply(audit_res)
             response_data["legal_risk_card"] = audit_res
             return response_data
 
+        if not can_search:
+            response_data["reply"] = LEGAL_SEARCH_TOOL_OFF_REPLY + LEGAL_NOT_REVIEWED_NOTICE
+            return response_data
         search_results = hybrid_search_documents(
             db,
             user.tenant_id,
@@ -2490,46 +2655,47 @@ def _execute_agent_chat_core(
             {"query": message, "acl_applied": True},
             {"count": len(search_results)},
         )
-        if search_results:
+        # Retrieval returns its nearest excerpts whether or not any is about the question,
+        # so the model decides which, if any, answer it. The four hardcoded glossary
+        # definitions this replaces answered any question containing "bồi thường" with
+        # the same text, whatever was asked.
+        grounded = answer_from_legal_evidence(
+            message,
+            search_results,
+            on_usage=record_legal_usage,
+            prompts=legal_prompt_overlay,
+        )
+        if grounded is not None and grounded.answerable:
+            used = [search_results[index] for index in grounded.used_evidence]
+            response_data["citations"] = used
+            response_data["reply"] = (
+                f"{grounded.answer}\n\n"
+                f"**Nguồn:** {' '.join(item['citation_tag'] for item in used)}\n\n"
+                + LEGAL_APPROVAL_REMINDER
+                + LEGAL_NOT_REVIEWED_NOTICE
+            )
+            return response_data
+        if grounded is None and search_results:
+            # No model could be used, so nothing can judge whether these excerpts answer
+            # the question. They are shown as the nearest text found, not as the answer:
+            # "Theo văn bản pháp luật..." asserted that they were.
             response_data["citations"] = search_results
             excerpts = "\n\n".join(
                 f"{item['content']}\n{item['citation_tag']}"
                 for item in search_results[:2]
             )
             response_data["reply"] = (
-                "Theo văn bản pháp luật và chính sách bạn được phép truy cập:\n\n"
+                "Tôi chưa thể tổng hợp câu trả lời lúc này. Dưới đây là các đoạn gần nhất "
+                "tìm được trong tài liệu bạn được phép truy cập; hãy kiểm tra xem chúng có "
+                "trả lời câu hỏi của bạn không:\n\n"
                 f"{excerpts}\n\n"
-                "Nếu quyết định này tạo nghĩa vụ pháp lý hoặc chia sẻ dữ liệu nhạy cảm, hãy gửi Legal phê duyệt."
+                + LEGAL_APPROVAL_REMINDER
                 + LEGAL_NOT_REVIEWED_NOTICE
             )
             return response_data
-
-        legal_terms = {
-            "indemnification": "Indemnification là nghĩa vụ bồi hoàn cho bên kia khi phát sinh tổn thất hoặc khiếu nại thuộc phạm vi đã cam kết. Cần kiểm tra phạm vi, giới hạn tiền, loại khiếu nại và quyền kiểm soát việc bảo vệ.",
-            "bồi thường": "Điều khoản bồi thường xác định khi nào một bên phải bù đắp tổn thất cho bên kia. Cần làm rõ nguyên nhân, phạm vi, trần trách nhiệm và thủ tục yêu cầu.",
-            "force majeure": "Force majeure (bất khả kháng) là sự kiện ngoài khả năng kiểm soát hợp lý làm cản trở việc thực hiện nghĩa vụ. Điều khoản nên quy định sự kiện, thông báo và hậu quả cụ thể.",
-            "intellectual property": "Intellectual property là quyền đối với tài sản trí tuệ như mã nguồn, thiết kế, nhãn hiệu và tài liệu. Hợp đồng cần tách IP có sẵn với deliverable được tạo trong dự án.",
-        }
-        # A pasted clause must never be answered with a dictionary definition, so the
-        # glossary only applies when nothing about the turn looks like a document.
-        definition = None
-        if not detection_signals.get("clause_structure"):
-            definition = next(
-                (value for term, value in legal_terms.items() if term in normalized_legal_message),
-                None,
-            )
-        if definition:
-            # Reporting this as retrieval would imply the answer came from tenant
-            # documents, when it came from four hardcoded strings.
-            response_data["tools_executed"].append({
-                "tool_name": "legal_glossary_lookup",
-                "input": {"query": message},
-                "result_count": 1,
-            })
-        response_data["reply"] = (definition or (
-            "Tôi chưa tìm thấy văn bản còn hiệu lực và phù hợp trong phạm vi ACL của bạn. "
-            "Tôi sẽ không tự suy diễn quy định; vui lòng bổ sung tài liệu hoặc gửi Legal Team xác nhận."
-        )) + LEGAL_NOT_REVIEWED_NOTICE
+        # Nothing retrieved, or nothing retrieved that answers the question: citing the
+        # nearest unrelated excerpt would present it as the law on the point.
+        response_data["reply"] = LEGAL_NOT_FOUND_REPLY + LEGAL_NOT_REVIEWED_NOTICE
         return response_data
 
     # -----------------------------------------------------------------------

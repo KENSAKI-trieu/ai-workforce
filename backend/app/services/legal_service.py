@@ -80,6 +80,7 @@ def audit_contract_text(
     contract_text: str,
     document_name: str = "Contract.pdf",
     represented_party: str = "NEUTRAL",
+    document_scope: str = "FULL",
 ) -> dict[str, Any]:
     """Compatibility wrapper around the independent contract-review module.
 
@@ -92,7 +93,9 @@ def audit_contract_text(
     stored -- a download link that could only ever 404. A redline is now reachable
     only through a saved review, at /legal/contract-reviews/{id}/redline.
     """
-    return review_contract(contract_text, document_name, represented_party)
+    return review_contract(
+        contract_text, document_name, represented_party, document_scope=document_scope
+    )
 
 
 def detect_sensitive_data(text: str, headers: list[str] | None = None) -> dict[str, Any]:

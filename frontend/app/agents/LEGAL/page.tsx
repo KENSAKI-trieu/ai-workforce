@@ -176,7 +176,7 @@ interface ContractReview {
     contract_value?: string | null; dates: string[]; start_date?: string | null;
     end_date?: string | null; payment_terms: string[]; term?: string | null; clause_count: number;
   };
-  checklist: Array<{ category: string; label: string; status: "PRESENT" | "MISSING"; severity_if_missing: Severity }>;
+  checklist: Array<{ category: string; label: string; status: "PRESENT" | "MISSING" | "NOT_IN_EXCERPT"; severity_if_missing: Severity }>;
   severity_counts: Record<Severity, number>;
   missing_clauses_count: number;
   internal_conflicts_count: number;
@@ -933,7 +933,7 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
 
       <section className={styles.reviewSection}>
         <div className={styles.reviewSectionTitle}><div><strong>Checklist theo loại hợp đồng</strong><small>{review.checklist.filter((item) => item.status === "PRESENT").length}/{review.checklist.length} nhóm điều khoản hiện diện</small></div></div>
-        <div className={styles.checklist}>{review.checklist.map((item) => <div key={item.category} className={item.status === "MISSING" ? styles.missingItem : ""}>{item.status === "PRESENT" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}<span>{item.label}</span><small>{item.status === "PRESENT" ? "Có" : `Thiếu · ${item.severity_if_missing}`}</small></div>)}</div>
+        <div className={styles.checklist}>{review.checklist.map((item) => <div key={item.category} className={item.status === "MISSING" ? styles.missingItem : ""}>{item.status === "PRESENT" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}<span>{item.label}</span><small>{item.status === "PRESENT" ? "Có" : item.status === "NOT_IN_EXCERPT" ? "Ngoài đoạn trích" : `Thiếu · ${item.severity_if_missing}`}</small></div>)}</div>
       </section>
 
       <section className={`${styles.reviewSection} ${styles.findingSection}`}>

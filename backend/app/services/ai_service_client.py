@@ -42,6 +42,7 @@ class AIServiceClient:
         payload: dict[str, Any],
         *,
         extra_headers: dict[str, str] | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         if not self.enabled:
             raise AIServiceError("AI service URL is not configured")
@@ -51,7 +52,7 @@ class AIServiceClient:
                 f"{self.base_url}{path}",
                 json=payload,
                 headers=headers,
-                timeout=self.timeout,
+                timeout=timeout if timeout is not None else self.timeout,
             )
             response.raise_for_status()
             return response.json()
@@ -201,12 +202,13 @@ class AIServiceClient:
         *,
         provider: str | None = None,
         model: str | None = None,
+        timeout: float | None = None,
     ) -> dict[str, Any]:
         return self._post("/v1/llm/generate", {
             "messages": messages,
             "provider": provider,
             "model": model,
-        })
+        }, timeout=timeout)
 
     def run_orchestration(
         self,

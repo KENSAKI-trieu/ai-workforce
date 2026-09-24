@@ -294,6 +294,7 @@ def _review_checklist(
     findings: list[dict[str, Any]],
     contract_type: str,
     perspective: str,
+    assess_missing: bool = True,
 ) -> list[dict[str, Any]]:
     checklist: list[dict[str, Any]] = []
     for item in schema["checklist"]:
@@ -305,11 +306,17 @@ def _review_checklist(
         checklist.append({
             "category": item["category"],
             "label": item["label"],
-            "status": "PRESENT" if matched_clauses else "MISSING",
+            # An excerpt was never meant to carry every clause, so an absent one is
+            # recorded as outside the text rather than reported as a defect.
+            "status": (
+                "PRESENT" if matched_clauses
+                else "MISSING" if assess_missing
+                else "NOT_IN_EXCERPT"
+            ),
             "clause_ids": [clause["id"] for clause in matched_clauses[:5]],
             "severity_if_missing": item["missing_severity"],
         })
-        if matched_clauses:
+        if matched_clauses or not assess_missing:
             continue
         _finding(findings, contract_type=contract_type, clause=None, category=item["category"], finding_type="MISSING_CLAUSE", severity=item["missing_severity"], issue=f"Thiếu điều khoản: {item['label']}", reason=item["reason"], recommendation=item["recommendation"], original_text="Không tìm thấy trong nội dung hợp đồng đã trích xuất.", suggested_revision=item["suggested_revision"], perspective=perspective, source_ids=item.get("source_ids"))
     return checklist
@@ -394,7 +401,14 @@ def review_contract(
     document_name: str,
     represented_party: str = "NEUTRAL",
     knowledge_references: list[dict[str, Any]] | None = None,
+    document_scope: str = "FULL",
 ) -> dict[str, Any]:
+    """Review contract text; ``document_scope`` is FULL or EXCERPT.
+
+    An EXCERPT is judged only on what it says. Faulting a single pasted clause for lacking
+    governing law, payment and confidentiality terms scored it CRITICAL and raised a legal
+    approval for text that was never meant to be a whole contract.
+    """
     perspective = represented_party.upper()
     if perspective not in VALID_PERSPECTIVES:
         raise ValueError("represented_party phải là PARTY_A, PARTY_B hoặc NEUTRAL")
@@ -407,7 +421,10 @@ def review_contract(
     findings: list[dict[str, Any]] = []
 
     _review_party_mapping(metadata, findings, contract_type, perspective)
-    checklist = _review_checklist(clauses, schema, findings, contract_type, perspective)
+    is_excerpt = document_scope.upper() == "EXCERPT"
+    checklist = _review_checklist(
+        clauses, schema, findings, contract_type, perspective, assess_missing=not is_excerpt
+    )
     _review_material_terms(text, clauses, findings, contract_type, perspective)
     _review_ambiguity(clauses, findings, contract_type, perspective)
     _review_conflicts(clauses, findings, contract_type, perspective)
@@ -447,6 +464,7 @@ def review_contract(
         "document_name": document_name,
         "represented_party": perspective,
         "represented_party_label": _perspective_label(perspective),
+        "document_scope": "EXCERPT" if is_excerpt else "FULL",
         "contract_type": contract_type,
         "contract_type_label": detection["contract_type_label"],
         "contract_type_confidence": detection["confidence"],
@@ -469,5 +487,12 @@ def review_contract(
         "reference_sources": list(used_sources.values()),
         "requires_legal_approval": any(finding["severity"] in {"CRITICAL", "HIGH"} for finding in findings),
         "review_disclaimer": "Kết quả là hỗ trợ rà soát tự động, không thay thế ý kiến pháp lý. Legal phải xác nhận luật áp dụng, policy và template trước khi chấp thuận sửa đổi.",
-        "summary": f"Đã tách {len(clauses)} điều khoản; phát hiện {len(findings)} vấn đề, {missing_count} điều khoản thiếu và {conflict_count} mâu thuẫn nội bộ.",
+        "summary": (
+            f"Đã tách {len(clauses)} điều khoản; phát hiện {len(findings)} vấn đề và "
+            f"{conflict_count} mâu thuẫn nội bộ. Đây là đoạn trích nên không đánh giá "
+            "các điều khoản còn thiếu."
+            if is_excerpt
+            else f"Đã tách {len(clauses)} điều khoản; phát hiện {len(findings)} vấn đề, "
+            f"{missing_count} điều khoản thiếu và {conflict_count} mâu thuẫn nội bộ."
+        ),
     }

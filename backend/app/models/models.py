@@ -1105,8 +1105,12 @@ class ChatMessage(Base):
     attachments: Mapped[dict] = mapped_column(JSONB, default=list)
     feedback_rating: Mapped[int | None] = mapped_column(Integer, nullable=True)
     feedback_comment: Mapped[str | None] = mapped_column(Text, nullable=True)
+    # Stamped by the application at insert, not by now(): Postgres's now() is the start of
+    # the transaction, so messages written in one transaction tied, and the scans that
+    # read "the newest message" (the Legal review draft, the contract review tool) picked
+    # among them arbitrarily. The server default stays for rows inserted outside the ORM.
     created_at: Mapped[datetime] = mapped_column(
-        DateTime(timezone=True), server_default=func.now()
+        DateTime(timezone=True), default=utcnow, server_default=func.now()
     )
 
     conversation: Mapped["ChatConversation"] = relationship(

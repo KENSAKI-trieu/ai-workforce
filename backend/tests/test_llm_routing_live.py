@@ -124,14 +124,14 @@ def test_legal_intent_is_read_from_meaning_not_keywords(live_client, message, ac
     assert result.intent in accepted
 
 
-_REFUSAL = {"DECLINE_REVIEW", "CANCEL"}
+# A CANCEL from the model is folded into DECLINE_REVIEW before it reaches the caller.
+_REFUSAL = {"DECLINE_REVIEW"}
 
 
 @pytest.mark.parametrize(
     "message,accepted",
     [
-        # Refusing and calling off are the same outcome for the caller, so either label
-        # is correct here; what matters is that neither reads as a yes.
+        # What matters is that a refusal never reads as a yes.
         ("Đừng rà soát, tôi chỉ hỏi thôi", _REFUSAL),
         ("thôi khỏi, để tôi hỏi phòng pháp chế", _REFUSAL),
         ("ừ rà soát giúp mình đi", {"CONFIRM_REVIEW"}),

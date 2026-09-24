@@ -85,6 +85,9 @@ class Settings(BaseSettings):
     AI_SERVICE_URL: Optional[str] = None
     AI_SERVICE_INTERNAL_TOKEN: Optional[str] = None
     AI_SERVICE_TIMEOUT_SECONDS: float = 120.0
+    # Routers pick a label and have a keyword answer to fall back to, so a stalled
+    # provider should cost the user seconds, not the full generation timeout.
+    AI_SERVICE_ROUTER_TIMEOUT_SECONDS: float = 15.0
     LANGGRAPH_ENABLED: bool = False
     LANGGRAPH_LEGACY_FALLBACK: bool = True
 

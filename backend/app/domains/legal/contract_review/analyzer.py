@@ -7,12 +7,12 @@ import re
 from collections import Counter
 from typing import Any
 
-from app.services.contract_review.clause_parser import (
+from app.domains.legal.contract_review.clause_parser import (
     detect_contract_type,
     extract_review_metadata,
     split_contract_clauses,
 )
-from app.services.contract_review.schemas import LAW_SOURCES, get_review_schema
+from app.domains.legal.contract_review.schemas import LAW_SOURCES, get_review_schema
 
 
 SEVERITY_WEIGHT = {"CRITICAL": 35, "HIGH": 22, "MEDIUM": 10, "LOW": 4}

@@ -7,7 +7,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.rag_service import (
+from app.domains.knowledge.rag_service import (
     CHUNK_OVERLAP_TOKENS,
     CHUNK_SIZE_TOKENS,
     build_configured_chunks,
@@ -17,7 +17,7 @@ from app.services.rag_service import (
 )
 from app.models.models import DocumentChunk, KnowledgeDocument
 from app.core.config import settings
-from app.services.embedding_service import (
+from app.domains.knowledge.embedding_service import (
     EmbeddingService,
     build_embedding_text,
     calculate_content_hash,
@@ -27,7 +27,7 @@ from app.services.embedding_service import (
     normalize_embedding_device,
 )
 from app.api.v1.documents import _parse_allowed_roles
-from app.services.knowledge_storage import read_original_file
+from app.domains.knowledge.knowledge_storage import read_original_file
 
 
 def test_chunking_respects_size_and_overlap():

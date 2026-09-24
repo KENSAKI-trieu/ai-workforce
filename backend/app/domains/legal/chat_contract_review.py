@@ -14,10 +14,10 @@ from typing import Any
 from sqlalchemy.orm import Session
 
 from app.models.models import ContractReview, User
-from app.services import contract_review_store
-from app.services.contract_review.clause_parser import split_contract_clauses
-from app.services.legal_approval_service import create_legal_approval
-from app.services.legal_service import audit_contract_text
+from app.domains.legal import contract_review_store
+from app.domains.legal.contract_review.clause_parser import split_contract_clauses
+from app.domains.legal.legal_approval_service import create_legal_approval
+from app.domains.legal.legal_service import audit_contract_text
 
 CHAT_DOCUMENT_NAME = "Nội dung gửi qua chat"
 

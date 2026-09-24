@@ -30,7 +30,7 @@ from app.services.agents.legal_llm_flow import (
     classify_legal_request,
     extract_represented_party,
 )
-from app.services.ai_service_client import AIServiceClient, get_ai_service_client
+from app.clients.ai_service_client import AIServiceClient, get_ai_service_client
 
 LIVE_URL = os.environ.get("LIVE_AI_SERVICE_URL", "").strip()
 LIVE_TOKEN = os.environ.get("LIVE_AI_SERVICE_TOKEN", "").strip()

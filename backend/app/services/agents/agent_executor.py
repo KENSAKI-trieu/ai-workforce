@@ -32,7 +32,7 @@ from app.core.hr_capabilities import (
     HR_CORE_TOOLS,
     HR_RETIRED_TOOLS,
 )
-from app.services.hr_service import (
+from app.domains.hr.hr_service import (
     can_manage_hr,
     can_approve_hr_request,
     create_onboarding_case,
@@ -40,23 +40,23 @@ from app.services.hr_service import (
     query_leave_balance,
     request_leave,
 )
-from app.services.hr_employee_tools import (
+from app.domains.hr.hr_employee_tools import (
     get_employee_sections,
     list_contract_status_summaries,
     list_tenant_departments,
     query_company_users_sql,
 )
-from app.services.position_service import supervisory_role_names
-from app.services.rag_service import hybrid_search_documents
-from app.services.contract_review import split_contract_clauses
-from app.services import contract_review_store
-from app.services.audit_service import log_audit_action, log_llm_cost
-from app.services.cost_calculator import UnsupportedModelPricingError
+from app.domains.platform.position_service import supervisory_role_names
+from app.domains.knowledge.rag_service import hybrid_search_documents
+from app.domains.legal.contract_review import split_contract_clauses
+from app.domains.legal import contract_review_store
+from app.domains.platform.audit_service import log_audit_action, log_llm_cost
+from app.domains.platform.cost_calculator import UnsupportedModelPricingError
 from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
 from app.core.tool_permissions import grant_decision
 from app.core.config import settings
 from app.services.agents.langgraph_engine import LangGraphEngine
-from app.services.ai_service_client import AIServiceError
+from app.clients.ai_service_client import AIServiceError
 from app.plugins.resolver import (
     EMPTY_RESTRICTION,
     SkillRestriction,
@@ -72,7 +72,7 @@ from app.services.agents.hr_llm_flow import (
     extract_leave_request_slots,
     generate_grounded_hr_answer,
 )
-from app.services.chat_contract_review import review_reply, run_chat_contract_review
+from app.domains.legal.chat_contract_review import review_reply, run_chat_contract_review
 from app.services.agents.legal_llm_flow import (
     LegalIntentClassification,
     LegalPerspective,

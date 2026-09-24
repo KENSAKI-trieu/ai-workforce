@@ -45,7 +45,7 @@ class UnreachableAIClient:
     enabled = True
 
     def generate_text(self, _messages, **_kwargs):
-        from app.services.ai_service_client import AIServiceError
+        from app.clients.ai_service_client import AIServiceError
 
         raise AIServiceError("gateway down", status_code=503)
 

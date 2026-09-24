@@ -28,25 +28,25 @@ from app.services.agents.agent_executor import (
     _parse_represented_party,
 )
 from app.services.agents.legal_llm_flow import extract_represented_party
-from app.services.chat_contract_review import (
+from app.domains.legal.chat_contract_review import (
     document_scope_from_structure,
     review_reply,
     run_chat_contract_review,
 )
-from app.services.audit_service import (
+from app.domains.platform.audit_service import (
     get_cost_by_agent,
     get_cost_by_department,
     get_cost_by_employee,
     get_cost_by_workflow,
     get_llm_cost_summary,
 )
-from app.services.hr_employee_tools import get_employee_sections
-from app.services.hr_service import query_leave_balance
+from app.domains.hr.hr_employee_tools import get_employee_sections
+from app.domains.hr.hr_service import query_leave_balance
 from app.services.langgraph_approvals import GRAPH_APPROVER_ROLES
-from app.services.legal_document_generator import generate_legal_document
-from app.services.legal_draft_storage import save_legal_artifact
-from app.services.legal_documents.schemas import list_document_schemas
-from app.services.rag_service import hybrid_search_documents
+from app.domains.legal.legal_document_generator import generate_legal_document
+from app.domains.legal.legal_draft_storage import save_legal_artifact
+from app.domains.legal.legal_documents.schemas import list_document_schemas
+from app.domains.knowledge.rag_service import hybrid_search_documents
 from app.tools.registry import ToolContext
 from app.tools.schemas import (
     ContractRiskReviewInput,

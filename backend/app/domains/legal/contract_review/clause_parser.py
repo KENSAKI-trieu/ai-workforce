@@ -5,7 +5,7 @@ from __future__ import annotations
 import re
 from typing import Any
 
-from app.services.contract_review.schemas import CONTRACT_REVIEW_SCHEMAS
+from app.domains.legal.contract_review.schemas import CONTRACT_REVIEW_SCHEMAS
 
 
 HEADING_PATTERN = re.compile(

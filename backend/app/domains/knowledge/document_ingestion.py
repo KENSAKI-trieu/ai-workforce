@@ -9,16 +9,16 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import DocumentChunk, KnowledgeDocument, User
-from app.services.document_parser import DocumentParseError, extract_file_text
-from app.services.document_processing_events import publish_processing_status
-from app.services.embedding_service import (
+from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
+from app.domains.knowledge.document_processing_events import publish_processing_status
+from app.domains.knowledge.embedding_service import (
     build_embedding_text,
     calculate_content_hash,
     get_embedding_service,
 )
-from app.services.knowledge_storage import read_original_file
-from app.services.notification_service import create_notification
-from app.services.rag_service import (
+from app.domains.knowledge.knowledge_storage import read_original_file
+from app.domains.platform.notification_service import create_notification
+from app.domains.knowledge.rag_service import (
     CHUNK_OVERLAP_TOKENS,
     CHUNK_SIZE_TOKENS,
     build_configured_chunks,

@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.core.config import settings
-from app.services.ai_service_client import AIServiceClient, AIServiceError
+from app.clients.ai_service_client import AIServiceClient, AIServiceError
 
 
 class _Response:

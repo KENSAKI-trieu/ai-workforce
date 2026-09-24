@@ -5,9 +5,9 @@ import pytest
 from pypdf import PdfReader
 
 from app.main import app
-from app.services.legal_document_generator import generate_legal_document
-from app.services.legal_documents import list_document_schemas, validate_document_fields
-from app.services.legal_service import (
+from app.domains.legal.legal_document_generator import generate_legal_document
+from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
+from app.domains.legal.legal_service import (
     audit_contract_text,
     check_software_licenses,
     compare_contract_texts,

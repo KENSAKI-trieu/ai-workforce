@@ -25,9 +25,9 @@ from app.models.models import (
     UserMemory,
     WorkflowApproval,
 )
-from app.services.audit_events import add_audit_event
-from app.services.notification_service import create_notification
-from app.services.position_service import has_permission
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.platform.notification_service import create_notification
+from app.domains.platform.position_service import has_permission
 
 LEAVE_TYPES_WITH_BALANCE = {"ANNUAL", "SICK"}
 ACTIVE_LEAVE_STATUSES = {"WAITING", "APPROVED"}

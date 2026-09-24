@@ -20,7 +20,7 @@ from app.core.permissions import (
     permission_catalog,
 )
 from app.models.models import Position, Tenant, User
-from app.services.position_service import (
+from app.domains.platform.position_service import (
     assert_no_cycle,
     assert_no_privilege_escalation,
     assert_not_last_administrator,

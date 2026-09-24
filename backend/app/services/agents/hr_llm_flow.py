@@ -18,7 +18,7 @@ from app.services.agents.llm_json import (
     is_echo_provider,
     report_usage,
 )
-from app.services.ai_service_client import AIServiceClient, AIServiceError, get_ai_service_client
+from app.clients.ai_service_client import AIServiceClient, AIServiceError, get_ai_service_client
 
 logger = logging.getLogger(__name__)
 

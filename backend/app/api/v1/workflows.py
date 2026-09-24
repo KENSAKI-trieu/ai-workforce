@@ -12,7 +12,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_active_user
 from app.models.models import AgentWorkflow, User, WorkflowApproval
-from app.services.notification_service import notify_users
+from app.domains.platform.notification_service import notify_users
 
 router = APIRouter(prefix="/workflows", tags=["Workflow Automation"])
 NodeType = Literal[

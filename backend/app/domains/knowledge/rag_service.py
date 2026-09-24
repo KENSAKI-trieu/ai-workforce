@@ -16,13 +16,13 @@ from sqlalchemy import and_, false, func, or_
 from sqlalchemy.orm import Session
 from app.core.config import settings
 from app.models.models import DocumentChunk, KnowledgeDocument
-from app.services.embedding_service import (
+from app.domains.knowledge.embedding_service import (
     build_embedding_text,
     calculate_content_hash,
     get_embedding_service,
 )
-from app.services.reranker_service import rerank_chunks
-from app.services.ai_service_client import get_ai_service_client
+from app.domains.knowledge.reranker_service import rerank_chunks
+from app.clients.ai_service_client import get_ai_service_client
 
 logger = logging.getLogger(__name__)
 

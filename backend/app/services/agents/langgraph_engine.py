@@ -21,7 +21,7 @@ from app.models.models import (
     WorkflowApproval,
 )
 from app.plugins.resolver import resolve_skill_restriction, tenant_graph_instructions
-from app.services.ai_service_client import (
+from app.clients.ai_service_client import (
     AIServiceClient,
     AIServiceError,
     get_ai_service_client,

@@ -14,8 +14,8 @@ from app.core.tool_permissions import canonical_tool_names
 from app.core.security import RoleRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
-from app.services.agent_knowledge_scope import existing_knowledge_targets, orphaned_selectors
-from app.services.auth_service import ensure_tenant_default_agents, supported_agent_tools
+from app.domains.knowledge.agent_knowledge_scope import existing_knowledge_targets, orphaned_selectors
+from app.domains.platform.auth_service import ensure_tenant_default_agents, supported_agent_tools
 
 router = APIRouter(prefix="/agents", tags=["AI Agents"])
 AGENT_CONFIG_ROLES = {"Owner", "Admin", "CEO"}

@@ -20,8 +20,8 @@ from app.models.models import (
     WorkflowApproval,
     WorkflowStepExecution,
 )
-from app.services.notification_service import notify_users
-from app.services.rag_service import hybrid_search_documents
+from app.domains.platform.notification_service import notify_users
+from app.domains.knowledge.rag_service import hybrid_search_documents
 
 STEP_SPECS = (
     ("read_email", "TRIGGER", 30),

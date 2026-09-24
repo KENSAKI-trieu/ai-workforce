@@ -5,8 +5,8 @@ from decimal import Decimal
 
 import pytest
 
-from app.services.audit_service import get_month_bounds
-from app.services.cost_calculator import (
+from app.domains.platform.audit_service import get_month_bounds
+from app.domains.platform.cost_calculator import (
     UnsupportedModelPricingError,
     calculate_llm_cost,
     normalize_model_name,

@@ -21,8 +21,8 @@ from app.models.models import (
     User,
     WorkflowApproval,
 )
-from app.services.audit_service import get_budget_limits_and_alerts
-from app.services.notification_service import (
+from app.domains.platform.audit_service import get_budget_limits_and_alerts
+from app.domains.platform.notification_service import (
     CHANNELS,
     EVENT_TYPES,
     create_notification,

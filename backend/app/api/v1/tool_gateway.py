@@ -19,8 +19,8 @@ from app.core.tool_permissions import grant_decision
 from app.core.security import decode_internal_tool_token
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, User
 from app.plugins.resolver import resolve_skill_restriction
-from app.services.audit_events import add_audit_event
-from app.services.audit_service import log_llm_cost
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.platform.audit_service import log_llm_cost
 from app.tools.registry import ToolAction, ToolContext, ToolDefinition, tool_registry
 from app.services.langgraph_approvals import GRAPH_WORKFLOW_KIND, ensure_graph_approval
 

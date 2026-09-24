@@ -1,6 +1,6 @@
 """Company-defined position tree: the org chart a tenant builds for itself.
 
-Every mutation here goes through app.services.position_service, which owns the four
+Every mutation here goes through app.domains.platform.position_service, which owns the four
 invariants that keep a company from locking itself out. Routers must not re-implement
 them.
 """
@@ -18,8 +18,8 @@ from app.core.database import get_db
 from app.core.permissions import permission_catalog
 from app.core.security import PermissionRequired, get_current_active_user
 from app.models.models import Position, User
-from app.services.audit_events import add_audit_event
-from app.services.position_service import (
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.platform.position_service import (
     assert_no_cycle,
     assert_no_privilege_escalation,
     assert_not_last_administrator,

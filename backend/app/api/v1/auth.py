@@ -17,14 +17,14 @@ from app.schemas.auth import (
     LoginRequest,
     LoginResponse,
 )
-from app.services.auth_service import (
+from app.domains.platform.auth_service import (
     change_password,
     login_user,
     logout_user,
     refresh_tokens,
     register_user,
 )
-from app.services.login_rate_limit import (
+from app.domains.platform.login_rate_limit import (
     clear_login_rate_limit,
     enforce_login_rate_limit,
 )

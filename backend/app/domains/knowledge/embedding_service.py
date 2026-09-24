@@ -12,7 +12,7 @@ from collections.abc import Callable
 from typing import Any
 
 from app.core.config import settings
-from app.services.ai_service_client import get_ai_service_client
+from app.clients.ai_service_client import get_ai_service_client
 
 _TOKEN_PATTERN = re.compile(r"\S+")
 logger = logging.getLogger(__name__)

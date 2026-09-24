@@ -6,8 +6,8 @@ import pytest
 from fastapi import HTTPException
 
 from app.models.models import AuditLog, User, UserProfile
-from app.services.hr_employee_tools import get_employee_sections, query_company_users_sql
-from app.services.hr_service import authorized_employee_ids
+from app.domains.hr.hr_employee_tools import get_employee_sections, query_company_users_sql
+from app.domains.hr.hr_service import authorized_employee_ids
 
 
 def _user(db, email: str) -> User:

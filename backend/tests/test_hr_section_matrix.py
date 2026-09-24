@@ -29,7 +29,7 @@ from app.core.permissions import (
     SPECIALISED_POSITIONS,
 )
 from app.models.models import Position, User
-from app.services.hr_access_policy import HR_DATA_SECTIONS, _role_sections
+from app.domains.hr.hr_access_policy import HR_DATA_SECTIONS, _role_sections
 
 ALL_SECTIONS = frozenset(HR_DATA_SECTIONS)
 SELF_SECTIONS = frozenset({"BASIC", "PRIVATE", "CONTRACT", "COMPENSATION", "LEAVE"})

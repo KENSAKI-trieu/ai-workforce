@@ -17,8 +17,8 @@ from app.core.hr_capabilities import (
     HR_CONFIGURATION_VERSION,
     HR_RETIRED_TOOLS,
 )
-from app.services.auth_service import DEFAULT_AGENT_TOOLS
-from app.services.position_service import backfill_tenant_user_positions
+from app.domains.platform.auth_service import DEFAULT_AGENT_TOOLS
+from app.domains.platform.position_service import backfill_tenant_user_positions
 from app.models.models import Tenant, User, AIAgent, Department, DocumentChunk, UserMemory, AgentWorkflow, WorkflowApproval, AuditLog, LLMCostLog, Task, TaskComment, LeaveBalance
 
 logging.basicConfig(level=logging.INFO)

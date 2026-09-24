@@ -126,7 +126,7 @@ async def readiness_check():
     from sqlalchemy import text
 
     from app.core.database import sync_engine
-    from app.services.work_queue import queue_stats
+    from app.domains.platform.work_queue import queue_stats
 
     dependencies = {"database": False, "redis": False, "worker": False}
     try:

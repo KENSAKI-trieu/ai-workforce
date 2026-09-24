@@ -17,8 +17,8 @@ from app.schemas.schemas import (
     UserResponse,
     UserUpdate,
 )
-from app.services.cloudinary_service import upload_avatar
-from app.services.hr_service import get_or_create_leave_balance, query_leave_balance
+from app.clients.cloudinary_service import upload_avatar
+from app.domains.hr.hr_service import get_or_create_leave_balance, query_leave_balance
 
 router = APIRouter(prefix="/users", tags=["Users"])
 PERSONAL_PROFILE_FIELDS = {

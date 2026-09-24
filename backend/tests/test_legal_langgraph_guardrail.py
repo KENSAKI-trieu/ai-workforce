@@ -13,7 +13,7 @@ from fastapi.testclient import TestClient
 from app.core.config import settings
 from app.main import app
 from app.services.agents import agent_executor
-from app.services.ai_service_client import AIServiceError
+from app.clients.ai_service_client import AIServiceError
 
 
 def test_langgraph_flag_defaults_off():

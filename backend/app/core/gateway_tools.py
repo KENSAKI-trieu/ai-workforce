@@ -15,7 +15,7 @@ into every default map, is what stops that from happening per-role by accident.
 
 This module is deliberately import-free data. ``app.tools.registry`` executes
 ``build_tool_registry()`` at import time, which imports ``app.services.*``; importing it
-from ``app.services.auth_service`` would close a cycle through ``app/services/__init__.py``.
+from ``app.domains.platform.auth_service`` would close a cycle through ``app/services/__init__.py``.
 ``tests/test_tool_gateway.py::test_gateway_grant_names_exist_in_registry`` asserts these
 names against the registry instead, so drift fails a test rather than a production request.
 """

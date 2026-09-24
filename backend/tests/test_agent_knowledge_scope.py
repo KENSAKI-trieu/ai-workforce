@@ -10,11 +10,11 @@ from __future__ import annotations
 import pytest
 
 from app.models.models import AIAgent, User
-from app.services.agent_knowledge_scope import (
+from app.domains.knowledge.agent_knowledge_scope import (
     orphaned_selectors,
     prune_orphaned_knowledge_selectors,
 )
-from app.services.rag_service import ingest_document
+from app.domains.knowledge.rag_service import ingest_document
 
 DOC_ID = "scope-test-contract-policy.md"
 DOC_TEXT = "# Chính sách hợp đồng\n\n## Trình ký\nHợp đồng trên 500 triệu phải qua pháp chế."

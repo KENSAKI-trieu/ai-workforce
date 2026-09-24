@@ -22,7 +22,7 @@ from app.core.hr_capabilities import default_hr_tools
 from app.core.permissions import ROOT_POSITION_SLUG
 from app.models.models import Tenant, User, AIAgent, Department, RefreshToken
 from app.schemas.auth import RegisterRequest, LoginRequest, LoginResponse, UserInToken
-from app.services.position_service import ensure_tenant_positions
+from app.domains.platform.position_service import ensure_tenant_positions
 
 
 class AuthSession(NamedTuple):

@@ -9,7 +9,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.models.models import AIAgent, AgentWorkflow, User, WorkflowApproval
-from app.services.notification_service import create_notification
+from app.domains.platform.notification_service import create_notification
 
 
 GRAPH_WORKFLOW_KIND = "LANGGRAPH_CONVERSATION"

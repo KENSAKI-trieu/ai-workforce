@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.services.legal_documents.schemas import get_document_schema
+from app.domains.legal.legal_documents.schemas import get_document_schema
 
 
 def _warning(code: str, title: str, message: str, recommendation: str) -> dict[str, str]:

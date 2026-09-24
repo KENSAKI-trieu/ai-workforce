@@ -13,7 +13,7 @@ from typing import Any, Literal
 from sqlalchemy.orm import Session
 
 from app.models.models import User
-from app.services.hr_employee_tools import export_company_users_dataset
+from app.domains.hr.hr_employee_tools import export_company_users_dataset
 
 HRExportFormat = Literal["xlsx", "pdf", "json"]
 HRDirectoryType = Literal["employees", "managers"]

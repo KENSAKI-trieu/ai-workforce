@@ -6,12 +6,12 @@ import io
 from pathlib import Path
 from typing import Any
 
-from app.services.legal_documents.schemas import DOCUMENT_SCHEMAS
-from app.services.legal_documents.templates import build_document_draft
-from app.services.legal_documents.validators import validate_document_fields
+from app.domains.legal.legal_documents.schemas import DOCUMENT_SCHEMAS
+from app.domains.legal.legal_documents.templates import build_document_draft
+from app.domains.legal.legal_documents.validators import validate_document_fields
 # Moved to a shared module so the redline builder produces documents that match
 # these; aliased to the original private names to keep every call site below unchanged.
-from app.services.docx_style import (
+from app.domains.platform.docx_style import (
     set_cell_shading as _set_cell_shading,
     set_docx_font as _set_docx_font,
     set_table_geometry as _set_table_geometry,

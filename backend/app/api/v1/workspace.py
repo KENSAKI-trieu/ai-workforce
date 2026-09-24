@@ -22,9 +22,9 @@ from app.models.models import (
     Tenant,
     User,
 )
-from app.services.audit_events import add_audit_event
-from app.services.cost_calculator import supported_model_names
-from app.services.notification_service import create_notification
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.platform.cost_calculator import supported_model_names
+from app.domains.platform.notification_service import create_notification
 
 router = APIRouter(prefix="/workspace", tags=["Workspace Management"])
 ADMIN_ROLES = {"Owner", "Admin", "CEO"}

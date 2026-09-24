@@ -2,7 +2,7 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.document_parser import _extract_docx
+from app.domains.knowledge.document_parser import _extract_docx
 
 
 @pytest.mark.parametrize(

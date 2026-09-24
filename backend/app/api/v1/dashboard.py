@@ -23,7 +23,7 @@ from app.models.models import (
     ChatMessage,
 )
 
-from app.services.auth_service import ensure_tenant_default_agents
+from app.domains.platform.auth_service import ensure_tenant_default_agents
 
 router = APIRouter(prefix="/dashboard", tags=["Dashboard"])
 

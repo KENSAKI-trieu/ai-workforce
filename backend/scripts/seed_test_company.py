@@ -18,8 +18,8 @@ from app.core.permissions import ROOT_POSITION_SLUG
 from app.core.security import get_password_hash
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
 from app.models.models import Tenant, User, AIAgent, Department, UserMemory
-from app.services.auth_service import DEFAULT_DEPARTMENTS
-from app.services.position_service import (
+from app.domains.platform.auth_service import DEFAULT_DEPARTMENTS
+from app.domains.platform.position_service import (
     assign_position,
     backfill_tenant_user_positions,
     ensure_tenant_positions,

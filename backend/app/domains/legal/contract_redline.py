@@ -20,7 +20,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from app.services.docx_style import (
+from app.domains.platform.docx_style import (
     set_cell_shading,
     set_docx_font,
     set_table_geometry,

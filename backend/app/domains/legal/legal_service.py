@@ -11,7 +11,7 @@ import json
 import re
 from typing import Any
 
-from app.services.contract_review import review_contract
+from app.domains.legal.contract_review import review_contract
 
 
 SEVERITY_WEIGHT = {"HIGH": 25, "MEDIUM": 12, "LOW": 5}

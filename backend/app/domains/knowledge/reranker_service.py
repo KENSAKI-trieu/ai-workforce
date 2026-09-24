@@ -5,7 +5,7 @@ import re
 from typing import List, Dict, Any
 
 from app.core.config import settings
-from app.services.ai_service_client import get_ai_service_client
+from app.clients.ai_service_client import get_ai_service_client
 
 logger = logging.getLogger(__name__)
 

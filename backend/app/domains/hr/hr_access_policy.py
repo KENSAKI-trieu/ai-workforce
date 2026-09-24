@@ -9,7 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.permissions import HR_SECTION_PERMISSIONS
 from app.models.models import User
-from app.services.hr_service import authorized_employee_ids, has_company_hr_scope
+from app.domains.hr.hr_service import authorized_employee_ids, has_company_hr_scope
 
 HR_DATA_SECTIONS = {
     "BASIC",
@@ -109,7 +109,7 @@ def _role_sections(actor: User, target: User, db: Session | None) -> set[str]:
     if actor.id == target.id:
         return set(SELF_SERVICE_SECTIONS)
 
-    from app.services.position_service import user_permissions
+    from app.domains.platform.position_service import user_permissions
 
     granted = user_permissions(db, actor)
     return {

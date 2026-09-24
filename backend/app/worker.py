@@ -6,8 +6,8 @@ import time
 import uuid
 
 from app.core.database import SyncSessionLocal
-from app.services.support_workflow import execute_support_case
-from app.services.work_queue import (
+from app.domains.support.support_workflow import execute_support_case
+from app.domains.platform.work_queue import (
     acknowledge_job,
     dead_letter_job,
     heartbeat_worker,

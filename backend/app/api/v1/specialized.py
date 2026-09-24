@@ -20,24 +20,24 @@ from app.core.security import get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
 from app.core.tool_permissions import grant_decision
 from app.plugins.resolver import resolve_skill_restriction
-from app.services.audit_service import log_audit_action
-from app.services import contract_review_store
-from app.services.document_parser import DocumentParseError, extract_file_text
-from app.services.legal_service import (
+from app.domains.platform.audit_service import log_audit_action
+from app.domains.legal import contract_review_store
+from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
+from app.domains.legal.legal_service import (
     audit_contract_text,
     check_software_licenses,
     compare_contract_texts,
     detect_sensitive_data,
 )
-from app.services.contract_review import detect_contract_type, review_contract
-from app.services.contract_redline import build_redline_docx
+from app.domains.legal.contract_review import detect_contract_type, review_contract
+from app.domains.legal.contract_redline import build_redline_docx
 # Shared with the chat path so both entry points escalate identically.
-from app.services.legal_approval_service import create_legal_approval as _create_legal_approval
-from app.services.legal_document_generator import generate_legal_document
-from app.services.legal_draft_storage import read_legal_artifact, save_legal_artifact
-from app.services.legal_documents import list_document_schemas, validate_document_fields
-from app.services.notification_service import create_notification
-from app.services.rag_service import hybrid_search_documents
+from app.domains.legal.legal_approval_service import create_legal_approval as _create_legal_approval
+from app.domains.legal.legal_document_generator import generate_legal_document
+from app.domains.legal.legal_draft_storage import read_legal_artifact, save_legal_artifact
+from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
+from app.domains.platform.notification_service import create_notification
+from app.domains.knowledge.rag_service import hybrid_search_documents
 from app.core.agent_status import refuse_under_development
 from app.domains.incubating.finance_service import audit_invoice_and_reconcile
 from app.domains.incubating.it_service import handle_it_request

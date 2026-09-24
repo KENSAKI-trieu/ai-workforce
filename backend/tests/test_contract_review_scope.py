@@ -2,7 +2,7 @@
 
 import pytest
 
-from app.services.contract_review.analyzer import review_contract
+from app.domains.legal.contract_review.analyzer import review_contract
 
 SNIPPET = (
     "Căn cứ Bộ luật Dân sự, các bên thỏa thuận mức phạt vi phạm "

@@ -12,9 +12,9 @@ from sqlalchemy.orm import Session
 from sqlalchemy.orm import aliased
 
 from app.models.models import Department, EmploymentContract, User, UserProfile
-from app.services.audit_events import add_audit_event
-from app.services.hr_access_policy import authorize_employee_access, normalize_sections
-from app.services.hr_service import (
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.hr.hr_access_policy import authorize_employee_access, normalize_sections
+from app.domains.hr.hr_service import (
     authorized_employee_ids,
     hr_scope_label,
     query_leave_balance,

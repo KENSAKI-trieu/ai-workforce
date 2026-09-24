@@ -8,7 +8,7 @@ import pytest
 import redis
 
 from app.core.config import settings
-from app.services import login_rate_limit
+from app.domains.platform import login_rate_limit
 
 
 class FakeRedis:

@@ -15,7 +15,7 @@ from app.services.agents.agent_executor import (
     _extract_employee_search_term,
     _resolve_requested_departments,
 )
-from app.services.position_service import supervisory_role_names
+from app.domains.platform.position_service import supervisory_role_names
 
 
 def _chat(client, headers, message: str) -> dict:

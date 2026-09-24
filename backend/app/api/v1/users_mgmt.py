@@ -17,7 +17,7 @@ from app.core.password_policy import (
 )
 from app.core.security import get_current_active_user, get_password_hash
 from app.models.models import Department, Position, User
-from app.services.position_service import (
+from app.domains.platform.position_service import (
     assert_no_privilege_escalation,
     assert_not_last_administrator,
     assign_position,

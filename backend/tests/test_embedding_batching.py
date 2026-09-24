@@ -1,4 +1,4 @@
-from app.services.embedding_service import EmbeddingService
+from app.domains.knowledge.embedding_service import EmbeddingService
 
 
 class FakeAIClient:
@@ -39,7 +39,7 @@ class FakeAIClient:
 def test_remote_embedding_service_batches_large_requests(monkeypatch) -> None:
     client = FakeAIClient()
     monkeypatch.setattr(
-        "app.services.embedding_service.get_ai_service_client",
+        "app.domains.knowledge.embedding_service.get_ai_service_client",
         lambda: client,
     )
     service = EmbeddingService()

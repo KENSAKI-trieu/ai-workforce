@@ -2,9 +2,9 @@
 Extended Test Suite covering Phase 2 Advanced Enterprise Improvements, Edge Cases & Benchmark Evaluations.
 """
 
-from app.services.reranker_service import rerank_chunks
-from app.services.ocr_service import ocr_parse_document_bytes
-from app.services.integration_service import notify_slack_approval_card, jira_sync_ticket_v3
+from app.domains.knowledge.reranker_service import rerank_chunks
+from app.domains.incubating.ocr_service import ocr_parse_document_bytes
+from app.domains.incubating.integration_service import notify_slack_approval_card, jira_sync_ticket_v3
 
 
 def test_reranker_service():

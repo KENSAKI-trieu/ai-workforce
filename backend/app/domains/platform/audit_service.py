@@ -16,7 +16,7 @@ from app.models.models import (
     ModelRoutingRule,
     User,
 )
-from app.services.cost_calculator import (
+from app.domains.platform.cost_calculator import (
     PRICING_VERSION,
     calculate_llm_cost,
     normalize_model_name,

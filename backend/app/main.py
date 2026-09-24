@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
 from app.api.v1.router import api_router
 
@@ -44,18 +45,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Database connectivity check failed: {e}")
         raise
-    if settings.LANGGRAPH_ENABLED:
-        # Turning this flag on routes every non-HR agent through LangGraph, so the
-        # deterministic LEGAL branch is skipped. Contract review stays reachable through
-        # the `audit_contract_risk` gateway tool, which records and escalates a review
-        # exactly as that branch does; the rest of the Legal chat -- the intent router,
-        # the "review or question?" prompt and grounded answers -- is replaced by the
-        # graph's own model loop.
-        logger.warning(
-            "⚠️ LANGGRAPH_ENABLED=true routes every non-HR agent through LangGraph. "
-            "LEGAL reviews contracts through the audit_contract_risk gateway tool; its "
-            "deterministic chat routing and grounded answers are not used on this path."
-        )
+    graph_roles = sorted(role for role in ("HR", "LEGAL", "KNOWLEDGE", "IT", "FINANCE", "SALES", "CEO") if uses_langgraph(role))
+    if graph_roles:
+        # A role on LangGraph skips its deterministic flow. For LEGAL that means the intent
+        # router, the "review or question?" prompt and grounded answers are replaced by the
+        # graph's own model loop; contract review stays reachable through the
+        # `audit_contract_risk` gateway tool, which records and escalates like the chat.
+        logger.warning("⚠️ Agents running through LangGraph: %s", ", ".join(graph_roles))
+        if "LEGAL" in graph_roles:
+            logger.warning(
+                "⚠️ LEGAL reviews contracts through the audit_contract_risk gateway tool; its "
+                "deterministic chat routing and grounded answers are not used on this path."
+            )
     yield
     logger.info("🛑 AI Workforce backend shutting down...")
 

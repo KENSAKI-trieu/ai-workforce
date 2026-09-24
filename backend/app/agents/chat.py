@@ -14,6 +14,7 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
 from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
+from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
 from app.agents.langgraph.engine import LangGraphEngine
 from app.clients.ai_service_client import AIServiceError
@@ -33,13 +34,17 @@ def execute_agent_chat(
     role_code: str,
     message: str,
     thread_id: str | None = None,
+    *,
+    allow_graph: bool = True,
 ) -> Dict[str, Any]:
     """Run the HR LLM-first gate, then dispatch to retrieval or governed tools."""
     # The HR gate calls back into the core below, so it is imported when used.
     from app.agents.hr.stream import stream_hr_chat_events
 
     if role_code.upper() != "HR":
-        return _execute_agent_chat_core(db, user, role_code, message, thread_id)
+        return _execute_agent_chat_core(
+            db, user, role_code, message, thread_id, allow_graph=allow_graph
+        )
 
     response: Dict[str, Any] | None = None
     for event in stream_hr_chat_events(db, user, role_code, message, thread_id):
@@ -63,6 +68,7 @@ def _execute_agent_chat_core(
     leave_draft: dict[str, Any] | None = None,
     leave_cancel_request: bool = False,
     on_llm_usage: UsageReporter | None = None,
+    allow_graph: bool = True,
 ) -> Dict[str, Any]:
     """
     Main dispatch entry point for processing agent queries.
@@ -109,9 +115,8 @@ def _execute_agent_chat_core(
         response_data["reply"] = UNDER_DEVELOPMENT_REPLY
         return response_data
 
-    # HR has its own LLM-first question/action gate below. Other agents may use
-    # the generic LangGraph orchestration path.
-    if settings.LANGGRAPH_ENABLED and role_code_upper != "HR":
+    # The engine is chosen per role (AGENT_ENGINES); HR keeps its own LLM-first gate.
+    if allow_graph and uses_langgraph(role_code_upper):
         try:
             return LangGraphEngine().execute(
                 db=db,

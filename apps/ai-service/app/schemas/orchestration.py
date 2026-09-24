@@ -5,6 +5,11 @@ from typing import Any, Literal
 from pydantic import BaseModel, Field
 
 
+class HistoryMessage(BaseModel):
+    role: Literal["user", "assistant"]
+    content: str = Field(min_length=1, max_length=4000)
+
+
 class OrchestrationRequest(BaseModel):
     tenant_id: str = Field(min_length=1)
     user_id: str = Field(min_length=1)
@@ -13,6 +18,8 @@ class OrchestrationRequest(BaseModel):
     conversation_id: str = Field(min_length=1)
     workflow_id: str = Field(min_length=1)
     message: str = Field(min_length=1, max_length=50000)
+    # Earlier turns of the conversation, oldest first, already trimmed by the backend.
+    history: list[HistoryMessage] = Field(default_factory=list, max_length=20)
     # Always named by the backend: the user talks to one agent, and the AI service
     # does not guess one.
     requested_agent: str = Field(min_length=1, max_length=50)

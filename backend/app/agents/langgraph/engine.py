@@ -33,6 +33,15 @@ from app.agents.langgraph.approvals import (
 )
 
 
+# How much of the conversation the graph sees besides the current message. The graph used
+# to receive the current message alone, so a follow-up ("còn phòng IT thì sao?") lost the
+# question it followed. Newest turns win when the budget runs out; each message is capped
+# so one pasted contract cannot crowd out every other turn.
+HISTORY_MESSAGES = 10
+HISTORY_MESSAGE_CHARS = 1500
+HISTORY_TOTAL_CHARS = 6000
+
+
 SUSPENDED_CONVERSATION_REPLY = (
     "Cuộc hội thoại này đang chờ phê duyệt cho một hành động trước đó, nên tôi chưa xử lý "
     "tin nhắn mới ở đây. Tôi sẽ tiếp tục khi yêu cầu được duyệt hoặc từ chối. Nếu cần hỏi "
@@ -81,9 +90,44 @@ class LangGraphEngine:
             "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),
         }
         if message is not None:
-            payload.update({"message": message, "requested_agent": agent.role_code})
+            payload.update({
+                "message": message,
+                "requested_agent": agent.role_code,
+                "history": LangGraphEngine._history(db, conversation_id, message),
+            })
             payload.pop("agent_role")
         return payload
+
+    @staticmethod
+    def _history(db: Session, conversation_id: str, current_message: str) -> list[dict[str, str]]:
+        """The turns before this one, oldest first, within the history budget.
+
+        The chat API stores the user's message before the engine runs, so the newest USER
+        row is this turn and is left out -- it travels as `message`.
+        """
+        try:
+            conversation_uuid = uuid.UUID(str(conversation_id))
+        except ValueError:
+            return []
+        rows = db.query(ChatMessage).filter(
+            ChatMessage.conversation_id == conversation_uuid,
+            ChatMessage.sender.in_(("USER", "ASSISTANT")),
+        ).order_by(ChatMessage.created_at.desc()).limit(HISTORY_MESSAGES + 1).all()
+        if rows and rows[0].sender == "USER" and (rows[0].content or "").strip() == current_message.strip():
+            rows = rows[1:]
+        history: list[dict[str, str]] = []
+        budget = HISTORY_TOTAL_CHARS
+        for row in rows[:HISTORY_MESSAGES]:
+            text = (row.content or "").strip()
+            if not text:
+                continue
+            if len(text) > HISTORY_MESSAGE_CHARS:
+                text = text[:HISTORY_MESSAGE_CHARS].rstrip() + " […]"
+            if len(text) > budget:
+                break
+            budget -= len(text)
+            history.append({"role": "user" if row.sender == "USER" else "assistant", "content": text})
+        return list(reversed(history))
 
     @staticmethod
     def _conversation_workflow(

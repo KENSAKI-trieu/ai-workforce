@@ -14,7 +14,8 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.agent_status import is_under_development
+from app.clients.ai_service_client import AIServiceError
+from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
@@ -254,26 +255,38 @@ def stream_chat_with_agent(
     def event_stream():
         try:
             result: dict[str, Any] | None = None
-            # HR uses its governed LLM-first flow, including contextual leave-slot extraction.
-            # An unfinished agent takes the executor path, which answers it with the fixed
-            # under-development reply before any engine runs.
-            if settings.LANGGRAPH_ENABLED and role_code != "HR" and not is_under_development(role_code):
-                for item in LangGraphEngine().execute_stream(
-                    db=db,
-                    user=current_user,
-                    agent=agent,
-                    message=req.message,
-                    conversation_id=str(conversation.id),
-                ):
-                    event = str(item.get("event") or "message")
-                    if event == "complete":
-                        result = dict(item["response"])
-                    else:
-                        yield _encode_sse(
-                            event,
-                            {key: value for key, value in item.items() if key != "event"},
-                        )
-            elif role_code == "HR":
+            # The engine is chosen per role (AGENT_ENGINES). HR uses its governed LLM-first
+            # flow; an unfinished agent takes the executor path, which answers it with the
+            # fixed under-development reply before any engine runs.
+            ran_graph = False
+            if uses_langgraph(role_code):
+                try:
+                    for item in LangGraphEngine().execute_stream(
+                        db=db,
+                        user=current_user,
+                        agent=agent,
+                        message=req.message,
+                        conversation_id=str(conversation.id),
+                    ):
+                        event = str(item.get("event") or "message")
+                        if event == "complete":
+                            result = dict(item["response"])
+                        else:
+                            yield _encode_sse(
+                                event,
+                                {key: value for key, value in item.items() if key != "event"},
+                            )
+                    ran_graph = True
+                except AIServiceError as exc:
+                    # The same fallback the non-streaming path applies: an AI service that
+                    # is down answers through the deterministic flow instead of failing.
+                    if (
+                        not settings.LANGGRAPH_LEGACY_FALLBACK
+                        or (exc.status_code is not None and exc.status_code < 500)
+                    ):
+                        raise
+                    logger.exception("LangGraph stream failed; using the deterministic flow")
+            if not ran_graph and role_code == "HR":
                 # The HR flow reports a phase before each blocking step — intent routing,
                 # dispatch, answer synthesis — so the client is not left on ANALYZING for
                 # the whole round trip.
@@ -294,7 +307,7 @@ def stream_chat_with_agent(
                     for token in re.findall(r"\S+\s*|\s+", str(result.get("reply") or "")):
                         yield _encode_sse("token", {"delta": token})
                 yield _encode_sse("status", {"phase": "COMPLETED"})
-            else:
+            elif not ran_graph:
                 yield _encode_sse("status", {"phase": "ANALYZING"})
                 result = execute_agent_chat(
                     db=db,
@@ -302,6 +315,8 @@ def stream_chat_with_agent(
                     role_code=role_code,
                     message=req.message,
                     thread_id=str(conversation.id),
+                    # Reached after a failed graph stream too; do not try the graph twice.
+                    allow_graph=False,
                 )
                 if result.get("tools_executed"):
                     yield _encode_sse("status", {"phase": "TOOL_CALLING"})

@@ -123,7 +123,12 @@ def initial_state(request: OrchestrationRequest) -> dict:
         "department": request.department,
         "conversation_id": request.conversation_id,
         "workflow_id": request.workflow_id,
-        "messages": [{"role": "user", "content": request.message}],
+        # Earlier turns first, so the model reads the current message in its context; the
+        # nodes still act on the latest user message (retrieval, input guard).
+        "messages": [
+            *(item.model_dump() for item in request.history),
+            {"role": "user", "content": request.message},
+        ],
         "intent": "",
         "selected_agent": "",
         "retrieved_context": [],

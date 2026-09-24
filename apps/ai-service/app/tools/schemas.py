@@ -102,3 +102,31 @@ class SubmitApprovalInput(IdempotentToolInput):
         if deadline <= datetime.now(timezone.utc):
             raise ValueError("expires_at must be in the future")
         return value
+
+
+class ContractRiskReviewInput(TenantToolInput):
+    """Review contract text the user sent in this conversation.
+
+    Neither the text nor the user's side is an argument. The backend reads both from the
+    user's own messages, so what is reviewed is exactly what they sent, from the side they
+    said they act for: a model given the side as a parameter filled in NEUTRAL for a user
+    who had not answered.
+    """
+
+    from_user_message: int = Field(
+        default=0,
+        ge=0,
+        le=5,
+        description=(
+            "Which of the user's messages holds the contract: 0 is the current message, "
+            "1 the one before it, and so on. Use 1 when the current message only answers "
+            "which side the user represents."
+        ),
+    )
+    document_scope: Literal["FULL", "EXCERPT"] | None = Field(
+        default=None,
+        description=(
+            "FULL for a whole contract, EXCERPT for a clause or passage. An excerpt is not "
+            "faulted for clauses it does not contain. Omit to let the backend decide."
+        ),
+    )

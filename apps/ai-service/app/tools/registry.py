@@ -11,6 +11,7 @@ from pydantic import BaseModel
 
 from app.tools.gateway import ToolGatewayClient
 from app.tools.schemas import (
+    ContractRiskReviewInput,
     CreateTaskInput,
     EmployeeLookupInput,
     ExpenseLookupInput,
@@ -46,6 +47,9 @@ class ToolDescriptor:
     retry: RetryPolicy
     audit_action: str
     acl_match: str = "ROLE_AND_DEPARTMENT"
+    # A terminal tool's result carries the user-facing `reply`, and the graph ends the
+    # turn on it instead of asking the model what to do next.
+    terminal: bool = False
 
     @property
     def metadata(self) -> dict[str, Any]:
@@ -62,6 +66,7 @@ class ToolDescriptor:
             },
             "audit_action": self.audit_action,
             "gateway_only": True,
+            "terminal": self.terminal,
         }
 
     def as_langchain_tool(self, gateway: ToolGatewayClient) -> BaseTool:
@@ -128,6 +133,8 @@ def _tool(
     timeout: float,
     audit_action: str,
     acl_match: str = "ROLE_AND_DEPARTMENT",
+    *,
+    terminal: bool = False,
 ) -> ToolDescriptor:
     return ToolDescriptor(
         name=name,
@@ -140,6 +147,7 @@ def _tool(
         retry=RetryPolicy(max_attempts=3 if action == ToolAction.READ_ONLY else 1),
         audit_action=audit_action,
         acl_match=acl_match,
+        terminal=terminal,
     )
 
 
@@ -151,6 +159,25 @@ tool_registry = ToolRegistry((
     _tool("expense_lookup", "Read AI spend and usage costs through the backend.", ExpenseLookupInput, ToolAction.READ_ONLY, {"Owner", "Admin", "CEO", "Manager"}, {"FINANCE"}, 20, "tool.expense.read", "ROLE_OR_DEPARTMENT"),
     _tool("generate_legal_document", "Generate a legal draft for human approval through the backend.", GenerateLegalDocumentInput, ToolAction.WRITE, {"Owner", "Admin", "CEO"}, {"LEGAL"}, 45, "tool.legal.generate", "ROLE_OR_DEPARTMENT"),
     _tool("submit_approval_request", "Create a human approval gate through the backend.", SubmitApprovalInput, ToolAction.EXTERNAL_ACTION, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.approval.submit"),
+    # READ_ONLY so a review runs without a human approving it first: it analyses text the
+    # user already sent, and the one escalation it can raise is itself an approval.
+    _tool(
+        "audit_contract_risk",
+        "Review contract or clause text the user sent in this conversation for legal "
+        "risk. The backend reads the text, and the side the user represents, from the "
+        "user's own messages; do not paste the contract into the call. Its result is the "
+        "answer to the user, so call it at most once per turn.",
+        ContractRiskReviewInput,
+        ToolAction.READ_ONLY,
+        {"*"},
+        {"*"},
+        60,
+        "tool.legal.review",
+        # The backend already knows what to tell the user -- the side question, or the
+        # review summary behind its card. Handing the result back to the model instead
+        # made it re-call the tool and open approvals of its own.
+        terminal=True,
+    ),
 ))
 
 

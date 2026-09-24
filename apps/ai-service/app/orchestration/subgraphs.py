@@ -18,17 +18,22 @@ class DomainPolicy:
 
 
 DOMAIN_POLICIES = {
-    # These three tools are the whole of the LEGAL agent once the backend routes this
-    # role here (LANGGRAPH_ENABLED=true). None of them reviews contract risk, so the
-    # deterministic engine behind `audit_contract_risk` -- clause splitting, the
-    # per-contract-type checklist, the perspective-aware severity rules and internal
-    # conflict detection -- becomes unreachable from chat, silently: the backend's LEGAL
-    # branch is skipped entirely rather than failing. Anyone enabling the flag for LEGAL
-    # must add a review tool here first; backend/app/main.py logs this at startup.
+    # The whole of the LEGAL agent once the backend routes this role here
+    # (LANGGRAPH_ENABLED=true). `audit_contract_risk` reaches the same deterministic
+    # review engine as the backend's Legal chat -- clause splitting, the per-contract-type
+    # checklist, perspective-aware severity -- and stores and escalates the review the
+    # same way. The graph sees only the current message, hence the prompt's note on
+    # answering the "which side?" question with from_user_message=1.
     "LEGAL": DomainPolicy(
         "LEGAL",
-        ("rag_search", "generate_legal_document", "submit_approval_request"),
-        "Apply legal policy context. Generated documents and external actions require approval.",
+        ("rag_search", "audit_contract_risk", "generate_legal_document", "submit_approval_request"),
+        "Apply legal policy context. Generated documents and external actions require approval. "
+        "When the user sends contract or clause text to review, call audit_contract_risk "
+        "once. If a message only names a side (for example 'bên A', 'tôi là khách hàng'), "
+        "it answers the side question about the contract in their previous message: call "
+        "audit_contract_risk with from_user_message=1. A review opens any legal approval "
+        "it needs, so never submit another approval for it. A question about law or policy "
+        "is answered from retrieved knowledge, not by reviewing.",
     ),
     # HR does not reach this graph: the backend routes that role to its own deterministic
     # executor instead. The names below are gateway tool names, while an HR agent's

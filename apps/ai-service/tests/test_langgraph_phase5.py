@@ -420,3 +420,55 @@ def test_orchestration_endpoint_requires_tool_jwt_and_returns_state(monkeypatch)
     assert body["status"] == "COMPLETED"
     assert body["thread_id"] == payload["conversation_id"]
     assert body["state"]["selected_agent"] == "KNOWLEDGE"
+
+
+def _review_context(security, review_result, *decisions):
+    review = FakeTool("audit_contract_risk", "READ_ONLY", review_result)
+    review.metadata["terminal"] = True
+    decider = SequenceDecisionProvider(*decisions)
+    return review, decider, OrchestrationRuntimeContext(
+        security=security, decision_provider=decider, tools={"audit_contract_risk": review},
+    )
+
+
+def test_a_terminal_tool_answers_the_user_and_ends_the_turn() -> None:
+    """The model used to get the review back, re-call the tool and open approvals."""
+    security = _security(allowed_tools={"audit_contract_risk"}, department="LEGAL")
+    review, decider, context = _review_context(
+        security,
+        {"status": "REVIEWED", "review_id": "r-1", "reply": "Tôi đã rà soát nội dung hợp đồng."},
+        GraphDecision(tool_name="audit_contract_risk", tool_args={}, reason="review it"),
+        # Never reached: the turn ends on the tool's reply.
+        GraphDecision(tool_name="audit_contract_risk", tool_args={}, reason="again"),
+    )
+
+    result = LangGraphEngine().invoke(
+        _state(security, "HỢP ĐỒNG ... rà soát giúp", requested_agent="LEGAL"),
+        context=context,
+        thread_id="legal-terminal-thread",
+    )
+
+    assert result["final_answer"] == "Tôi đã rà soát nội dung hợp đồng."
+    assert len(review.calls) == 1
+    assert len(decider.decisions) == 1
+    assert result["tool_calls"][-1]["result"]["review_id"] == "r-1"
+    assert result["errors"] == []
+
+
+def test_a_terminal_tool_without_a_reply_hands_back_to_the_model() -> None:
+    security = _security(allowed_tools={"audit_contract_risk"}, department="LEGAL")
+    review, decider, context = _review_context(
+        security,
+        {"status": "REVIEWED"},
+        GraphDecision(tool_name="audit_contract_risk", tool_args={}, reason="review it"),
+        GraphDecision(final_answer="Đã rà soát.", reason="summarise"),
+    )
+
+    result = LangGraphEngine().invoke(
+        _state(security, "rà soát giúp", requested_agent="LEGAL"),
+        context=context,
+        thread_id="legal-terminal-fallback-thread",
+    )
+
+    assert result["final_answer"] == "Đã rà soát."
+    assert not decider.decisions

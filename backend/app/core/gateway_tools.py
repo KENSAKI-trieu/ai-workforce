@@ -33,6 +33,9 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "expense_lookup": "Đọc chi phí và mức sử dụng AI qua gateway.",
     "generate_legal_document": "Tạo bản nháp văn bản pháp lý DOCX/PDF chờ người duyệt.",
     "submit_approval_request": "Tạo cổng phê duyệt cho hành động cần con người xác nhận.",
+    # Shares its name with the Legal capability on purpose: one grant switches contract
+    # review on or off in the deterministic chat and through LangGraph alike.
+    "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
 }
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
@@ -58,7 +61,12 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
         "submit_approval_request",
     ),
     "HR": (),
-    "LEGAL": ("rag_search", "generate_legal_document", "submit_approval_request"),
+    "LEGAL": (
+        "rag_search",
+        "audit_contract_risk",
+        "generate_legal_document",
+        "submit_approval_request",
+    ),
     "IT": ("rag_search", "create_task", "submit_approval_request"),
     "FINANCE": ("rag_search", "expense_lookup", "create_task", "submit_approval_request"),
     "SALES": ("rag_search", "create_task", "submit_approval_request"),

@@ -235,6 +235,7 @@ def _model_decision(
             "name": name,
             "args": redact_sensitive_data(decision.tool_args),
             "action": str((tool.metadata or {}).get("action", "READ_ONLY")),
+            "terminal": bool((tool.metadata or {}).get("terminal")),
             "reason": decision.reason,
         }
     return {
@@ -290,13 +291,19 @@ def _execute_tool(
     payload = _tool_payload(state, runtime, name, dict(pending.get("args") or {}), call_id)
     try:
         result = redact_sensitive_data(runtime.tools[name].invoke(payload))
+        if pending.get("terminal") and isinstance(result, dict) and result.get("reply"):
+            final_answer = str(result["reply"])
+        elif pending.get("action") != "READ_ONLY":
+            final_answer = json.dumps(result, ensure_ascii=False, default=str)
+        else:
+            final_answer = None
         return {
             "pending_tool_call": None,
             "tool_calls": [
                 *(state.get("tool_calls") or []),
                 {**pending, "args": payload, "status": "SUCCESS", "result": result},
             ],
-            "final_answer": json.dumps(result, ensure_ascii=False, default=str) if pending.get("action") != "READ_ONLY" else None,
+            "final_answer": final_answer,
         }
     except Exception as exc:
         return {
@@ -308,6 +315,15 @@ def _execute_tool(
             ],
             "errors": [*(state.get("errors") or []), {"node": "tool_execution", "tool": name, "error": type(exc).__name__}],
         }
+
+
+def _after_read_tool(state: WorkforceAgentState) -> str:
+    """Back to the model for its next step, unless a terminal tool just answered."""
+    calls = state.get("tool_calls") or []
+    latest = calls[-1] if calls else {}
+    if latest.get("terminal") and latest.get("status") == "SUCCESS" and state.get("final_answer"):
+        return "output_validation"
+    return "model_decision"
 
 
 def _execute_read_tool(
@@ -474,7 +490,11 @@ class LangGraphEngine:
                 "output_validation": "output_validation",
             },
         )
-        builder.add_edge("execute_read_tool", "model_decision")
+        builder.add_conditional_edges(
+            "execute_read_tool",
+            _after_read_tool,
+            {"model_decision": "model_decision", "output_validation": "output_validation"},
+        )
         builder.add_edge("approval_interrupt", "output_validation")
         builder.add_edge("output_validation", "citation_verification")
         builder.add_edge("citation_verification", "response")

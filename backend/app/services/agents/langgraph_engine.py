@@ -16,6 +16,7 @@ from app.models.models import (
     AuditLog,
     ChatConversation,
     ChatMessage,
+    ContractReview,
     User,
     WorkflowApproval,
 )
@@ -28,6 +29,13 @@ from app.services.langgraph_approvals import (
     GRAPH_APPROVAL_KIND,
     GRAPH_WORKFLOW_KIND,
     ensure_graph_approval,
+)
+
+
+SUSPENDED_CONVERSATION_REPLY = (
+    "Cuộc hội thoại này đang chờ phê duyệt cho một hành động trước đó, nên tôi chưa xử lý "
+    "tin nhắn mới ở đây. Tôi sẽ tiếp tục khi yêu cầu được duyệt hoặc từ chối. Nếu cần hỏi "
+    "việc khác, bạn hãy mở một cuộc hội thoại mới."
 )
 
 
@@ -68,6 +76,68 @@ class LangGraphEngine:
         return payload
 
     @staticmethod
+    def _conversation_workflow(
+        db: Session, user: User, conversation_id: str
+    ) -> AgentWorkflow | None:
+        candidates = db.query(AgentWorkflow).filter(
+            AgentWorkflow.tenant_id == user.tenant_id,
+            AgentWorkflow.initiator_id == user.id,
+            AgentWorkflow.thread_id == conversation_id,
+        ).all()
+        return next(
+            (
+                item for item in candidates
+                if (item.dag_plan or {}).get("kind") == GRAPH_WORKFLOW_KIND
+            ),
+            None,
+        )
+
+    @staticmethod
+    def _pending_graph_approval(
+        db: Session, user: User, conversation_id: str
+    ) -> tuple[AgentWorkflow, WorkflowApproval] | None:
+        """The approval this conversation's graph is suspended on, if any.
+
+        A suspended graph refuses a new run until it is resumed. Sending one anyway came
+        back as a 422, surfaced to the user as a 500 -- and on the way the conversation's
+        workflow was flipped from AWAITING_APPROVAL to IN_PROGRESS and then RESUME_FAILED,
+        corrupting the state the pending approval's resume relies on.
+        """
+        workflow = LangGraphEngine._conversation_workflow(db, user, conversation_id)
+        if workflow is None:
+            return None
+        approval = next(
+            (
+                item
+                for item in db.query(WorkflowApproval).filter(
+                    WorkflowApproval.workflow_id == workflow.id,
+                    WorkflowApproval.status == "WAITING",
+                ).all()
+                if (item.payload or {}).get("kind") == GRAPH_APPROVAL_KIND
+            ),
+            None,
+        )
+        return (workflow, approval) if approval is not None else None
+
+    def _suspended_response(
+        self,
+        agent: AIAgent,
+        workflow: AgentWorkflow,
+        approval: WorkflowApproval,
+        conversation_id: str,
+    ) -> dict[str, Any]:
+        return self.to_chat_response(
+            {
+                "thread_id": conversation_id,
+                "status": "AWAITING_APPROVAL",
+                "state": {"final_answer": SUSPENDED_CONVERSATION_REPLY},
+            },
+            agent,
+            workflow=workflow,
+            approval=approval,
+        )
+
+    @staticmethod
     def _workflow(
         db: Session,
         user: User,
@@ -75,18 +145,7 @@ class LangGraphEngine:
         conversation_id: str,
         message: str,
     ) -> AgentWorkflow:
-        candidates = db.query(AgentWorkflow).filter(
-            AgentWorkflow.tenant_id == user.tenant_id,
-            AgentWorkflow.initiator_id == user.id,
-            AgentWorkflow.thread_id == conversation_id,
-        ).all()
-        workflow = next(
-            (
-                item for item in candidates
-                if (item.dag_plan or {}).get("kind") == GRAPH_WORKFLOW_KIND
-            ),
-            None,
-        )
+        workflow = LangGraphEngine._conversation_workflow(db, user, conversation_id)
         if workflow is None:
             workflow = AgentWorkflow(
                 tenant_id=user.tenant_id,
@@ -183,6 +242,9 @@ class LangGraphEngine:
         message: str,
         conversation_id: str,
     ) -> dict[str, Any]:
+        suspended = self._pending_graph_approval(db, user, conversation_id)
+        if suspended is not None:
+            return self._suspended_response(agent, *suspended, conversation_id)
         workflow = self._workflow(db, user, agent, conversation_id, message)
         db.commit()
         token = create_internal_tool_token(user, agent_role=agent.role_code)
@@ -213,7 +275,13 @@ class LangGraphEngine:
                 persisted.status = "RESUME_FAILED"
                 db.commit()
             raise
-        return self.to_chat_response(result, agent, workflow=workflow, approval=approval)
+        return self.to_chat_response(
+            result,
+            agent,
+            workflow=workflow,
+            approval=approval,
+            legal_risk_card=self.legal_risk_card(db, user, result),
+        )
 
     def execute_stream(
         self,
@@ -225,6 +293,13 @@ class LangGraphEngine:
         conversation_id: str,
     ) -> Iterator[dict[str, Any]]:
         """Proxy sanitized SSE events and persist the completed governed run."""
+        suspended = self._pending_graph_approval(db, user, conversation_id)
+        if suspended is not None:
+            yield {
+                "event": "complete",
+                "response": self._suspended_response(agent, *suspended, conversation_id),
+            }
+            return
         workflow = self._workflow(db, user, agent, conversation_id, message)
         db.commit()
         token = create_internal_tool_token(user, agent_role=agent.role_code)
@@ -269,7 +344,11 @@ class LangGraphEngine:
         yield {
             "event": "complete",
             "response": self.to_chat_response(
-                result, agent, workflow=workflow, approval=approval
+                result,
+                agent,
+                workflow=workflow,
+                approval=approval,
+                legal_risk_card=self.legal_risk_card(db, user, result),
             ),
         }
 
@@ -416,6 +495,7 @@ class LangGraphEngine:
             agent,
             workflow=workflow,
             approval=next_approval,
+            legal_risk_card=self.legal_risk_card(db, user, result),
         )
 
     @staticmethod
@@ -472,12 +552,55 @@ class LangGraphEngine:
         }
 
     @staticmethod
+    def legal_risk_card(
+        db: Session, user: User | None, result: dict[str, Any]
+    ) -> dict[str, Any] | None:
+        """The saved review behind this turn's contract review, shaped as the chat card.
+
+        The model only receives a summary of the review, so without this the user would
+        get a paragraph and no card: no findings, no evidence, no redline. `tool_calls`
+        starts empty on every run, so each entry belongs to this turn.
+        """
+        if user is None:
+            return None
+        calls = (result.get("state") or {}).get("tool_calls") or []
+        for call in reversed(calls):
+            if not isinstance(call, dict) or call.get("name") != "audit_contract_risk":
+                continue
+            if call.get("status") != "SUCCESS" or not isinstance(call.get("result"), dict):
+                return None
+            review_id = call["result"].get("review_id")
+            if not review_id:
+                # The tool asked for the user's side or found no text; nothing reviewed.
+                return None
+            try:
+                review_uuid = uuid.UUID(str(review_id))
+            except ValueError:
+                return None
+            # The id came back through the model's run, so it is only trusted as far as
+            # it names a review this user made in this tenant.
+            review = db.query(ContractReview).filter(
+                ContractReview.id == review_uuid,
+                ContractReview.tenant_id == user.tenant_id,
+                ContractReview.created_by_id == user.id,
+            ).first()
+            if review is None:
+                return None
+            return {
+                **(review.result or {}),
+                "review_id": str(review.id),
+                "redline_url": f"/api/v1/legal/contract-reviews/{review.id}/redline",
+            }
+        return None
+
+    @staticmethod
     def to_chat_response(
         result: dict[str, Any],
         agent: AIAgent,
         *,
         workflow: AgentWorkflow,
         approval: WorkflowApproval | None,
+        legal_risk_card: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         state = result.get("state") or {}
         approval_card = LangGraphEngine.approval_card(approval) if approval else None
@@ -493,7 +616,7 @@ class LangGraphEngine:
             "approval_card": approval_card,
             "hr_card": None,
             "jira_card": None,
-            "legal_risk_card": None,
+            "legal_risk_card": legal_risk_card,
             "invoice_card": None,
             "quote_card": None,
             "dag_plan_card": None,

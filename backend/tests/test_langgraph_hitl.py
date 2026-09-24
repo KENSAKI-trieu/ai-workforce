@@ -231,3 +231,63 @@ def test_manager_notifications_follow_the_same_reporting_scope(
     executive = db.query(User).filter(User.role == "CEO").first()
     assert executive is not None
     assert _should_notify_approver(executive, requester) is True
+
+
+class _NeverCalled:
+    def run_orchestration(self, *_args, **_kwargs):
+        raise AssertionError("a suspended conversation must not start a new graph run")
+
+    def stream_orchestration(self, *_args, **_kwargs):
+        raise AssertionError("a suspended conversation must not start a new graph run")
+
+
+def _suspended_conversation(db):
+    user = db.query(User).filter(User.email == "employee@company.com").one()
+    agent = db.query(AIAgent).filter(
+        AIAgent.tenant_id == user.tenant_id, AIAgent.role_code == "LEGAL"
+    ).one()
+    conversation_id = uuid.uuid4()
+    workflow = _create_workflow(db, user, agent, conversation_id)
+    workflow.status = "AWAITING_APPROVAL"
+    approval = WorkflowApproval(
+        workflow_id=workflow.id,
+        action_type="LANGGRAPH_SUBMIT_APPROVAL_REQUEST",
+        risk_level="MEDIUM",
+        payload={"kind": GRAPH_APPROVAL_KIND, "tool_name": "submit_approval_request"},
+        status="WAITING",
+    )
+    db.add(approval)
+    db.flush()
+    return user, agent, str(conversation_id), workflow, approval
+
+
+def test_a_message_to_a_suspended_conversation_is_answered_not_a_500(
+    transactional_db_session,
+) -> None:
+    """The graph refuses a new run until resumed; that used to reach the user as a 500."""
+    db = transactional_db_session
+    user, agent, conversation_id, workflow, approval = _suspended_conversation(db)
+
+    response = LangGraphEngine(_NeverCalled()).execute(  # type: ignore[arg-type]
+        db=db, user=user, agent=agent, message="còn việc khác", conversation_id=conversation_id
+    )
+
+    assert "đang chờ phê duyệt" in response["reply"]
+    assert response["approval_card"]["id"] == str(approval.id)
+    # The pending approval's workflow is left exactly as its resume expects it.
+    assert workflow.status == "AWAITING_APPROVAL"
+
+
+def test_a_streamed_message_to_a_suspended_conversation_completes_cleanly(
+    transactional_db_session,
+) -> None:
+    db = transactional_db_session
+    user, agent, conversation_id, workflow, approval = _suspended_conversation(db)
+
+    events = list(LangGraphEngine(_NeverCalled()).execute_stream(  # type: ignore[arg-type]
+        db=db, user=user, agent=agent, message="còn việc khác", conversation_id=conversation_id
+    ))
+
+    assert [event["event"] for event in events] == ["complete"]
+    assert events[0]["response"]["approval_card"]["id"] == str(approval.id)
+    assert workflow.status == "AWAITING_APPROVAL"

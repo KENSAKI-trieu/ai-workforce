@@ -12,7 +12,27 @@ from typing import Any
 
 from fastapi import HTTPException
 
-from app.models.models import AIAgent, AgentWorkflow, Task, User, WorkflowApproval
+from app.models.models import (
+    AIAgent,
+    AgentWorkflow,
+    ChatConversation,
+    ChatMessage,
+    Task,
+    User,
+    WorkflowApproval,
+)
+from app.plugins.resolver import resolve_prompt_overlay
+from app.services.agents.agent_executor import (
+    LEGAL_PERSPECTIVE_QUESTION,
+    _llm_usage_recorder,
+    _parse_represented_party,
+)
+from app.services.agents.legal_llm_flow import extract_represented_party
+from app.services.chat_contract_review import (
+    document_scope_from_structure,
+    review_reply,
+    run_chat_contract_review,
+)
 from app.services.audit_service import (
     get_cost_by_agent,
     get_cost_by_department,
@@ -29,6 +49,7 @@ from app.services.legal_documents.schemas import list_document_schemas
 from app.services.rag_service import hybrid_search_documents
 from app.tools.registry import ToolContext
 from app.tools.schemas import (
+    ContractRiskReviewInput,
     CreateTaskInput,
     EmployeeLookupInput,
     ExpenseLookupInput,
@@ -304,4 +325,116 @@ def submit_approval_request(
         "workflow_id": str(workflow.id),
         "approval_id": str(approval.id),
         "status": approval.status,
+    }
+
+
+# What the model is told about each finding. The full review, with evidence and suggested
+# wording, is stored and shown to the user as a card; the model only needs enough to
+# summarise it.
+_FINDINGS_FOR_MODEL = 8
+
+
+def _user_messages(context: ToolContext, request: ContractRiskReviewInput) -> list[str]:
+    """The user's own messages in their own conversation, newest first."""
+    conversation_id = request.audit.conversation_id
+    if conversation_id is None:
+        raise HTTPException(status_code=422, detail="A contract review needs a conversation")
+    actor = context.actor
+    # The conversation id arrives as trace metadata from the caller, so it only names a
+    # conversation; ownership is checked here against the authenticated actor.
+    conversation = context.db.query(ChatConversation).filter(
+        ChatConversation.id == conversation_id,
+        ChatConversation.tenant_id == actor.tenant_id,
+        ChatConversation.user_id == actor.id,
+    ).first()
+    if conversation is None:
+        raise HTTPException(status_code=404, detail="Conversation not found")
+    rows = context.db.query(ChatMessage).filter(
+        ChatMessage.conversation_id == conversation.id,
+        ChatMessage.sender == "USER",
+    ).order_by(ChatMessage.created_at.desc()).limit(request.from_user_message + 1).all()
+    return [row.content or "" for row in rows]
+
+
+def _represented_party(context: ToolContext, message: str, *, holds_contract: bool) -> str | None:
+    """The side the user said they act for, read from their message by the Legal reader.
+
+    Read here rather than taken from the model, which filled in NEUTRAL for a user who had
+    not said. When the same message is the contract, only the model reading counts: the
+    keyword fallback would take "Bên A" in the contract's own text as the user's answer.
+    """
+    actor = context.actor
+    perspective = extract_represented_party(
+        message,
+        fallback_party=None if holds_contract else _parse_represented_party(message),
+        fallback_cancel=False,
+        on_usage=_llm_usage_recorder(context.db, actor, "LEGAL"),
+        prompts=resolve_prompt_overlay(context.db, actor.tenant_id, "LEGAL"),
+    )
+    return perspective.represented_party if perspective.decision == "ANSWER" else None
+
+
+def review_contract_risk(
+    context: ToolContext,
+    request: ContractRiskReviewInput,
+) -> dict[str, Any]:
+    messages = _user_messages(context, request)
+    text = (
+        messages[request.from_user_message].strip()
+        if len(messages) > request.from_user_message
+        else ""
+    )
+    if not text:
+        return {
+            "status": "NO_CONTRACT_TEXT",
+            "reviewed": False,
+            "reply": "Bạn hãy dán nội dung hợp đồng hoặc điều khoản cần rà soát.",
+        }
+    # The side is always the user's latest word on it: the current message, which is the
+    # contract itself when both arrive together.
+    party = _represented_party(
+        context, messages[0], holds_contract=request.from_user_message == 0
+    )
+    if party is None:
+        # The same clause is high risk for whoever carries the obligation and low risk for
+        # the other side, so a review without the user's side would score it for nobody.
+        return {
+            "status": "NEEDS_REPRESENTED_PARTY",
+            "reviewed": False,
+            "reply": LEGAL_PERSPECTIVE_QUESTION,
+        }
+    scope = request.document_scope or document_scope_from_structure(text)
+    result, review = run_chat_contract_review(
+        context.db,
+        context.actor,
+        text,
+        represented_party=party,
+        document_scope=scope,
+    )
+    return {
+        "status": "REVIEWED",
+        "reviewed": True,
+        # The user-facing answer, in the same words as the deterministic chat. The graph
+        # ends the turn on it (the tool is terminal), so no model has to summarise the
+        # review -- left to, the model re-called the tool and opened extra approvals.
+        "reply": review_reply(result),
+        "review_id": str(review.id),
+        "represented_party": result["represented_party_label"],
+        "document_scope": result["document_scope"],
+        "reviewed_characters": len(text),
+        "risk_score": result["risk_score"],
+        "risk_level": result["risk_level"],
+        "total_findings": result["total_risks_found"],
+        "missing_clauses": result["missing_clauses_count"],
+        "approval_created": bool(result.get("approval_created")),
+        "findings": [
+            {
+                "severity": finding["severity"],
+                "category": finding["category"],
+                "clause": finding["clause"],
+                "issue": finding["issue"],
+                "recommendation": finding.get("recommendation"),
+            }
+            for finding in result["findings"][:_FINDINGS_FOR_MODEL]
+        ],
     }

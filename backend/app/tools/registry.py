@@ -12,6 +12,7 @@ from sqlalchemy.orm import Session
 
 from app.models.models import AIAgent, User
 from app.tools.schemas import (
+    ContractRiskReviewInput,
     CreateTaskInput,
     EmployeeLookupInput,
     ExpenseLookupInput,
@@ -158,6 +159,7 @@ def build_tool_registry() -> ToolRegistry:
         lookup_employee,
         lookup_expenses,
         lookup_leave,
+        review_contract_risk,
         search_rag,
         submit_approval_request,
     )
@@ -171,6 +173,12 @@ def build_tool_registry() -> ToolRegistry:
         _definition("expense_lookup", "Read AI spend and usage costs.", ExpenseLookupInput, ToolAction.READ_ONLY, {"Owner", "Admin", "CEO", "Manager"}, {"FINANCE"}, 20, "tool.expense.read", lookup_expenses, "ROLE_OR_DEPARTMENT"),
         _definition("generate_legal_document", "Generate a legal draft for human approval.", GenerateLegalDocumentInput, ToolAction.WRITE, {"Owner", "Admin", "CEO"}, {"LEGAL"}, 45, "tool.legal.generate", generate_legal_document_draft, "ROLE_OR_DEPARTMENT"),
         _definition("submit_approval_request", "Create a human approval gate.", SubmitApprovalInput, ToolAction.EXTERNAL_ACTION, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.approval.submit", submit_approval_request),
+        # READ_ONLY in the graph's sense -- it runs without a human approving it first --
+        # although it stores the review it produces. That record is idempotent per user,
+        # text and side, and the only escalation it can raise is itself an approval for a
+        # human to decide, exactly as a review in the deterministic chat does. Gating the
+        # review itself would put every analysis behind an approval nobody needs.
+        _definition("audit_contract_risk", "Review contract text the user sent for legal risk.", ContractRiskReviewInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 60, "tool.legal.review", review_contract_risk),
     )
     for definition in definitions:
         registry.register(definition)

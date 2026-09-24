@@ -15,8 +15,8 @@ import pytest
 from app.models.models import AIAgent, User
 from app.plugins.manifest import parse_manifest
 from app.plugins.resolver import resolve_prompt_overlay, tenant_graph_instructions
-from app.services.agents.langgraph_engine import LangGraphEngine
-from app.services.agents.legal_prompts import DEFAULT_LEGAL_PROMPTS
+from app.agents.langgraph.engine import LangGraphEngine
+from app.agents.legal.prompts import DEFAULT_LEGAL_PROMPTS
 from app.tools.registry import tool_registry
 
 KNOWN_TOOLS = frozenset({"rag_search", "audit_contract_risk", "generate_legal_document", "rag_search"})

@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from app.models.models import LLMCostLog, User
-from app.services.agents import agent_executor, hr_llm_flow
+from tests.chat_patching import patch_chat
+from app.agents.hr import llm_flow as hr_llm_flow
 
 
 class FakeAIClient:
@@ -211,7 +212,7 @@ def test_metering_failure_never_costs_the_user_their_answer(
 
         return record
 
-    monkeypatch.setattr(agent_executor, "_hr_llm_usage_recorder", exploding_recorder)
+    patch_chat(monkeypatch, "_hr_llm_usage_recorder", exploding_recorder)
 
     answer = ask(client, employee_token_headers)
 

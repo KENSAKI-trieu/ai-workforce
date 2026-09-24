@@ -46,9 +46,9 @@ def test_streamed_chat_is_not_sent_to_langgraph(role, client, ceo_token_headers,
         raise AssertionError("an under-development agent must not reach LangGraph")
 
     monkeypatch.setattr(
-        "app.services.agents.langgraph_engine.LangGraphEngine.execute_stream", fail
+        "app.agents.langgraph.engine.LangGraphEngine.execute_stream", fail
     )
-    monkeypatch.setattr("app.services.agents.langgraph_engine.LangGraphEngine.execute", fail)
+    monkeypatch.setattr("app.agents.langgraph.engine.LangGraphEngine.execute", fail)
     response = client.post(
         "/api/v1/agent/chat/stream",
         json={"agent_role": role, "message": "Xin chào"},

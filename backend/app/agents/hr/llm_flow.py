@@ -11,8 +11,8 @@ from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
 
-from app.services.agents.hr_prompts import resolve_slot
-from app.services.agents.llm_json import (
+from app.agents.hr.prompts import resolve_slot
+from app.agents.llm_json import (
     UsageReporter,
     extract_json_object,
     is_echo_provider,

@@ -22,7 +22,7 @@ from app.plugins.resolver import resolve_skill_restriction
 from app.domains.platform.audit_events import add_audit_event
 from app.domains.platform.audit_service import log_llm_cost
 from app.tools.registry import ToolAction, ToolContext, ToolDefinition, tool_registry
-from app.services.langgraph_approvals import GRAPH_WORKFLOW_KIND, ensure_graph_approval
+from app.agents.langgraph.approvals import GRAPH_WORKFLOW_KIND, ensure_graph_approval
 
 router = APIRouter(prefix="/internal/tools", tags=["Internal Tool Gateway"])
 internal_bearer = HTTPBearer(auto_error=False)

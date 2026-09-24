@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from app.plugins.manifest import parse_manifest
 from app.plugins.resolver import build_skill_restriction, effective_tools
-from app.services.agents.hr_prompts import default_prompt
+from app.agents.hr.prompts import default_prompt
 
 KNOWN_TOOLS = frozenset({
     "rag_search",

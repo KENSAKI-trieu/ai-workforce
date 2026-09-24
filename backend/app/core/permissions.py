@@ -5,9 +5,9 @@ that job and may be renamed at any time; its ``permissions`` are codes from this
 and are what the code actually branches on. Splitting them is what makes a company-defined
 org tree possible: renaming "Quản lý" to "Trưởng nhóm" must never change who can do what.
 
-This module deliberately has no imports from ``app.services`` or ``app.models``. It is
+This module deliberately has no imports from ``app.domains`` or ``app.models``. It is
 loaded by seeding, by the request guards and by the API layer, and a dependency in any of
-those directions would close an import cycle through ``app/services/__init__.py`` -- the
+those directions would close an import cycle -- the
 same reason ``app.core.hr_capabilities`` lives here.
 """
 

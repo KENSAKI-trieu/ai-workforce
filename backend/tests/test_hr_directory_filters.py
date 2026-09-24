@@ -10,7 +10,7 @@ allowed to see.
 import pytest
 
 from app.models.models import Tenant, User
-from app.services.agents.agent_executor import (
+from app.agents.hr.intent import (
     _classify_hr_intent,
     _extract_employee_search_term,
     _resolve_requested_departments,

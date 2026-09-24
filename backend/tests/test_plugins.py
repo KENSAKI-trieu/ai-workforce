@@ -21,8 +21,8 @@ from app.plugins.resolver import (
     build_skill_restriction,
     effective_tools,
 )
-from app.services.agents import agent_executor
-from app.services.agents.hr_prompts import (
+from app.agents.access import _attach_plugin_restriction, _can_use_tool, _require_tool
+from app.agents.hr.prompts import (
     DEFAULT_HR_PROMPTS,
     HR_PROMPT_SLOTS,
     default_prompt,
@@ -223,35 +223,35 @@ def _hr_agent_double() -> AIAgent:
 
 def test_require_tool_rejects_what_an_installed_package_withdrew():
     agent = _hr_agent_double()
-    assert agent_executor._can_use_tool(agent, "export_hr_directory") is True
+    assert _can_use_tool(agent, "export_hr_directory") is True
 
-    agent_executor._attach_plugin_restriction(
+    _attach_plugin_restriction(
         agent, SkillRestriction(denied=frozenset({"export_hr_directory"}))
     )
 
-    assert agent_executor._can_use_tool(agent, "export_hr_directory") is False
+    assert _can_use_tool(agent, "export_hr_directory") is False
     with pytest.raises(Exception) as excinfo:
-        agent_executor._require_tool(agent, "export_hr_directory")
+        _require_tool(agent, "export_hr_directory")
     assert "plugin" in str(excinfo.value).lower()
 
 
 def test_a_restriction_never_turns_a_denied_tool_back_on():
     agent = _hr_agent_double()
     agent.disallowed_actions = ["export_hr_directory"]
-    agent_executor._attach_plugin_restriction(
+    _attach_plugin_restriction(
         agent, SkillRestriction(allowed=frozenset({"export_hr_directory"}))
     )
-    assert agent_executor._can_use_tool(agent, "export_hr_directory") is False
+    assert _can_use_tool(agent, "export_hr_directory") is False
 
 
 def test_narrowing_is_not_written_back_to_the_agent_row():
     """Uninstalling must restore access, so the narrowing stays out of the columns."""
     agent = _hr_agent_double()
     original_tools = list(agent.tools_access)
-    agent_executor._attach_plugin_restriction(
+    _attach_plugin_restriction(
         agent, SkillRestriction(allowed=frozenset({"rag_search"}))
     )
-    agent_executor._can_use_tool(agent, "export_hr_directory")
+    _can_use_tool(agent, "export_hr_directory")
     assert agent.tools_access == original_tools
     assert agent.disallowed_actions == []
 
@@ -490,8 +490,8 @@ def test_legal_slots_are_registered_and_previewable(client, ceo_token_headers):
     A role absent from the registry silently drops any prompt a package declares for it,
     so registration and preview are checked together.
     """
-    from app.services.agents.legal_prompts import LEGAL_PROMPT_SLOTS
-    from app.services.agents.prompt_registry import (
+    from app.agents.legal.prompts import LEGAL_PROMPT_SLOTS
+    from app.agents.prompt_registry import (
         default_prompt as registry_default_prompt,
         prompt_slots_for_role,
     )

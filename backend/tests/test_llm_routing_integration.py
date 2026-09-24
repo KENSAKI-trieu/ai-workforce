@@ -12,8 +12,11 @@ import json
 
 import pytest
 
-from app.services.agents import agent_executor
-from app.services.agents import hr_llm_flow, legal_llm_flow
+from app.agents.hr.leave import _is_leave_cancel_message, _is_leave_draft_continuation
+from app.agents.legal.intent import _classify_legal_contract_intent, _parse_represented_party
+from app.agents.text import _normalize_intent_text
+from app.agents.hr import llm_flow as hr_llm_flow
+from app.agents.legal import llm_flow as legal_llm_flow
 from tests.test_legal_chat_perspective import CONTRACT, _chat, _tool_names
 
 
@@ -75,7 +78,7 @@ def test_the_router_can_start_a_review_the_scorer_would_have_missed(
         "Bên A chịu trách nhiệm không giới hạn với mọi thiệt hại phát sinh, và Bên B "
         "có quyền đơn phương chấm dứt bất kỳ lúc nào mà không phải bồi thường."
     )
-    assert agent_executor._classify_legal_contract_intent(prose_clause)[0] == "QUESTION"
+    assert _classify_legal_contract_intent(prose_clause)[0] == "QUESTION"
     scripted_llm(legal_intent={"intent": "REVIEW"})
 
     result = _chat(client, employee_token_headers, prose_clause)
@@ -106,7 +109,7 @@ def test_the_router_reads_a_perspective_the_keyword_rules_cannot(
     )
     opened = _chat(client, employee_token_headers, CONTRACT)
     reply = "Bọn mình là bên đi thuê dịch vụ và trả tiền"
-    assert agent_executor._parse_represented_party(reply) is None
+    assert _parse_represented_party(reply) is None
 
     answered = _chat(client, employee_token_headers, reply, opened["conversation_id"])
 
@@ -195,10 +198,10 @@ def test_the_router_cancels_a_leave_draft_the_keywords_would_have_kept_open(
     wording = "Sếp vừa bảo không cần rồi, bỏ đơn giúp mình nhé"
     # The keyword rules not only miss this cancellation, they read it as the answer to
     # the slot being collected -- so it would have been filed as the reason for leave.
-    assert not agent_executor._is_leave_cancel_message(
-        agent_executor._normalize_intent_text(wording)
+    assert not _is_leave_cancel_message(
+        _normalize_intent_text(wording)
     )
-    assert agent_executor._is_leave_draft_continuation(wording, opened["hr_card"])
+    assert _is_leave_draft_continuation(wording, opened["hr_card"])
 
     cancelled = client.post(
         "/api/v1/agent/chat",

@@ -10,7 +10,7 @@ import logging
 
 import pytest
 
-from app.services.agents.agent_executor import _classify_legal_contract_intent
+from app.agents.legal.intent import _classify_legal_contract_intent
 
 
 LONG_QUESTION = (
@@ -152,7 +152,7 @@ class ScriptedRouter:
 
 
 def _route_with(monkeypatch, router):
-    from app.services.agents import legal_llm_flow
+    from app.agents.legal import llm_flow as legal_llm_flow
 
     monkeypatch.setattr(legal_llm_flow, "get_ai_service_client", lambda: router)
 
@@ -164,7 +164,7 @@ def _open_awaiting_intent(client, headers):
 
 
 def _assert_reviews_the_new_text(client, headers, conversation_id, reply):
-    from app.services.agents.agent_executor import _contract_fingerprint
+    from app.agents.legal.review import _contract_fingerprint
 
     # The card must point at the text just sent, not at the one the question was about.
     assert reply["legal_risk_card"]["status"] == "COLLECTING"
@@ -208,7 +208,7 @@ def test_declining_the_review_is_acknowledged_not_searched(
     client, employee_token_headers, caplog
 ):
     conversation_id = _open_awaiting_intent(client, employee_token_headers)
-    caplog.set_level(logging.INFO, logger="app.services.agents.agent_executor")
+    caplog.set_level(logging.INFO, logger="app.agents.legal.review")
     caplog.clear()
 
     reply = _chat(client, employee_token_headers, "không cần đâu", conversation_id)
@@ -265,7 +265,7 @@ def test_a_pasted_contract_with_a_question_is_answered_when_the_model_says_so(
     Clause numbering used to overrule the model here and ask again, although the user
     had already said which they wanted.
     """
-    caplog.set_level(logging.INFO, logger="app.services.agents.agent_executor")
+    caplog.set_level(logging.INFO, logger="app.agents.legal.review")
     caplog.clear()
     _route_with(monkeypatch, ScriptedRouter(NONE="QUESTION"))
 
@@ -350,10 +350,7 @@ def test_english_markers_match_whole_words_only():
     ],
 )
 def test_a_reply_to_the_pending_offer_is_read_by_its_answer(reply, confirmed):
-    from app.services.agents.agent_executor import (
-        _is_review_confirmation,
-        _is_review_decline,
-    )
+    from app.agents.legal.intent import _is_review_confirmation, _is_review_decline
 
     assert _is_review_confirmation(reply) is confirmed
     if confirmed:

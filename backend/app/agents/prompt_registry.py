@@ -6,15 +6,14 @@ tenant and role. So the defaults have to be reachable from the slot name alone, 
 why Legal's slots carry a ``legal_`` prefix instead of a second bare ``classifier``.
 
 Importing this module must stay cheap. Both prompt modules are leaves holding nothing but
-strings, so the deferred imports the plugin package uses elsewhere are not needed here --
-but the agents *package* eagerly loads the executor, so nothing in this file may import
-``app.services.agents`` itself.
+strings, and the plugin resolver imports this file lazily; nothing here may import the chat
+flows in ``app.agents``, which import the resolver.
 """
 
 from __future__ import annotations
 
-from app.services.agents.hr_prompts import DEFAULT_HR_PROMPTS, HR_PROMPT_SLOTS
-from app.services.agents.legal_prompts import DEFAULT_LEGAL_PROMPTS, LEGAL_PROMPT_SLOTS
+from app.agents.hr.prompts import DEFAULT_HR_PROMPTS, HR_PROMPT_SLOTS
+from app.agents.legal.prompts import DEFAULT_LEGAL_PROMPTS, LEGAL_PROMPT_SLOTS
 
 PROMPT_SLOTS_BY_ROLE: dict[str, tuple[str, ...]] = {
     "HR": tuple(HR_PROMPT_SLOTS),

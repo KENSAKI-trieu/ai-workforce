@@ -26,7 +26,7 @@ from app.clients.ai_service_client import (
     AIServiceError,
     get_ai_service_client,
 )
-from app.services.langgraph_approvals import (
+from app.agents.langgraph.approvals import (
     GRAPH_APPROVAL_KIND,
     GRAPH_WORKFLOW_KIND,
     ensure_graph_approval,

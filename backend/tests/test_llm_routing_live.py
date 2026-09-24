@@ -25,8 +25,8 @@ import time
 import pytest
 
 from app.core.config import settings
-from app.services.agents.hr_llm_flow import classify_hr_request, classify_leave_draft_turn
-from app.services.agents.legal_llm_flow import (
+from app.agents.hr.llm_flow import classify_hr_request, classify_leave_draft_turn
+from app.agents.legal.llm_flow import (
     classify_legal_request,
     extract_represented_party,
 )

@@ -20,8 +20,8 @@ from dataclasses import dataclass
 from typing import Any, Literal
 
 from app.core.config import settings
-from app.services.agents.legal_prompts import resolve_slot
-from app.services.agents.llm_json import (
+from app.agents.legal.prompts import resolve_slot
+from app.agents.llm_json import (
     UsageReporter,
     extract_json_object,
     is_echo_provider,

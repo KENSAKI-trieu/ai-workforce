@@ -23,9 +23,9 @@ from app.models.models import (
 from app.domains.platform.notification_service import create_notification
 from app.domains.hr.hr_service import can_approve_hr_request, finalize_leave_approval
 from app.domains.platform.work_queue import enqueue_job
-from app.services.agents.langgraph_engine import LangGraphEngine
+from app.agents.langgraph.engine import LangGraphEngine
 from app.clients.ai_service_client import AIServiceError
-from app.services.langgraph_approvals import GRAPH_APPROVAL_KIND
+from app.agents.langgraph.approvals import GRAPH_APPROVAL_KIND
 
 router = APIRouter(prefix="/approvals", tags=["Workflow Approvals"])
 APPROVER_ROLES = {"Owner", "Admin", "CEO", "Manager"}

@@ -34,7 +34,7 @@ from app.plugins.service import (
     list_installs,
     uninstall_plugin,
 )
-from app.services.agents.prompt_registry import default_prompt
+from app.agents.prompt_registry import default_prompt
 from app.domains.platform.audit_service import log_audit_action
 
 router = APIRouter(prefix="/plugins", tags=["Plugins"])

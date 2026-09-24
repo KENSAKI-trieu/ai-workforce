@@ -12,8 +12,8 @@ import json
 
 import pytest
 
-from app.services.agents import legal_llm_flow
-from app.services.agents.legal_llm_flow import (
+from app.agents.legal import llm_flow as legal_llm_flow
+from app.agents.legal.llm_flow import (
     EVIDENCE_CHARS_PER_EXCERPT,
     LegalGroundedAnswer,
     answer_from_legal_evidence,

@@ -18,8 +18,9 @@ from app.core.agent_status import is_under_development
 from app.core.config import settings
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
-from app.services.agents.agent_executor import execute_agent_chat, stream_hr_chat_events
-from app.services.agents.langgraph_engine import LangGraphEngine
+from app.agents.chat import execute_agent_chat
+from app.agents.hr.stream import stream_hr_chat_events
+from app.agents.langgraph.engine import LangGraphEngine
 
 router = APIRouter(prefix="/agent", tags=["Agent Chat"])
 logger = logging.getLogger(__name__)

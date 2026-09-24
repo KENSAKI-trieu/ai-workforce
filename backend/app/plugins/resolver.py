@@ -109,7 +109,7 @@ def build_prompt_overlay(manifests: Iterable[PluginManifest]) -> dict[str, str]:
     """Fold prompt overrides onto the shipped defaults, in the order given."""
     # Deferred for the same reason as in manifest.py: importing the agents package at
     # module level would close an import cycle back into this module.
-    from app.services.agents.prompt_registry import default_prompt
+    from app.agents.prompt_registry import default_prompt
 
     overlay: dict[str, str] = {}
     for manifest in manifests:
@@ -167,7 +167,7 @@ def resolve_prompt_overlay(
     Returning None rather than an empty mapping keeps the default path free of any
     string work for the overwhelming majority of tenants, which customise nothing.
     """
-    from app.services.agents.prompt_registry import answer_slot_for_role, default_prompt
+    from app.agents.prompt_registry import answer_slot_for_role, default_prompt
 
     overlay = build_prompt_overlay(installed_manifests(db, tenant_id, role_code))
 
@@ -191,7 +191,7 @@ def tenant_graph_instructions(db: Session, tenant_id: uuid.UUID, role_code: str)
     The graph places this after its own rules, so it can change tone and terminology but
     not what the agent is allowed to do.
     """
-    from app.services.agents.prompt_registry import answer_slot_for_role
+    from app.agents.prompt_registry import answer_slot_for_role
 
     answer_slot = answer_slot_for_role(role_code)
     parts: list[str] = []

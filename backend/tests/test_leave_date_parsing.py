@@ -3,9 +3,9 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.agents import agent_executor
-from app.services.agents.agent_executor import (
-    _classify_hr_intent,
+from tests.chat_patching import patch_chat
+from app.agents.hr.intent import _classify_hr_intent
+from app.agents.hr.leave import (
     _extract_leave_slots,
     _extract_leave_slots_with_llm,
     _is_leave_draft_continuation,
@@ -42,9 +42,7 @@ def test_parse_leave_date_keeps_explicit_year_and_rejects_invalid_dates():
 
 
 def test_llm_leave_slots_override_parser_and_keep_existing_draft(monkeypatch):
-    monkeypatch.setattr(
-        agent_executor,
-        "extract_leave_request_slots",
+    patch_chat(monkeypatch, "extract_leave_request_slots",
         lambda *_args, **_kwargs: {
             "start_date": None,
             "end_date": "2026-08-29",

@@ -13,14 +13,9 @@ from pypdf import PdfReader
 
 from app.core.database import SyncSessionLocal
 from app.models.models import AIAgent, AuditLog, User, UserMemory
-from app.services.agents.agent_executor import (
-    HR_CONFIGURATION_VERSION,
-    HR_RETIRED_TOOLS,
-    _classify_hr_intent,
-    _leave_balance_names_another_person,
-    _repair_hr_agent_capabilities,
-    _require_tool,
-)
+from app.agents.access import _repair_hr_agent_capabilities, _require_tool
+from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
+from app.agents.hr.intent import _classify_hr_intent, _leave_balance_names_another_person
 
 
 @pytest.mark.parametrize(

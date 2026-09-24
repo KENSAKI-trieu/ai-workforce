@@ -6,8 +6,8 @@ from datetime import datetime, timezone
 from app.api.v1.approvals import _can_approve
 from app.core.security import create_internal_tool_token
 from app.models.models import AIAgent, AgentWorkflow, User, WorkflowApproval
-from app.services.agents.langgraph_engine import LangGraphEngine
-from app.services.langgraph_approvals import (
+from app.agents.langgraph.engine import LangGraphEngine
+from app.agents.langgraph.approvals import (
     GRAPH_APPROVAL_KIND,
     GRAPH_WORKFLOW_KIND,
     _should_notify_approver,

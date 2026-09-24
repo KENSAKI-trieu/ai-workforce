@@ -26,8 +26,8 @@ PROMPT_MODES = frozenset({"append", "replace"})
 def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:
     """Slot names a role accepts overrides for, or None when it accepts none.
 
-    The import is deferred because `app.services.agents` eagerly loads the agent
-    executor, which loads the plugin resolver, which loads this module. Reaching for
+    The import is deferred because the chat flows in `app.agents` load the plugin
+    resolver, which loads this module. Reaching for
     the slot names only when a manifest is actually parsed keeps this module a leaf and
     that cycle unformed.
 
@@ -35,7 +35,7 @@ def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:
     deliberate: only a flow that reads a resolved overlay can honour one, so accepting
     prompts for another role would store text nothing ever applies.
     """
-    from app.services.agents.prompt_registry import prompt_slots_for_role as slots
+    from app.agents.prompt_registry import prompt_slots_for_role as slots
 
     return slots(role_code)
 

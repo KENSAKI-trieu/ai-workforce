@@ -12,7 +12,7 @@ import json
 
 import pytest
 
-from app.services.agents.legal_llm_flow import (
+from app.agents.legal.llm_flow import (
     CLASSIFIER_MESSAGE_LIMIT,
     LegalIntentClassification,
     LegalPerspective,

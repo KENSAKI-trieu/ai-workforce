@@ -11,7 +11,7 @@ import uuid
 import pytest
 
 from app.models.models import AgentWorkflow, AIAgent, User, WorkflowApproval
-from app.services.agents import agent_executor
+from tests.chat_patching import patch_chat
 
 
 def chat(client, headers, message, conversation_id=None):
@@ -166,8 +166,8 @@ def test_a_queue_that_exactly_fills_the_scan_window_is_not_truncated(
         User.email == "admin@company.com"
     ).one()
     _waiting_approvals(transactional_db_session, actor, 3)
-    monkeypatch.setattr(agent_executor, "PENDING_APPROVAL_BATCH", 1)
-    monkeypatch.setattr(agent_executor, "PENDING_APPROVAL_SCAN_LIMIT", 3)
+    patch_chat(monkeypatch, "PENDING_APPROVAL_BATCH", 1)
+    patch_chat(monkeypatch, "PENDING_APPROVAL_SCAN_LIMIT", 3)
 
     data = chat(client, ceo_token_headers, "đơn chờ duyệt")
 
@@ -182,8 +182,8 @@ def test_a_queue_longer_than_the_scan_window_is_reported_as_truncated(
         User.email == "admin@company.com"
     ).one()
     _waiting_approvals(transactional_db_session, actor, 3)
-    monkeypatch.setattr(agent_executor, "PENDING_APPROVAL_BATCH", 1)
-    monkeypatch.setattr(agent_executor, "PENDING_APPROVAL_SCAN_LIMIT", 2)
+    patch_chat(monkeypatch, "PENDING_APPROVAL_BATCH", 1)
+    patch_chat(monkeypatch, "PENDING_APPROVAL_SCAN_LIMIT", 2)
 
     data = chat(client, ceo_token_headers, "đơn chờ duyệt")
 

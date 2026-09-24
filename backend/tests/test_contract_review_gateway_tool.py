@@ -17,8 +17,8 @@ import pytest
 
 from app.core.security import create_internal_tool_token
 from app.models.models import AIAgent, ChatConversation, ChatMessage, ContractReview, User
-from app.services.agents import legal_llm_flow
-from app.services.agents.langgraph_engine import LangGraphEngine
+from app.agents.legal import llm_flow as legal_llm_flow
+from app.agents.langgraph.engine import LangGraphEngine
 
 CONTRACT = (
     "HỢP ĐỒNG DỊCH VỤ\n"

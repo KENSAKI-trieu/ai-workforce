@@ -27,9 +27,9 @@ from app.core.gateway_tools import (
 )
 from app.core.security import create_internal_tool_token
 from app.models.models import AIAgent, AuditLog, Task, User, WorkflowApproval
-from app.services.agents.langgraph_engine import LangGraphEngine
+from app.agents.langgraph.engine import LangGraphEngine
 from app.domains.platform.auth_service import DEFAULT_AGENT_TOOLS
-from app.services.langgraph_approvals import GRAPH_APPROVAL_KIND
+from app.agents.langgraph.approvals import GRAPH_APPROVAL_KIND
 from app.tools.executors import search_rag
 from app.tools.registry import ToolContext, tool_registry
 from app.tools.schemas import RAGSearchInput

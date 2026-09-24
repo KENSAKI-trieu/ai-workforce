@@ -22,12 +22,10 @@ from app.models.models import (
     WorkflowApproval,
 )
 from app.plugins.resolver import resolve_prompt_overlay
-from app.services.agents.agent_executor import (
-    LEGAL_PERSPECTIVE_QUESTION,
-    _llm_usage_recorder,
-    _parse_represented_party,
-)
-from app.services.agents.legal_llm_flow import extract_represented_party
+from app.agents.legal.intent import _parse_represented_party
+from app.agents.legal.replies import LEGAL_PERSPECTIVE_QUESTION
+from app.agents.usage import _llm_usage_recorder
+from app.agents.legal.llm_flow import extract_represented_party
 from app.domains.legal.chat_contract_review import (
     document_scope_from_structure,
     review_reply,
@@ -42,7 +40,7 @@ from app.domains.platform.audit_service import (
 )
 from app.domains.hr.hr_employee_tools import get_employee_sections
 from app.domains.hr.hr_service import query_leave_balance
-from app.services.langgraph_approvals import GRAPH_APPROVER_ROLES
+from app.agents.langgraph.approvals import GRAPH_APPROVER_ROLES
 from app.domains.legal.legal_document_generator import generate_legal_document
 from app.domains.legal.legal_draft_storage import save_legal_artifact
 from app.domains.legal.legal_documents.schemas import list_document_schemas

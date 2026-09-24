@@ -7,7 +7,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.config import Settings
-from app.feature_flags import runtime_feature_snapshot, select_langchain_runtime
+from app.feature_flags import runtime_feature_snapshot
 from app.rag.embedding.factory import get_embedding_provider
 from app.rag.evaluation.reranking_metrics import ndcg_at_k, reciprocal_rank
 from app.rag.ingestion.chunker import chunk_document
@@ -30,7 +30,7 @@ def test_runtime_health_defaults_to_legacy() -> None:
     payload = response.json()
     assert payload["active_runtime"] == "legacy"
     assert payload["legacy_fallback"] is True
-    assert payload["langchain"]["effective"] is False
+    assert "langchain" not in payload
     assert payload["langgraph"]["effective"] is False
 
 
@@ -80,30 +80,8 @@ async def _enter_lifespan(lifespan) -> None:
         pass
 
 
-def test_langchain_role_gate_and_legacy_fallback() -> None:
-    config = Settings(
-        LANGCHAIN_ENABLED=True,
-        LANGGRAPH_ENABLED=False,
-        LANGCHAIN_AGENT_ROLES=" legal,HR ",
-    )
-    selected = select_langchain_runtime("LEGAL", config=config)
-    assert selected.requested is True
-    assert selected.backend == "langchain"
-    assert selected.available is True
-    assert selected.fallback_reason is None
-
-    excluded = select_langchain_runtime("FINANCE", config=config)
-    assert excluded.requested is False
-    assert excluded.backend == "legacy"
-
-    snapshot = runtime_feature_snapshot(config)
-    assert snapshot["langchain"]["agent_roles"] == ["HR", "LEGAL"]
-    assert snapshot["langchain"]["effective"] is True
-    assert snapshot["active_runtime"] == "langchain"
-
-
-def test_runtime_health_prefers_enabled_langgraph() -> None:
-    config = Settings(LANGCHAIN_ENABLED=True, LANGGRAPH_ENABLED=True)
+def test_runtime_health_reports_enabled_langgraph() -> None:
+    config = Settings(LANGGRAPH_ENABLED=True)
     snapshot = runtime_feature_snapshot(config)
     assert snapshot["active_runtime"] == "langgraph"
     assert snapshot["langgraph"]["effective"] is True
@@ -237,10 +215,9 @@ def test_deterministic_embedding_contract() -> None:
     assert math.isclose(sum(value * value for value in vectors[0]), 1.0, rel_tol=1e-6)
 
 
-def test_agent_route_contract() -> None:
-    response = client.post("/v1/agents/route", json={"message": "Kiểm tra ngân sách tháng"})
-    assert response.status_code == 200
-    assert response.json()["role"] == "FINANCE"
+def test_agent_route_endpoint_is_gone() -> None:
+    # The backend always names the agent, so the AI service no longer guesses one.
+    assert client.post("/v1/agents/route", json={"message": "Kiểm tra ngân sách tháng"}).status_code == 404
 
 
 class _FixedBGEReranker(BaseReranker):

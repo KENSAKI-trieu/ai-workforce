@@ -62,17 +62,6 @@ class RerankResponse(BaseModel):
     latency_ms: float
 
 
-class AgentRouteRequest(BaseModel):
-    requested_role: str | None = None
-    message: str = Field(min_length=1)
-
-
-class AgentRouteResponse(BaseModel):
-    role: str
-    agent_name: str
-    capabilities: list[str]
-
-
 class LLMGenerateRequest(BaseModel):
     messages: list[dict[str, str]] = Field(min_length=1, max_length=100)
     provider: str | None = None
@@ -90,13 +79,11 @@ class RuntimeFeatureStatus(BaseModel):
     requested: bool
     available: bool
     effective: bool
-    agent_roles: list[str] | None = None
 
 
 class RuntimeFeatureResponse(BaseModel):
-    active_runtime: Literal["legacy", "langchain", "langgraph"]
+    active_runtime: Literal["legacy", "langgraph"]
     legacy_fallback: bool
-    langchain: RuntimeFeatureStatus
     langgraph: RuntimeFeatureStatus
 
 

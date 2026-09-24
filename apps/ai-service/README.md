@@ -40,11 +40,9 @@ OpenAI and Gemini chat calls use LangChain chat models. Configure
 the other configured provider and finally the deterministic local provider.
 An explicit model override applies only to the primary provider.
 
-The `app/chains` package contains chat, grounded RAG answer and structured
-extraction chains. Routing decisions, citations and contract findings are
-validated with the Pydantic models under `app/schemas`. Set
-`LANGCHAIN_ENABLED=true` to enable structured model routing; the registry route
-remains the fallback when no external model is configured or all calls fail.
+The `app/chains` package holds the chat chain behind `/v1/llm/generate`.
+Agents run as LangGraph graphs under `app/orchestration`; the backend decides which
+agent a turn goes to, so the AI service has no routing endpoint of its own.
 
 ### HR question/action flow
 

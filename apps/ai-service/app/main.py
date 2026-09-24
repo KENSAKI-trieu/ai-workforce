@@ -7,11 +7,9 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Path, status
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 
-from app.agents.base.registry import agent_registry
 from app.chains.chat import generate_chat
-from app.chains.structured_extraction import extract_agent_routing
 from app.config import settings
-from app.feature_flags import runtime_feature_snapshot, select_langchain_runtime
+from app.feature_flags import runtime_feature_snapshot
 from app.guardrails.tool_permission import is_tool_allowed
 from app.rag.embedding.factory import get_embedding_provider
 from app.rag.ingestion.chunker import chunk_document, iter_chunk_document
@@ -26,8 +24,6 @@ from app.pipeline_events import pipeline_events
 from app.tools.gateway import ToolGatewayClient
 from app.tools.registry import build_langchain_tools
 from app.shared.contracts import (
-    AgentRouteRequest,
-    AgentRouteResponse,
     ChunkRequest,
     ChunkResponse,
     EmbeddingRequest,
@@ -442,27 +438,6 @@ def rerank(request: RerankRequest) -> RerankResponse:
         fallback_used=outcome.fallback_used,
         candidates_scored=outcome.candidates_scored,
         latency_ms=outcome.latency_ms,
-    )
-
-
-@app.post("/v1/agents/route", response_model=AgentRouteResponse, dependencies=[Depends(require_internal_token)])
-def route_agent(request: AgentRouteRequest) -> AgentRouteResponse:
-    agent = agent_registry.resolve(request.requested_role, request.message)
-    runtime = select_langchain_runtime(agent.role)
-    if runtime.backend == "langchain":
-        decision = extract_agent_routing(
-            request.message,
-            {
-                item.role: f"{item.description}; capabilities={', '.join(item.capabilities)}"
-                for item in agent_registry.all()
-            },
-            fallback_role=agent.role,
-        )
-        agent = agent_registry.get(decision.role)
-    return AgentRouteResponse(
-        role=agent.role,
-        agent_name=agent.name,
-        capabilities=list(agent.capabilities),
     )
 
 

@@ -96,11 +96,9 @@ class Settings(BaseSettings):
     AGENT_MIDDLEWARE_MODEL_RETRIES: int = Field(default=2, ge=0, le=10)
     AGENT_COMPLEXITY_THRESHOLD: int = Field(default=4, ge=1, le=20)
 
-    # Migration gates. LangChain is available from phase 2 and can still be
-    # rolled out by role while the deterministic provider remains a fallback.
-    LANGCHAIN_ENABLED: bool = False
+    # Reported by /health/runtime; in production it also requires a durable checkpointer.
+    # Which agents run through the graph is decided by the backend.
     LANGGRAPH_ENABLED: bool = False
-    LANGCHAIN_AGENT_ROLES: str = ""
     LANGGRAPH_CHECKPOINT_BACKEND: Literal["memory", "postgres"] = "memory"
     LANGGRAPH_CHECKPOINT_DATABASE_URL: Optional[str] = None
     LANGGRAPH_CHECKPOINT_AUTO_SETUP: bool = True

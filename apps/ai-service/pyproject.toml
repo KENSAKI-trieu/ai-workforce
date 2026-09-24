@@ -42,4 +42,5 @@ addopts = "-q"
 markers = [
   "internal_auth: exercises the X-AI-Service-Key guard itself, so the guard is not bypassed",
   "bedrock_flag: sets BEDROCK_ENABLED itself, so the suite-wide fixture leaves it alone",
+  "tool_contracts: reads the backend's tool contracts itself, so the suite-wide stub is off",
 ]

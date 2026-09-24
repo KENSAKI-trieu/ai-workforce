@@ -20,6 +20,7 @@ from app.models.models import (
     User,
     WorkflowApproval,
 )
+from app.plugins.resolver import resolve_skill_restriction, tenant_graph_instructions
 from app.services.ai_service_client import (
     AIServiceClient,
     AIServiceError,
@@ -48,12 +49,14 @@ class LangGraphEngine:
     @staticmethod
     def _payload(
         *,
+        db: Session,
         user: User,
         agent: AIAgent,
         conversation_id: str,
         workflow_id: str,
         message: str | None = None,
     ) -> dict[str, Any]:
+        restriction = resolve_skill_restriction(db, user.tenant_id, agent.role_code)
         payload = {
             "tenant_id": str(user.tenant_id),
             "user_id": str(user.id),
@@ -63,12 +66,19 @@ class LangGraphEngine:
             "workflow_id": workflow_id,
             "agent_role": agent.role_code,
             # The effective grant, not the raw column: `allowed_actions` narrows
-            # `tools_access` and has no field of its own on the wire, so resolving it here
-            # keeps the AI service from binding a tool the gateway will refuse.
-            "allowed_tools": effective_tool_grants(
-                agent.tools_access, agent.allowed_actions, agent.disallowed_actions
-            ),
+            # `tools_access`, and a tenant's plugins can narrow it further. The gateway
+            # refuses anything outside it, so offering the model more only costs a turn.
+            "allowed_tools": [
+                tool
+                for tool in effective_tool_grants(
+                    agent.tools_access, agent.allowed_actions, agent.disallowed_actions
+                )
+                if restriction.permits(tool)
+            ],
             "denied_tools": list(agent.disallowed_actions or []),
+            # What the tenant added to this agent's reply prompt -- plugin appends and the
+            # administrator's own text. The graph puts it after its own rules.
+            "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),
         }
         if message is not None:
             payload.update({"message": message, "requested_agent": agent.role_code})
@@ -251,6 +261,7 @@ class LangGraphEngine:
         try:
             result = self.client.run_orchestration(
                 self._payload(
+                    db=db,
                     user=user,
                     agent=agent,
                     conversation_id=conversation_id,
@@ -307,6 +318,7 @@ class LangGraphEngine:
         try:
             for item in self.client.stream_orchestration(
                 self._payload(
+                    db=db,
                     user=user,
                     agent=agent,
                     conversation_id=conversation_id,
@@ -461,6 +473,7 @@ class LangGraphEngine:
         token = create_internal_tool_token(user, agent_role=agent.role_code)
         result = self.client.resume_orchestration(
             self._payload(
+                db=db,
                 user=user,
                 agent=agent,
                 conversation_id=str(workflow.thread_id),

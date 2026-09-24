@@ -12,7 +12,7 @@ from app.governance.middleware.observability import GatewayTelemetrySink
 from app.agents.base.decision import DeterministicDecisionProvider, LangChainDecisionProvider
 from app.agents.base.nodes import OrchestrationRuntimeContext
 from app.schemas.orchestration import OrchestrationRequest
-from app.tools.gateway import ToolGatewayClient
+from app.tools.gateway import ToolGatewayClient, ToolGatewayError
 from app.tools.registry import build_langchain_tools
 
 # Fields the orchestrator injects from the trusted runtime context. The system prompt
@@ -21,10 +21,15 @@ from app.tools.registry import build_langchain_tools
 SERVER_INJECTED_TOOL_FIELDS = ("tenant_id", "audit")
 
 
+class ToolContractsUnavailable(RuntimeError):
+    """The backend's tool contracts could not be read, so the turn cannot be governed."""
+
+
 def model_facing_schema(tool: Any) -> dict[str, Any]:
     if tool.args_schema is None:
         return {}
-    schema = dict(tool.args_schema.model_json_schema())
+    raw = tool.args_schema
+    schema = dict(raw if isinstance(raw, dict) else raw.model_json_schema())
     properties = {
         name: value
         for name, value in (schema.get("properties") or {}).items()
@@ -54,11 +59,19 @@ def build_runtime_context(
     allowed_tools: list[str],
     denied_tools: list[str],
     tool_jwt: str,
+    tenant_instructions: str = "",
 ) -> OrchestrationRuntimeContext:
     gateway = ToolGatewayClient(settings.BACKEND_TOOL_GATEWAY_URL, tool_jwt)
+    try:
+        contract_tools = build_langchain_tools(gateway)
+    except ToolGatewayError as exc:
+        # Refused rather than run tool-less: a graph that cannot see its tools would
+        # answer as if the tenant had no knowledge base. The backend falls back to its
+        # deterministic flow on a 5xx from here.
+        raise ToolContractsUnavailable(str(exc)) from exc
     tools = {
         tool.name: tool
-        for tool in build_langchain_tools(gateway)
+        for tool in contract_tools
         if is_tool_allowed(tool.name, allowed_tools, denied_tools)
     }
     security = AgentRuntimeContext(
@@ -90,6 +103,7 @@ def build_runtime_context(
             telemetry_sink=GatewayTelemetrySink(gateway),
             tool_contracts=contracts,
             runtime_context=security,
+            tenant_instructions=tenant_instructions,
         )
     else:
         decision_provider = DeterministicDecisionProvider()

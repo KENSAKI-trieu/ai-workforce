@@ -6,7 +6,7 @@ from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
 from app.agents.base.persistence import orchestration_engines
-from app.agents.base.runtime import build_runtime_context, initial_state
+from app.agents.base.runtime import ToolContractsUnavailable, build_runtime_context, initial_state
 from app.agents.registry import resolve_agent
 from app.api.dependencies import require_internal_token, tool_jwt
 from app.api.sse import SSE_HEADERS, encode_sse
@@ -48,6 +48,7 @@ def _context_for(request: OrchestrationRequest, authorization: str | None):
         allowed_tools=request.allowed_tools,
         denied_tools=request.denied_tools,
         tool_jwt=tool_jwt(authorization),
+        tenant_instructions=request.tenant_instructions,
     )
 
 
@@ -67,6 +68,8 @@ def run_orchestration(
             context=context,
             thread_id=request.conversation_id,
         )
+    except ToolContractsUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Tool contracts are unavailable") from exc
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _orchestration_response(result, request.conversation_id)
@@ -83,6 +86,8 @@ def stream_orchestration(
     """Stream a sanitized orchestration protocol over SSE."""
     try:
         context = _context_for(request, x_internal_tool_authorization)
+    except ToolContractsUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Tool contracts are unavailable") from exc
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
@@ -135,12 +140,15 @@ def resume_orchestration(
             allowed_tools=request.allowed_tools,
             denied_tools=request.denied_tools,
             tool_jwt=tool_jwt(x_internal_tool_authorization),
+            tenant_instructions=request.tenant_instructions,
         )
         result = orchestration_engines.get().resume(
             request.resume,
             context=context,
             thread_id=request.conversation_id,
         )
+    except ToolContractsUnavailable as exc:
+        raise HTTPException(status_code=503, detail="Tool contracts are unavailable") from exc
     except (ValueError, PermissionError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     return _orchestration_response(result, request.conversation_id)

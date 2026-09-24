@@ -21,6 +21,15 @@ PROMPT_SLOTS_BY_ROLE: dict[str, tuple[str, ...]] = {
     "LEGAL": tuple(LEGAL_PROMPT_SLOTS),
 }
 
+# The slot that writes the reply the user reads. The administrator's free text on the
+# agent page lands here, and it is what a tenant's conventions (tone, terminology) are
+# taken from when the agent runs through LangGraph. The other slots route turns or parse
+# arguments and have no equivalent in the graph.
+ANSWER_SLOT_BY_ROLE: dict[str, str] = {
+    "HR": "answer",
+    "LEGAL": "legal_answer",
+}
+
 _DEFAULTS: dict[str, str] = {**DEFAULT_HR_PROMPTS, **DEFAULT_LEGAL_PROMPTS}
 
 # A slot name shared by two roles would make `default_prompt` ambiguous and silently give
@@ -36,6 +45,11 @@ def default_prompt(slot: str) -> str:
         return _DEFAULTS[slot]
     except KeyError:
         raise KeyError(f"Unknown prompt slot: {slot}") from None
+
+
+def answer_slot_for_role(role_code: str) -> str | None:
+    """The slot writing this role's replies, or None for a role with no LLM reply."""
+    return ANSWER_SLOT_BY_ROLE.get(role_code.strip().upper())
 
 
 def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:

@@ -18,6 +18,9 @@ class OrchestrationRequest(BaseModel):
     requested_agent: str = Field(min_length=1, max_length=50)
     allowed_tools: list[str] = Field(default_factory=list, max_length=100)
     denied_tools: list[str] = Field(default_factory=list, max_length=100)
+    # What the tenant added to this agent's reply prompt; resolved by the backend's
+    # plugin resolver. Tone and terminology only -- the graph places it after its rules.
+    tenant_instructions: str = Field(default="", max_length=8000)
 
 
 class OrchestrationResumeRequest(BaseModel):
@@ -30,6 +33,7 @@ class OrchestrationResumeRequest(BaseModel):
     agent_role: str = Field(min_length=1, max_length=50)
     allowed_tools: list[str] = Field(default_factory=list, max_length=100)
     denied_tools: list[str] = Field(default_factory=list, max_length=100)
+    tenant_instructions: str = Field(default="", max_length=8000)
     resume: Any
 
 

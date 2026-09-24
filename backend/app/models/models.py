@@ -343,10 +343,13 @@ class AIAgent(Base):
     # tenant. Empty for every existing row and every new one, which is what makes it
     # safe: a tenant that sets nothing keeps the shipped prompt byte for byte.
     #
-    # It reaches the `answer` slot only. A single text box has no way to express which
-    # of the three prompt slots it means, and letting free text into `classifier` or
-    # `leave_slot` would let somebody adjusting wording break intent routing or date
-    # parsing instead. Per-slot edits are what a plugin package is for.
+    # It reaches the slot that writes the role's replies only (`answer` for HR,
+    # `legal_answer` for Legal; see ANSWER_SLOT_BY_ROLE). A single text box has no way
+    # to express which slot it means, and letting free text into a router or parser slot
+    # such as `classifier` or `leave_slot` would let somebody adjusting wording break
+    # intent routing or date parsing instead. Per-slot edits are what a plugin package is
+    # for. When the agent runs through LangGraph the text reaches the graph as the
+    # tenant's conventions (plugins.resolver.tenant_graph_instructions).
     prompt_overlay: Mapped[str | None] = mapped_column(Text, nullable=True)
     model_name: Mapped[str] = mapped_column(String(100), default="gpt-4o")
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)

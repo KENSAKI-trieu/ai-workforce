@@ -83,6 +83,9 @@ class ToolDefinition:
     retry: RetryPolicy
     audit_action: str
     executor: ToolExecutor
+    # A terminal tool's result carries the user-facing `reply`, and the graph ends the
+    # turn on it instead of asking the model what to do next.
+    terminal: bool = False
 
     def authorize(self, user: User) -> None:
         if not user.is_active or not self.acl.permits(user):
@@ -103,6 +106,7 @@ class ToolDefinition:
                 "retryable_status_codes": list(self.retry.retryable_status_codes),
             },
             "audit_action": self.audit_action,
+            "terminal": self.terminal,
             "input_schema": self.input_schema.model_json_schema(),
         }
 
@@ -137,6 +141,8 @@ def _definition(
     audit_action: str,
     executor: ToolExecutor,
     acl_match: str = "ROLE_AND_DEPARTMENT",
+    *,
+    terminal: bool = False,
 ) -> ToolDefinition:
     read_only = action == ToolAction.READ_ONLY
     return ToolDefinition(
@@ -149,6 +155,7 @@ def _definition(
         retry=RetryPolicy(max_attempts=3 if read_only else 1, backoff_seconds=0.25),
         audit_action=audit_action,
         executor=executor,
+        terminal=terminal,
     )
 
 
@@ -178,7 +185,18 @@ def build_tool_registry() -> ToolRegistry:
         # text and side, and the only escalation it can raise is itself an approval for a
         # human to decide, exactly as a review in the deterministic chat does. Gating the
         # review itself would put every analysis behind an approval nobody needs.
-        _definition("audit_contract_risk", "Review contract text the user sent for legal risk.", ContractRiskReviewInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 60, "tool.legal.review", review_contract_risk),
+        # Terminal: the backend already knows what to tell the user -- the side question,
+        # or the review summary behind its card. Handing the result back to the model
+        # instead made it re-call the tool and open approvals of its own.
+        _definition(
+            "audit_contract_risk",
+            "Review contract or clause text the user sent in this conversation for legal "
+            "risk. The backend reads the text, and the side the user represents, from the "
+            "user's own messages; do not paste the contract into the call. Its result is the "
+            "answer to the user, so call it at most once per turn.",
+            ContractRiskReviewInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 60, "tool.legal.review",
+            review_contract_risk, terminal=True,
+        ),
     )
     for definition in definitions:
         registry.register(definition)

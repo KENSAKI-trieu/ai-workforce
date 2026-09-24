@@ -141,7 +141,7 @@ def _chat(client, headers, message):
 
 def _search_finds_something(client, headers):
     result = _chat(client, headers, LEAVE_QUESTION)
-    search = next(t for t in result["tools_executed"] if t["tool_name"] == "hybrid_rag_search")
+    search = next(t for t in result["tools_executed"] if t["tool_name"] == "rag_search")
     assert search["result_count"] > 0, "the seeded knowledge base should match this query"
 
 

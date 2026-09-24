@@ -15,7 +15,7 @@ from sqlalchemy import text
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.gateway_tools import effective_tool_grants
+from app.core.tool_permissions import grant_decision
 from app.core.security import decode_internal_tool_token
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, User
 from app.plugins.resolver import resolve_skill_restriction
@@ -120,14 +120,16 @@ def _agent_permits(
 ) -> bool:
     if agent is None:
         return True
-    if tool_name not in effective_tool_grants(
-        agent.tools_access, agent.allowed_actions, agent.disallowed_actions
-    ):
-        return False
-    # The same narrowing the chat path applies, enforced again here. This is the second
-    # door into the tools, so a plugin restriction honoured only in the executor would
-    # be no restriction at all.
-    return resolve_skill_restriction(db, agent.tenant_id, agent.role_code).permits(tool_name)
+    # The same rule, plugin narrowing included, that the chat path applies. This is the
+    # second door into the tools, so a restriction honoured only in the executor would be
+    # no restriction at all.
+    return grant_decision(
+        tool_name,
+        tools_access=agent.tools_access,
+        allowed_actions=agent.allowed_actions,
+        disallowed_actions=agent.disallowed_actions,
+        restriction=resolve_skill_restriction(db, agent.tenant_id, agent.role_code),
+    ) is None
 
 
 def _enforce_agent_configuration(

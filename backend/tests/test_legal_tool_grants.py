@@ -1,7 +1,7 @@
 """The Legal agent does what its tool grants say, and the configuration page offers only
 toggles that change something.
 
-Before: switching `hybrid_rag_search` off left the Legal chat searching; switching
+Before: switching `rag_search` off left the Legal chat searching; switching
 `audit_contract_risk` off silenced questions as well as reviews; the /legal/* endpoints
 ignored the grants entirely; and the page offered HR tools on the Legal agent that no
 Legal branch ever checked.
@@ -64,11 +64,11 @@ def _tools(result):
 def test_questions_still_work_with_reviews_switched_off(
     client, employee_token_headers, transactional_db_session, legal
 ):
-    with granted(transactional_db_session, legal, ["hybrid_rag_search"]):
+    with granted(transactional_db_session, legal, ["rag_search"]):
         answered = _chat(client, employee_token_headers, QUESTION)
         pasted = _chat(client, employee_token_headers, SHORT_CONTRACT)
 
-    assert "hybrid_rag_search" in _tools(answered)
+    assert "rag_search" in _tools(answered)
     assert "audit_contract_risk" not in _tools(pasted)
     assert "`audit_contract_risk` hiện chưa được bật" in pasted["reply"]
     assert pasted["legal_risk_card"] is None
@@ -80,8 +80,8 @@ def test_switching_search_off_stops_the_search(
     with granted(transactional_db_session, legal, ["audit_contract_risk"]):
         result = _chat(client, employee_token_headers, QUESTION)
 
-    assert "hybrid_rag_search" not in _tools(result)
-    assert "`hybrid_rag_search` hiện chưa được bật" in result["reply"]
+    assert "rag_search" not in _tools(result)
+    assert "`rag_search` hiện chưa được bật" in result["reply"]
     assert result["citations"] == []
 
 
@@ -101,7 +101,7 @@ def test_revoking_reviews_mid_conversation_closes_the_open_review(
     opened = _chat(client, employee_token_headers, SHORT_CONTRACT)
     assert opened["legal_risk_card"]["status"] == "COLLECTING"
 
-    with granted(transactional_db_session, legal, ["hybrid_rag_search"]):
+    with granted(transactional_db_session, legal, ["rag_search"]):
         # A side named after the revocation must not run the review.
         result = _chat(client, employee_token_headers, "Bên A", opened["conversation_id"])
 
@@ -116,7 +116,7 @@ def test_legal_endpoints_refuse_a_tool_that_is_switched_off(
     client, ceo_token_headers, transactional_db_session, legal
 ):
     body = {"contract_text": SHORT_CONTRACT, "document_name": "x", "represented_party": "PARTY_A"}
-    with granted(transactional_db_session, legal, ["hybrid_rag_search"]):
+    with granted(transactional_db_session, legal, ["rag_search"]):
         refused = client.post("/api/v1/legal/audit-contract", json=body, headers=ceo_token_headers)
     allowed = client.post("/api/v1/legal/audit-contract", json=body, headers=ceo_token_headers)
 
@@ -169,7 +169,7 @@ def test_the_page_offers_only_tools_the_legal_agent_uses(
 
     offered = {tool["name"] for tool in options["tools"]}
     assert "request_leave" not in offered and "query_leave_balance" not in offered
-    assert {"audit_contract_risk", "hybrid_rag_search", "rag_search"} <= offered
+    assert {"audit_contract_risk", "rag_search", "rag_search"} <= offered
     assert options["unsupported_grants"] == ["request_leave"]
     # An old grant does not block saving; a new one the role cannot use is refused.
     assert kept.status_code == 200, kept.text
@@ -180,5 +180,8 @@ def test_the_page_offers_only_tools_the_legal_agent_uses(
 def test_hr_is_not_offered_gateway_tools_it_never_runs(client, ceo_token_headers):
     options = client.get("/api/v1/agents/HR/configuration-options", headers=ceo_token_headers).json()
 
-    assert "rag_search" not in {tool["name"] for tool in options["tools"]}
-    assert "request_leave" in {tool["name"] for tool in options["tools"]}
+    offered = {tool["name"] for tool in options["tools"]}
+    # Search is HR's own capability under the unified name; the other gateway tools are not.
+    assert "rag_search" in offered
+    assert {"create_task", "submit_approval_request", "audit_contract_risk"}.isdisjoint(offered)
+    assert "request_leave" in offered

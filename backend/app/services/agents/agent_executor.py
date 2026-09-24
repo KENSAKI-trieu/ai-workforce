@@ -53,6 +53,7 @@ from app.services import contract_review_store
 from app.services.audit_service import log_audit_action, log_llm_cost
 from app.services.cost_calculator import UnsupportedModelPricingError
 from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
+from app.core.tool_permissions import grant_decision
 from app.core.config import settings
 from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.ai_service_client import AIServiceError
@@ -167,25 +168,32 @@ def _plugin_restriction(agent: AIAgent) -> SkillRestriction:
     return getattr(agent, _PLUGIN_RESTRICTION_ATTR, EMPTY_RESTRICTION)
 
 
-def _require_tool(agent: AIAgent, tool_name: str) -> None:
+def _grant_decision(agent: AIAgent, tool_name: str) -> str | None:
     _repair_hr_agent_capabilities(agent)
-    tools = set(agent.tools_access or [])
-    allowed = set(agent.allowed_actions or [])
-    denied = set(agent.disallowed_actions or [])
-    if tool_name in denied:
+    return grant_decision(
+        tool_name,
+        tools_access=agent.tools_access,
+        allowed_actions=agent.allowed_actions,
+        disallowed_actions=agent.disallowed_actions,
+        restriction=_plugin_restriction(agent),
+    )
+
+
+def _require_tool(agent: AIAgent, tool_name: str) -> None:
+    decision = _grant_decision(agent, tool_name)
+    if decision == "DENIED":
         raise HTTPException(
             status_code=403,
             detail=f"AI Employee is explicitly forbidden from action '{tool_name}'",
         )
-    if tool_name not in tools or (allowed and tool_name not in allowed):
+    if decision == "NOT_GRANTED":
         raise HTTPException(
             status_code=403,
             detail=f"AI Employee is not allowed to use tool '{tool_name}'",
         )
-    # Checked last and phrased differently so an operator can tell a plugin withdrawal
-    # apart from a permission the agent never had. This can only ever reject: the
-    # grant checks above have already passed by the time control reaches here.
-    if not _plugin_restriction(agent).permits(tool_name):
+    # Phrased differently so an operator can tell a plugin withdrawal apart from a
+    # permission the agent never had.
+    if decision == "PLUGIN":
         raise HTTPException(
             status_code=403,
             detail=(
@@ -197,16 +205,7 @@ def _require_tool(agent: AIAgent, tool_name: str) -> None:
 
 def _can_use_tool(agent: AIAgent, tool_name: str) -> bool:
     """Return whether an optional tool is enabled by the agent configuration."""
-    _repair_hr_agent_capabilities(agent)
-    tools = set(agent.tools_access or [])
-    allowed = set(agent.allowed_actions or [])
-    denied = set(agent.disallowed_actions or [])
-    return (
-        tool_name not in denied
-        and tool_name in tools
-        and (not allowed or tool_name in allowed)
-        and _plugin_restriction(agent).permits(tool_name)
-    )
+    return _grant_decision(agent, tool_name) is None
 
 
 def _employee_profile_payload(
@@ -1437,14 +1436,14 @@ LEGAL_REVIEW_TOOL_OFF_REPLY = (
 )
 
 LEGAL_SEARCH_TOOL_OFF_REPLY = (
-    "Công cụ tra cứu kho tri thức `hybrid_rag_search` hiện chưa được bật cho AI Employee "
+    "Công cụ tra cứu kho tri thức `rag_search` hiện chưa được bật cho AI Employee "
     "này, nên tôi không tra cứu tài liệu để trả lời câu hỏi. Admin hoặc Owner có thể bật "
     "công cụ trong phần Cấu hình."
 )
 
 LEGAL_NO_TOOLS_REPLY = (
     "Tôi là Legal Counsel AI nhưng hiện chưa được bật công cụ nào: cả rà soát hợp đồng "
-    "(`audit_contract_risk`) lẫn tra cứu kho tri thức (`hybrid_rag_search`) đều đang tắt. "
+    "(`audit_contract_risk`) lẫn tra cứu kho tri thức (`rag_search`) đều đang tắt. "
     "Admin hoặc Owner có thể bật trong phần Cấu hình."
 )
 
@@ -2263,7 +2262,7 @@ def _execute_agent_chat_core(
             return response_data
 
         if hr_intent == "POLICY_QUERY":
-            _require_tool(agent, "hybrid_rag_search")
+            _require_tool(agent, "rag_search")
             search_results = hybrid_search_documents(
                 db,
                 user.tenant_id,
@@ -2275,7 +2274,7 @@ def _execute_agent_chat_core(
                 user_department=user.department,
             )
             response_data["tools_executed"].append({
-                "tool_name": "hybrid_rag_search",
+                "tool_name": "rag_search",
                 "input": {"query": message},
                 "result_count": len(search_results),
             })
@@ -2283,7 +2282,7 @@ def _execute_agent_chat_core(
                 db,
                 user.tenant_id,
                 "HR",
-                "hybrid_rag_search",
+                "rag_search",
                 {"query": message},
                 {
                     "count": len(search_results),
@@ -2339,7 +2338,7 @@ def _execute_agent_chat_core(
     # 2. KNOWLEDGE Agent Processing (Hybrid RAG)
     # -----------------------------------------------------------------------
     elif role_code_upper == "KNOWLEDGE":
-        _require_tool(agent, "hybrid_search_documents")
+        _require_tool(agent, "rag_search")
         search_results = hybrid_search_documents(
             db,
             user.tenant_id,
@@ -2362,7 +2361,7 @@ def _execute_agent_chat_core(
         search_results = filtered_results
 
         response_data["tools_executed"].append({
-            "tool_name": "hybrid_search_documents",
+            "tool_name": "rag_search",
             "input": {"query": message, "department": user.department},
             "result_count": len(search_results),
         })
@@ -2370,7 +2369,7 @@ def _execute_agent_chat_core(
             db,
             user.tenant_id,
             "KNOWLEDGE",
-            "hybrid_search_documents",
+            "rag_search",
             {"query": message},
             {
                 "count": len(search_results),
@@ -2409,10 +2408,10 @@ def _execute_agent_chat_core(
     elif role_code_upper == "LEGAL":
         # Each capability is gated where it is used, so revoking one leaves the other
         # working: reviewing needs audit_contract_risk, answering from the knowledge
-        # base needs hybrid_rag_search. The review gate used to front the whole agent,
+        # base needs rag_search. The review gate used to front the whole agent,
         # so switching reviews off silenced questions too.
         can_review = _can_use_tool(agent, "audit_contract_risk")
-        can_search = _can_use_tool(agent, "hybrid_rag_search")
+        can_search = _can_use_tool(agent, "rag_search")
         if not can_review and not can_search:
             response_data["reply"] = LEGAL_NO_TOOLS_REPLY
             return response_data
@@ -2646,7 +2645,7 @@ def _execute_agent_chat_core(
             user_department=user.department,
         )
         response_data["tools_executed"].append({
-            "tool_name": "hybrid_rag_search",
+            "tool_name": "rag_search",
             "input": {"query": message, "department": user.department, "acl_applied": True},
             "result_count": len(search_results),
         })
@@ -2654,7 +2653,7 @@ def _execute_agent_chat_core(
             db,
             user.tenant_id,
             "LEGAL",
-            "hybrid_rag_search",
+            "rag_search",
             {"query": message, "acl_applied": True},
             {"count": len(search_results)},
         )

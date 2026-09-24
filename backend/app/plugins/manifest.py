@@ -160,13 +160,22 @@ def _parse_skills(raw: Any, known_tools: frozenset[str]) -> tuple[tuple[str, ...
             f"Unknown key(s) in skills: {', '.join(sorted(unknown))}"
         )
 
+    # Imported here: app.core is a leaf, but keeping the parser's import surface small
+    # matters to the CLI that loads it.
+    from app.core.tool_permissions import canonical_tool_names
+
     tools: tuple[str, ...] | None = None
     if "tools_access" in skills:
-        tools = _string_list(skills["tools_access"], "skills.tools_access")
-    denied = _string_list(skills.get("disallowed_actions", []), "skills.disallowed_actions")
+        # Old names are accepted and stored in their current spelling, so a package
+        # written before the rename still installs and still narrows the right tool.
+        tools = tuple(canonical_tool_names(_string_list(skills["tools_access"], "skills.tools_access")))
+    denied = tuple(canonical_tool_names(
+        _string_list(skills.get("disallowed_actions", []), "skills.disallowed_actions")
+    ))
 
+    known = set(canonical_tool_names(known_tools))
     for name in tuple(tools or ()) + denied:
-        if name not in known_tools:
+        if name not in known:
             raise PluginManifestError(f"Unknown tool name: {name}")
 
     overlap = set(tools or ()) & set(denied)

@@ -54,7 +54,7 @@ def test_stale_hr_agent_capabilities_are_split_into_narrow_profile_tools(
     agent.tools_access = [
         "query_leave_balance",
         "request_leave",
-        "hybrid_rag_search",
+        "rag_search",
         "get_employee_profile",
     ]
     agent.allowed_actions = list(agent.tools_access)
@@ -229,7 +229,7 @@ def test_hr_unsupported_leave_statistics_states_the_gap_then_still_searches(
     assert unsupported.status_code == 200, unsupported.text
     data = unsupported.json()
     assert "chưa có tool" in data["reply"].lower()
-    assert [item["tool_name"] for item in data["tools_executed"]] == ["hybrid_rag_search"]
+    assert [item["tool_name"] for item in data["tools_executed"]] == ["rag_search"]
 
 
 def test_hr_export_intent_requires_scope_and_format(

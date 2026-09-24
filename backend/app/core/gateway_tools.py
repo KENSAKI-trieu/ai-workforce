@@ -49,9 +49,10 @@ GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
 # sections HR policy will release, and on this path the argument is chosen by the model.
 # Granting them is an explicit tenant decision, not a default.
 #
-# HR is empty on purpose: the backend routes that role to its own deterministic executor
-# and never through the graph, so gateway grants would only widen the configuration UI.
-# See the note in apps/ai-service/app/orchestration/subgraphs.py before changing this.
+# HR gets knowledge search only. Its other capabilities are HR-specific names checked by
+# its own deterministic executor; search became the same `rag_search` everywhere when the
+# tool names were unified. See apps/ai-service/app/agents/hr/tools.py before granting HR
+# any other gateway tool.
 GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
     "CEO": (
         "rag_search",
@@ -60,7 +61,7 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
         "generate_legal_document",
         "submit_approval_request",
     ),
-    "HR": (),
+    "HR": ("rag_search",),
     "LEGAL": (
         "rag_search",
         "audit_contract_risk",
@@ -97,8 +98,10 @@ def effective_tool_grants(
     which then spent a turn choosing a call the gateway answered with 403. Both sides now
     compute the grant the same way, from the authoritative side.
     """
-    granted = set(tools_access or [])
-    permitted = set(allowed_actions or [])
+    from app.core.tool_permissions import canonical_tool_names
+
+    granted = set(canonical_tool_names(tools_access))
+    permitted = set(canonical_tool_names(allowed_actions))
     if permitted:
         granted &= permitted
-    return sorted(granted - set(disallowed_actions or []))
+    return sorted(granted - set(canonical_tool_names(disallowed_actions)))

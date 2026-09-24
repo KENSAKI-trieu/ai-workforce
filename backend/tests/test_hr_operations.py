@@ -156,7 +156,7 @@ def test_hr_leave_intent_routes_policy_to_rag_without_creating_request(
         item["tool_name"] != "request_leave" for item in data["tools_executed"]
     )
     assert any(
-        item["tool_name"] == "hybrid_rag_search" for item in data["tools_executed"]
+        item["tool_name"] == "rag_search" for item in data["tools_executed"]
     )
     assert transactional_db_session.query(LeaveRequest).count() == before
 

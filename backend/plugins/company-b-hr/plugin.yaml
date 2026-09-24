@@ -20,7 +20,7 @@ skills:
   # Công ty B chỉ mở đúng hai năng lực đọc. Đây là phép giao với quyền của agent, nên
   # danh sách này không bao giờ cấp thêm quyền mà agent chưa có.
   tools_access:
-    - hybrid_rag_search
+    - rag_search
     - query_leave_balance
 
 knowledge:

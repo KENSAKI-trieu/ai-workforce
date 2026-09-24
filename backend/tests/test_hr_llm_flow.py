@@ -169,7 +169,7 @@ def test_question_answer_is_generated_from_governed_evidence_and_keeps_citation(
             "content": "Nhân viên có 12 ngày phép mỗi năm.",
             "citation_tag": citation,
         }],
-        "tools_executed": [{"tool_name": "hybrid_rag_search", "result_count": 1}],
+        "tools_executed": [{"tool_name": "rag_search", "result_count": 1}],
         "hr_card": None,
     }
 

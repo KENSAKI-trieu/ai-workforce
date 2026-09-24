@@ -19,7 +19,7 @@ from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.agents.legal_prompts import DEFAULT_LEGAL_PROMPTS
 from app.tools.registry import tool_registry
 
-KNOWN_TOOLS = frozenset({"rag_search", "audit_contract_risk", "generate_legal_document", "hybrid_rag_search"})
+KNOWN_TOOLS = frozenset({"rag_search", "audit_contract_risk", "generate_legal_document", "rag_search"})
 KNOWN_ROLES = frozenset({"HR", "LEGAL"})
 
 

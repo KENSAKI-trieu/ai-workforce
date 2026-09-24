@@ -10,6 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.gateway_tools import GATEWAY_TOOL_DESCRIPTIONS
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
+from app.core.tool_permissions import canonical_tool_names
 from app.core.security import RoleRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
@@ -19,7 +20,6 @@ from app.services.auth_service import ensure_tenant_default_agents, supported_ag
 router = APIRouter(prefix="/agents", tags=["AI Agents"])
 AGENT_CONFIG_ROLES = {"Owner", "Admin", "CEO"}
 TOOL_DESCRIPTIONS = {
-    "hybrid_rag_search": "Tìm và trích dẫn chính sách trong kho tri thức (HR, Legal).",
     "get_employee_private_profile": "Đọc thông tin cá nhân được lọc và masking theo quyền.",
     "get_employee_contract_summary": "Đọc tóm tắt hợp đồng, không trả tài liệu gốc.",
     "get_employee_compensation_summary": "Đọc dữ liệu lương theo quyền và mục đích nghiệp vụ.",
@@ -33,7 +33,6 @@ TOOL_DESCRIPTIONS = {
     "list_pending_hr_approvals": "Liệt kê card chờ duyệt theo phạm vi quản lý.",
     "export_hr_directory": "Xuất danh bạ HR theo quyền ra Excel, PDF hoặc JSON.",
     "generate_and_execute_ceo_dag": "Lập và thực thi kế hoạch đa agent.",
-    "hybrid_search_documents": "Tìm kiếm kho tri thức dùng chung (Knowledge). Cùng cơ chế với hybrid_rag_search nhưng là quyền riêng — cấm một tên không cấm tên còn lại.",
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
     "compare_contract_versions": "So sánh điều khoản giữa hai phiên bản hợp đồng.",
     "check_sensitive_data": "Phát hiện dữ liệu cá nhân và dữ liệu hạn chế.",
@@ -222,9 +221,9 @@ def get_agent_configuration_options(
     supported = supported_agent_tools(agent.role_code)
     tool_names = sorted(supported - retired)
     granted = (
-        set(agent.tools_access or [])
-        | set(agent.allowed_actions or [])
-        | set(agent.disallowed_actions or [])
+        set(canonical_tool_names(agent.tools_access))
+        | set(canonical_tool_names(agent.allowed_actions))
+        | set(canonical_tool_names(agent.disallowed_actions))
     )
     chunks = db.query(DocumentChunk).filter(
         DocumentChunk.tenant_id == current_user.tenant_id
@@ -290,6 +289,10 @@ def update_agent(
             data["knowledge_access"],
             already_granted=frozenset(agent.knowledge_access or []),
         )
+    # Stored in the current spelling; a client still sending a renamed tool keeps working.
+    for field_name in ("tools_access", "allowed_actions", "disallowed_actions"):
+        if field_name in data:
+            data[field_name] = canonical_tool_names(data[field_name])
     submitted_tool_names = set().union(*(
         set(data.get(field_name, []))
         for field_name in ("tools_access", "allowed_actions", "disallowed_actions")
@@ -309,9 +312,9 @@ def update_agent(
     # Grants the agent already holds are let through so an older configuration can still
     # be saved; only newly added tools must be ones this role can use.
     already_granted = (
-        set(agent.tools_access or [])
-        | set(agent.allowed_actions or [])
-        | set(agent.disallowed_actions or [])
+        set(canonical_tool_names(agent.tools_access))
+        | set(canonical_tool_names(agent.allowed_actions))
+        | set(canonical_tool_names(agent.disallowed_actions))
     )
     unsupported_tools = (
         submitted_tool_names - already_granted - supported_agent_tools(agent.role_code)

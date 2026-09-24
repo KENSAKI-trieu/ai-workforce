@@ -218,7 +218,7 @@ def test_declining_the_review_is_acknowledged_not_searched(
         "Legal turn routed: pending_state=AWAITING_INTENT source=fallback "
         "label=DECLINE_REVIEW keyword=QUESTION",
     ]
-    assert "hybrid_rag_search" not in _tool_names(reply)
+    assert "rag_search" not in _tool_names(reply)
     assert "không rà soát nội dung đó" in reply["reply"]
 
 
@@ -235,7 +235,7 @@ def test_a_model_decline_is_acknowledged_with_a_single_router_call(
     # The turn is routed once; it used to be classified again with nothing pending.
     assert router.pending_states == ["AWAITING_INTENT"]
     assert reply["legal_risk_card"]["status"] == "DISMISSED"
-    assert "hybrid_rag_search" not in _tool_names(reply)
+    assert "rag_search" not in _tool_names(reply)
 
 
 def test_a_new_question_in_reply_is_answered_with_a_single_router_call(
@@ -253,7 +253,7 @@ def test_a_new_question_in_reply_is_answered_with_a_single_router_call(
     )
 
     assert router.pending_states == ["AWAITING_INTENT"]
-    assert "hybrid_rag_search" in _tool_names(reply)
+    assert "rag_search" in _tool_names(reply)
     assert reply["legal_risk_card"]["status"] == "DISMISSED"
 
 
@@ -276,7 +276,7 @@ def test_a_pasted_contract_with_a_question_is_answered_when_the_model_says_so(
     )
 
     assert reply["legal_risk_card"] is None
-    assert "hybrid_rag_search" in _tool_names(reply)
+    assert "rag_search" in _tool_names(reply)
     assert _routing_log(caplog) == [
         "Legal turn routed: pending_state=NONE source=llm label=QUESTION keyword=REVIEW",
     ]
@@ -294,7 +294,7 @@ def test_a_question_about_a_clause_is_still_answered_when_the_model_says_so(
     reply = _chat(client, employee_token_headers, question)
 
     assert reply["legal_risk_card"] is None
-    assert "hybrid_rag_search" in _tool_names(reply)
+    assert "rag_search" in _tool_names(reply)
 
 
 # --- The keyword floor: whole words, not substrings ----------------------------

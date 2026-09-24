@@ -18,7 +18,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
-from app.services.agents.agent_executor import _can_use_tool
+from app.core.tool_permissions import grant_decision
+from app.plugins.resolver import resolve_skill_restriction
 from app.services.audit_service import log_audit_action
 from app.services import contract_review_store
 from app.services.document_parser import DocumentParseError, extract_file_text
@@ -61,7 +62,16 @@ def _legal_tool_required(tool_name: str):
             AIAgent.tenant_id == current_user.tenant_id,
             AIAgent.role_code == "LEGAL",
         ).first()
-        if agent is None or not _can_use_tool(agent, tool_name):
+        # Plugin narrowing counts here too: these endpoints used to check the agent's
+        # own grants only, so a tenant package withdrawing a Legal tool left its page
+        # working.
+        if agent is None or grant_decision(
+            tool_name,
+            tools_access=agent.tools_access,
+            allowed_actions=agent.allowed_actions,
+            disallowed_actions=agent.disallowed_actions,
+            restriction=resolve_skill_restriction(db, current_user.tenant_id, "LEGAL"),
+        ) is not None:
             raise HTTPException(
                 status_code=403,
                 detail=(

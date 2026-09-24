@@ -156,7 +156,7 @@ def test_the_tool_obeys_the_legal_agents_grant(client, transactional_db_session,
         AIAgent.tenant_id == employee.tenant_id, AIAgent.role_code == "LEGAL"
     ).one()
     saved = (legal.tools_access, legal.allowed_actions)
-    legal.tools_access = legal.allowed_actions = ["hybrid_rag_search", "rag_search"]
+    legal.tools_access = legal.allowed_actions = ["rag_search", "rag_search"]
     transactional_db_session.flush()
     try:
         conversation = _conversation(transactional_db_session, employee, CONTRACT, "bên A")

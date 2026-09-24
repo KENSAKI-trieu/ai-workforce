@@ -79,7 +79,7 @@ def test_profile_branches_record_what_the_policy_engine_released(
 def test_leave_statistics_states_the_gap_then_searches(client, ceo_token_headers):
     data = chat(client, ceo_token_headers, "có bao nhiêu nhân viên đang nghỉ phép")
     assert "chưa có tool" in data["reply"].lower()
-    assert tools(data) == ["hybrid_rag_search"]
+    assert tools(data) == ["rag_search"]
     # The caveat must survive verbatim — it is the honest part of the answer.
     assert data["reply"].startswith("HR Agent chưa có tool")
 

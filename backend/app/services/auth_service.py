@@ -62,12 +62,12 @@ DEFAULT_AGENT_CAPABILITIES = {
         "check_sensitive_data",
         "check_software_licenses",
         "generate_legal_document",
-        "hybrid_rag_search",
+        "rag_search",
     ],
     "IT": ["search_it_kb", "create_jira_ticket"],
     "FINANCE": ["reconcile_po_db"],
     "SALES": ["generate_quotation_pdf"],
-    "KNOWLEDGE": ["hybrid_search_documents"],
+    "KNOWLEDGE": ["rag_search"],
 }
 
 DEFAULT_AGENT_TOOLS = {

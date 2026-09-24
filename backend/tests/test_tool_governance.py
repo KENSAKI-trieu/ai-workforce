@@ -96,12 +96,11 @@ def test_gateway_grant_names_exist_in_registry() -> None:
     assert GATEWAY_TOOLS == registry_names
     for role_code, grants in GATEWAY_TOOL_GRANTS.items():
         assert set(grants) <= registry_names, role_code
+        # Without retrieval no domain can ground a single answer.
+        assert "rag_search" in grants, role_code
         if role_code == "HR":
-            # Routed to the deterministic executor, never through the graph.
-            assert grants == ()
-        else:
-            # Without retrieval the domain policies cannot ground a single answer.
-            assert "rag_search" in grants, role_code
+            # Search only: its other capabilities are HR names checked by its executor.
+            assert grants == ("rag_search",)
 
 
 def test_default_agent_tools_carry_the_gateway_grants() -> None:

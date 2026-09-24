@@ -15,7 +15,8 @@ from __future__ import annotations
 # `_require_tool` call in `agent_executor._execute_agent_chat_core`, except
 # `get_employee_leave_summary`, which is deliberately optional -- see below.
 HR_CORE_TOOLS: frozenset[str] = frozenset({
-    "hybrid_rag_search",
+    # Knowledge search; `hybrid_rag_search` before the tool names were unified.
+    "rag_search",
     "get_employee_private_profile",
     "get_employee_contract_summary",
     "get_employee_compensation_summary",

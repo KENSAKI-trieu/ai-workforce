@@ -492,7 +492,7 @@ def test_delete_document_removes_selected_version_chunks_and_original_file(
         read_original_file(storage_key)
 
 
-def test_hybrid_rag_search(client, ceo_token_headers):
+def test_rag_search(client, ceo_token_headers):
     """Test Hybrid RAG search returning top scored chunks."""
     payload = {
         "query": "nghỉ phép bao nhiêu ngày",

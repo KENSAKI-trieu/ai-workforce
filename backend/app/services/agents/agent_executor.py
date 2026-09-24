@@ -50,12 +50,9 @@ from app.services.position_service import supervisory_role_names
 from app.services.rag_service import hybrid_search_documents
 from app.services.contract_review import split_contract_clauses
 from app.services import contract_review_store
-from app.services.it_service import handle_it_request
-from app.services.finance_service import audit_invoice_and_reconcile
-from app.services.sales_service import handle_sales_request
-from app.services.ceo_service import generate_and_execute_ceo_dag
 from app.services.audit_service import log_audit_action, log_llm_cost
 from app.services.cost_calculator import UnsupportedModelPricingError
+from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
 from app.core.config import settings
 from app.services.agents.langgraph_engine import LangGraphEngine
 from app.services.ai_service_client import AIServiceError
@@ -1634,6 +1631,12 @@ def _execute_agent_chat_core(
         "dag_plan_card": None,
     }
 
+    # Checked before either engine: an unfinished agent answers the same way whether or
+    # not LangGraph is on, and never reaches its placeholder logic.
+    if is_under_development(role_code_upper):
+        response_data["reply"] = UNDER_DEVELOPMENT_REPLY
+        return response_data
+
     # HR has its own LLM-first question/action gate below. Other agents may use
     # the generic LangGraph orchestration path.
     if settings.LANGGRAPH_ENABLED and role_code_upper != "HR":
@@ -2696,78 +2699,6 @@ def _execute_agent_chat_core(
         # Nothing retrieved, or nothing retrieved that answers the question: citing the
         # nearest unrelated excerpt would present it as the law on the point.
         response_data["reply"] = LEGAL_NOT_FOUND_REPLY + LEGAL_NOT_REVIEWED_NOTICE
-        return response_data
-
-    # -----------------------------------------------------------------------
-    # 4. IT Agent Processing (Technical Help & Jira Tickets)
-    # -----------------------------------------------------------------------
-    elif role_code_upper == "IT":
-        it_res = handle_it_request(db, user, message)
-        _require_tool(
-            agent,
-            "create_jira_ticket" if it_res.get("ticket_created") else "search_it_kb",
-        )
-        response_data["tools_executed"].append({
-            "tool_name": "create_jira_ticket" if it_res.get("ticket_created") else "search_it_kb",
-            "input": {"message": message},
-            "result": "Jira Ticket Created" if it_res.get("ticket_created") else "KB Resolved",
-        })
-        log_audit_action(db, user.tenant_id, "IT", "create_jira_ticket" if it_res.get("ticket_created") else "search_it_kb", {"msg": message}, {"ticket": it_res.get("ticket_created")})
-
-        response_data["reply"] = it_res["reply"]
-        if it_res.get("jira_card"):
-            response_data["jira_card"] = it_res["jira_card"]
-        return response_data
-
-    # -----------------------------------------------------------------------
-    # 5. FINANCE Agent Processing (Invoice OCR & PO Reconciliation)
-    # -----------------------------------------------------------------------
-    elif role_code_upper == "FINANCE":
-        _require_tool(agent, "reconcile_po_db")
-        fin_res = audit_invoice_and_reconcile(message)
-        response_data["tools_executed"].append({
-            "tool_name": "reconcile_po_db",
-            "input": {"text_length": len(message)},
-            "status": fin_res["invoice_card"]["status"],
-        })
-        log_audit_action(db, user.tenant_id, "FINANCE", "reconcile_po_db", {"msg": message[:30]}, {"status": fin_res["invoice_card"]["status"]})
-
-        response_data["reply"] = fin_res["reply"]
-        response_data["invoice_card"] = fin_res["invoice_card"]
-        return response_data
-
-    # -----------------------------------------------------------------------
-    # 6. SALES Agent Processing (Catalog Lookup & Quotation PDF)
-    # -----------------------------------------------------------------------
-    elif role_code_upper == "SALES":
-        _require_tool(agent, "generate_quotation_pdf")
-        sales_res = handle_sales_request(message, customer_name=user.full_name)
-        response_data["tools_executed"].append({
-            "tool_name": "generate_quotation_pdf",
-            "input": {"message": message},
-            "total_amount": sales_res["quote_card"]["total_amount"],
-        })
-        log_audit_action(db, user.tenant_id, "SALES", "generate_quotation_pdf", {"msg": message}, {"total": sales_res["quote_card"]["total_amount"]})
-
-        response_data["reply"] = sales_res["reply"]
-        response_data["quote_card"] = sales_res["quote_card"]
-        return response_data
-
-    # -----------------------------------------------------------------------
-    # 7. CEO Agent (Master Orchestrator DAG)
-    # -----------------------------------------------------------------------
-    elif role_code_upper == "CEO":
-        _require_tool(agent, "generate_and_execute_ceo_dag")
-        ceo_res = generate_and_execute_ceo_dag(db, user, message)
-        response_data["tools_executed"].append({
-            "tool_name": "generate_and_execute_ceo_dag",
-            "input": {"prompt": message},
-            "subtasks_count": 4,
-        })
-        log_audit_action(db, user.tenant_id, "CEO", "generate_and_execute_ceo_dag", {"prompt": message}, {"nodes": 4})
-
-        response_data["reply"] = ceo_res["reply"]
-        response_data["dag_plan_card"] = ceo_res["dag_plan_card"]
         return response_data
 
     else:

@@ -37,9 +37,10 @@ from app.services.legal_draft_storage import read_legal_artifact, save_legal_art
 from app.services.legal_documents import list_document_schemas, validate_document_fields
 from app.services.notification_service import create_notification
 from app.services.rag_service import hybrid_search_documents
-from app.services.it_service import handle_it_request
-from app.services.finance_service import audit_invoice_and_reconcile
-from app.services.sales_service import handle_sales_request
+from app.core.agent_status import refuse_under_development
+from app.domains.incubating.finance_service import audit_invoice_and_reconcile
+from app.domains.incubating.it_service import handle_it_request
+from app.domains.incubating.sales_service import handle_sales_request
 
 router = APIRouter(tags=["Specialized Domain APIs"])
 
@@ -862,6 +863,8 @@ def create_jira_ticket_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    # The IT agent is under development: this issued a Jira key no Jira ever saw.
+    refuse_under_development("IT")
     return handle_it_request(db, current_user, f"{req.summary} - {req.description or ''}")
 
 
@@ -871,6 +874,8 @@ def audit_invoice_endpoint(
     req: AuditInvoiceRequest,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    # The Finance agent is under development: every invoice was checked against one fixed PO.
+    refuse_under_development("FINANCE")
     return audit_invoice_and_reconcile(req.invoice_text)
 
 
@@ -880,9 +885,12 @@ def generate_quotation_endpoint(
     req: SalesQuotationRequest,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    # The Sales agent is under development: every request was quoted the same camera.
+    refuse_under_development("SALES")
     return handle_sales_request(req.item_query, customer_name=req.customer_name)
 
 
 @router.get("/sales/download-quote/{file_id}", response_class=PlainTextResponse, summary="Download sales PDF quotation file")
 def download_quote(file_id: str):
+    refuse_under_development("SALES")
     return f"SIMULATED PDF QUOTATION FILE FOR {file_id}\nOfficial AI Workforce Quotation Document."

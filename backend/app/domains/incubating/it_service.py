@@ -20,16 +20,12 @@ def handle_it_request(db: Session, user: User, message: str) -> Dict[str, Any]:
     """
     msg_lower = message.lower()
 
-    # Case A: Quick RAG resolutions
+    # Case A: Quick knowledge-base resolutions. A real implementation answers from the
+    # tenant's IT knowledge base; credentials never belong in source code.
     if any(k in msg_lower for k in ["wifi", "wi-fi", "mật khẩu wifi"]):
         return {
             "ticket_created": False,
-            "reply": (
-                "Thông tin kết nối Wi-Fi văn phòng:\n"
-                "- **SSID**: `Acme_Corporate_5G`\n"
-                "- **Password**: `AcmeSecure2025!`\n"
-                "- Nếu cần cấp lại quyền truy cập mạng nội bộ, vui lòng cho tôi biết!"
-            ),
+            "reply": "Thông tin Wi-Fi sẽ được tra từ kho tri thức IT của công ty khi agent hoàn thiện.",
         }
 
     # Case B: Issue requires Jira Ticket (e.g. VPN error, hardware fault, email access)

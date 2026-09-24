@@ -14,6 +14,7 @@ from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.agent_status import is_under_development
 from app.core.config import settings
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
@@ -253,7 +254,9 @@ def stream_chat_with_agent(
         try:
             result: dict[str, Any] | None = None
             # HR uses its governed LLM-first flow, including contextual leave-slot extraction.
-            if settings.LANGGRAPH_ENABLED and role_code != "HR":
+            # An unfinished agent takes the executor path, which answers it with the fixed
+            # under-development reply before any engine runs.
+            if settings.LANGGRAPH_ENABLED and role_code != "HR" and not is_under_development(role_code):
                 for item in LangGraphEngine().execute_stream(
                     db=db,
                     user=current_user,

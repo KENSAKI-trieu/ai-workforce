@@ -1,6 +1,11 @@
 """
-CEO Master Orchestrator Service for AI Workforce Platform.
-Decomposes complex executive prompts into DAG task graphs across specialized agents (HR, IT, Finance, Knowledge).
+CEO Master Orchestrator Service for AI Workforce Platform -- UNDER DEVELOPMENT.
+
+Decomposes an executive prompt into a DAG of subtasks for other agents. Nothing is
+delegated yet: every node is a fixed onboarding template, so each one is reported as
+PLANNED. It used to report them COMPLETED ("email and VPN issued", "added to payroll")
+while nothing had happened. Delegation belongs in the CEO graph, calling the other
+agents' tools, once those exist.
 """
 
 import logging
@@ -10,9 +15,6 @@ from typing import Dict, Any, List
 from sqlalchemy.orm import Session
 
 from app.models.models import User, AgentWorkflow
-from app.services.hr_service import query_leave_balance
-from app.services.it_service import handle_it_request
-from app.services.rag_service import hybrid_search_documents
 
 logger = logging.getLogger(__name__)
 
@@ -36,32 +38,32 @@ def generate_and_execute_ceo_dag(db: Session, user: User, prompt: str) -> Dict[s
             "assigned_agent": "HR",
             "agent_emoji": "🧑‍💼",
             "title": f"Tạo hồ sơ nhân viên {emp_name} & Cấp ngày phép năm",
-            "status": "COMPLETED",
-            "result": f"Đã khởi tạo hồ sơ nhân viên {emp_name} với 12 ngày phép năm.",
+            "status": "PLANNED",
+            "result": f"Đề xuất: tạo hồ sơ nhân viên {emp_name} và cấp quỹ phép năm.",
         },
         {
             "node_id": "task_it_credentials",
             "assigned_agent": "IT",
             "agent_emoji": "💻",
             "title": f"Cấp tài khoản Email công ty & VPN cho {emp_name}",
-            "status": "COMPLETED",
-            "result": f"Đã tạo email {emp_name.lower().replace(' ', '.')}@acme.com và kích hoạt VPN.",
+            "status": "PLANNED",
+            "result": "Đề xuất: cấp email công ty và quyền VPN.",
         },
         {
             "node_id": "task_finance_payroll",
             "assigned_agent": "FINANCE",
             "agent_emoji": "💰",
             "title": f"Thêm {emp_name} vào danh sách tính lương phòng IT",
-            "status": "COMPLETED",
-            "result": "Đã ghi nhận thông tin nhân viên vào hệ thống tính lương Payroll.",
+            "status": "PLANNED",
+            "result": "Đề xuất: thêm nhân viên vào danh sách tính lương.",
         },
         {
             "node_id": "task_knowledge_handbook",
             "assigned_agent": "KNOWLEDGE",
             "agent_emoji": "📚",
             "title": "Gửi Sổ tay nhân viên & Quy định văn hóa doanh nghiệp",
-            "status": "COMPLETED",
-            "result": "Đã gửi tài liệu Onboarding Handbook qua email.",
+            "status": "PLANNED",
+            "result": "Đề xuất: gửi Sổ tay nhân viên.",
         },
     ]
 
@@ -71,20 +73,16 @@ def generate_and_execute_ceo_dag(db: Session, user: User, prompt: str) -> Dict[s
         tenant_id=user.tenant_id,
         initiator_id=user.id,
         title=f"CEO Plan: {prompt[:50]}",
-        status="COMPLETED",
+        status="PENDING",
         dag_plan={"nodes": dag_nodes, "prompt": prompt},
     )
     db.add(workflow)
     db.commit()
 
     summary_reply = (
-        f"👔 **BÁO CÁO ĐIỀU PHỐI CEO MASTER AGENT**:\n\n"
-        f"Tôi đã phân rã chỉ thị *\"{prompt}\"* thành **4 tác vụ phụ DAG** và điều phối thực thi thành công:\n\n"
-        f"✅ **HR Agent**: Hồ sơ nhân sự {emp_name} đã được khởi tạo.\n"
-        f"✅ **IT Agent**: Đã cấp email & VPN làm việc.\n"
-        f"✅ **Finance Agent**: Đã đăng ký hệ thống Payroll tính lương.\n"
-        f"✅ **Knowledge Agent**: Đã gửi Sổ tay Onboarding Handbook.\n\n"
-        f"Tất cả các AI Employees đã hoàn thành công việc theo đúng quy trình!"
+        f"Tôi đã lập **kế hoạch đề xuất** gồm {len(dag_nodes)} bước cho chỉ thị *\"{prompt}\"*. "
+        "Chưa bước nào được thực thi: việc giao cho HR, IT, Finance và Knowledge "
+        "sẽ có khi CEO agent hoàn thiện."
     )
 
     return {
@@ -93,6 +91,6 @@ def generate_and_execute_ceo_dag(db: Session, user: User, prompt: str) -> Dict[s
             "workflow_id": str(workflow_id),
             "title": f"DAG Execution Graph: {prompt[:40]}",
             "nodes": dag_nodes,
-            "overall_status": "COMPLETED",
+            "overall_status": "PLANNED",
         },
     }

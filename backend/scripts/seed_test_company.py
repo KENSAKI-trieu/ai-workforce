@@ -4,6 +4,8 @@ Seed script: Tạo công ty test với:
   - CEO: test@gmail.com / 123456 (giữ chức vụ gốc, giống hệt người tạo công ty thật)
   - Nhân viên: test1@gmail.com -> test40@gmail.com / 123456 (mỗi người thuộc dept khác nhau)
 
+Chạy từ thư mục `backend/`: `python -m scripts.seed_test_company`.
+
 Script này tạo bảng bằng `create_all` chứ không đi qua Alembic. Nếu database đã có schema
 cũ, hãy chạy `alembic upgrade head` trước để có đủ các cột mà script này ghi vào.
 """

@@ -59,7 +59,7 @@ people simply had no access and no explanation why.
    grants `ceo` access to every document that was shared with `owner` - without
    that step the rename would quietly revoke documents from the founder.
 3. Deploy the frontend.
-4. Optional, for the demo workspace: run `python seed_test_company.py` to repair
+4. Optional, for the demo workspace: run `python -m scripts.seed_test_company` (from `backend/`) to repair
    `test@gmail.com`.
 
 The migration has a working `downgrade()`, so step 2 is reversible.

@@ -15,11 +15,9 @@ from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
 from langgraph.types import Command, interrupt
 
-from app.guardrails.input_guard import validate_input
-from app.guardrails.tool_permission import is_tool_allowed
-from app.guardrails.output_guard import validate_grounded_output
-from app.middleware.context import AgentRuntimeContext
-from app.middleware.redaction import redact_sensitive_data, redact_text
+from app.governance.guardrails import is_tool_allowed, validate_grounded_output, validate_input
+from app.governance.middleware.context import AgentRuntimeContext
+from app.governance.middleware.redaction import redact_sensitive_data, redact_text
 from app.orchestration.decision import DecisionProvider
 from app.orchestration.state import WorkforceAgentState
 from app.orchestration.subgraphs import build_business_subgraphs

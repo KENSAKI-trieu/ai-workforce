@@ -9,7 +9,7 @@ from typing import Any
 
 from langgraph.checkpoint.memory import InMemorySaver
 
-from app.config import Settings, settings
+from app.core.config import Settings, settings
 from app.orchestration.engine import LangGraphEngine
 
 
@@ -66,3 +66,8 @@ class OrchestrationEngineProvider:
             self._engine = None
         if context is not None:
             context.__exit__(None, None, None)
+
+
+# One provider per process: the app lifespan starts and closes it, and the orchestration
+# routes read the engine from it.
+orchestration_engines = OrchestrationEngineProvider()

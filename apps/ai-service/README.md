@@ -40,7 +40,7 @@ OpenAI and Gemini chat calls use LangChain chat models. Configure
 the other configured provider and finally the deterministic local provider.
 An explicit model override applies only to the primary provider.
 
-The `app/chains` package holds the chat chain behind `/v1/llm/generate`.
+`app/services/generation.py` holds the chat chain behind `/v1/llm/generate`.
 Agents run as LangGraph graphs under `app/orchestration`; the backend decides which
 agent a turn goes to, so the AI service has no routing endpoint of its own.
 

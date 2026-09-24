@@ -8,9 +8,9 @@ from typing import Any, Protocol
 from langchain_core.language_models.chat_models import BaseChatModel
 from pydantic import BaseModel, Field, model_validator
 
-from app.middleware.context import AgentRuntimeContext
-from app.middleware.observability import TelemetrySink
-from app.middleware.stack import create_governed_agent
+from app.governance.middleware.context import AgentRuntimeContext
+from app.governance.middleware.observability import TelemetrySink
+from app.governance.middleware.stack import create_governed_agent
 from app.orchestration.state import WorkforceAgentState
 
 

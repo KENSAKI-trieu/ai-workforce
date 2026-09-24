@@ -13,7 +13,9 @@ class OrchestrationRequest(BaseModel):
     conversation_id: str = Field(min_length=1)
     workflow_id: str = Field(min_length=1)
     message: str = Field(min_length=1, max_length=50000)
-    requested_agent: str | None = Field(default=None, max_length=50)
+    # Always named by the backend: the user talks to one agent, and the AI service
+    # does not guess one.
+    requested_agent: str = Field(min_length=1, max_length=50)
     allowed_tools: list[str] = Field(default_factory=list, max_length=100)
     denied_tools: list[str] = Field(default_factory=list, max_length=100)
 

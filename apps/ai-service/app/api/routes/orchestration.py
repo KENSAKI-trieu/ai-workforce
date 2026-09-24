@@ -5,10 +5,11 @@ from __future__ import annotations
 from fastapi import APIRouter, Depends, Header, HTTPException
 from fastapi.responses import StreamingResponse
 
+from app.agents.base.persistence import orchestration_engines
+from app.agents.base.runtime import build_runtime_context, initial_state
+from app.agents.registry import resolve_agent
 from app.api.dependencies import require_internal_token, tool_jwt
 from app.api.sse import SSE_HEADERS, encode_sse
-from app.orchestration.persistence import orchestration_engines
-from app.orchestration.runtime import build_runtime_context, initial_state
 from app.schemas.orchestration import (
     OrchestrationRequest,
     OrchestrationResponse,
@@ -33,6 +34,9 @@ def _orchestration_response(result: dict, conversation_id: str) -> Orchestration
 
 
 def _context_for(request: OrchestrationRequest, authorization: str | None):
+    # Checked before anything runs, so a stream refuses an unknown agent with a 422
+    # instead of opening and failing mid-stream.
+    resolve_agent(request.requested_agent)
     return build_runtime_context(
         tenant_id=request.tenant_id,
         user_id=request.user_id,
@@ -40,7 +44,7 @@ def _context_for(request: OrchestrationRequest, authorization: str | None):
         department=request.department,
         conversation_id=request.conversation_id,
         workflow_id=request.workflow_id,
-        agent_role=(request.requested_agent or "KNOWLEDGE").upper(),
+        agent_role=request.requested_agent.upper(),
         allowed_tools=request.allowed_tools,
         denied_tools=request.denied_tools,
         tool_jwt=tool_jwt(authorization),
@@ -119,6 +123,7 @@ def resume_orchestration(
     x_internal_tool_authorization: str | None = Header(default=None),
 ) -> OrchestrationResponse:
     try:
+        resolve_agent(request.agent_role)
         context = build_runtime_context(
             tenant_id=request.tenant_id,
             user_id=request.user_id,

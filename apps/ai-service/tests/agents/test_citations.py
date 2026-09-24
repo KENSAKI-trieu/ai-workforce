@@ -13,8 +13,9 @@ import pytest
 
 from app.governance.guardrails import validate_grounded_output
 from app.governance.middleware.context import AgentRuntimeContext
-from app.orchestration.decision import GraphDecision
-from app.orchestration.engine import LangGraphEngine, OrchestrationRuntimeContext
+from app.agents.base.decision import GraphDecision
+from app.agents.base.nodes import OrchestrationRuntimeContext
+from app.agents.registry import LangGraphEngine
 
 
 class SingleDecision:

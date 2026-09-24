@@ -9,8 +9,9 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.governance.middleware.context import AgentRuntimeContext
-from app.orchestration.decision import DeterministicDecisionProvider, GraphDecision
-from app.orchestration.engine import LangGraphEngine, OrchestrationRuntimeContext
+from app.agents.base.decision import DeterministicDecisionProvider, GraphDecision
+from app.agents.base.nodes import OrchestrationRuntimeContext
+from app.agents.registry import LangGraphEngine
 
 
 class FakeTool:
@@ -43,13 +44,14 @@ def _security(
     role: str = "Employee",
     department: str = "HR",
     workflow_id: uuid.UUID | None = None,
+    agent_role: str = "HR",
 ):
     return AgentRuntimeContext(
         tenant_id=uuid.uuid4(),
         user_id=uuid.uuid4(),
         role=role,
         department=department,
-        agent_role="HR",
+        agent_role=agent_role,
         correlation_id=uuid.uuid4(),
         conversation_id=uuid.uuid4(),
         workflow_id=workflow_id,
@@ -79,7 +81,7 @@ def _state(security: AgentRuntimeContext, message: str, *, requested_agent: str 
 
 
 def test_graph_routes_through_knowledge_subgraph_and_verifies_citation() -> None:
-    security = _security(allowed_tools={"rag_search"}, department="ALL")
+    security = _security(allowed_tools={"rag_search"}, department="ALL", agent_role="KNOWLEDGE")
     rag = FakeTool("rag_search", "READ_ONLY", [{
         "id": "chunk-1",
         "document_id": "policy-1",
@@ -109,7 +111,7 @@ def test_graph_routes_through_knowledge_subgraph_and_verifies_citation() -> None
 
 
 def test_stream_exposes_only_public_phases_and_validated_answer_tokens() -> None:
-    security = _security(allowed_tools=set(), department="ALL")
+    security = _security(allowed_tools=set(), department="ALL", agent_role="KNOWLEDGE")
     context = OrchestrationRuntimeContext(
         security=security,
         decision_provider=DeterministicDecisionProvider(),
@@ -394,7 +396,7 @@ def test_suspended_thread_cannot_be_overwritten_by_a_new_run() -> None:
 
 
 def test_orchestration_endpoint_requires_tool_jwt_and_returns_state(monkeypatch) -> None:
-    monkeypatch.setattr("app.orchestration.runtime.configured_chat_models", lambda **_: [])
+    monkeypatch.setattr("app.agents.base.runtime.configured_chat_models", lambda **_: [])
     client = TestClient(app)
     payload = {
         "tenant_id": str(uuid.uuid4()),
@@ -433,7 +435,7 @@ def _review_context(security, review_result, *decisions):
 
 def test_a_terminal_tool_answers_the_user_and_ends_the_turn() -> None:
     """The model used to get the review back, re-call the tool and open approvals."""
-    security = _security(allowed_tools={"audit_contract_risk"}, department="LEGAL")
+    security = _security(allowed_tools={"audit_contract_risk"}, department="LEGAL", agent_role="LEGAL")
     review, decider, context = _review_context(
         security,
         {"status": "REVIEWED", "review_id": "r-1", "reply": "Tôi đã rà soát nội dung hợp đồng."},
@@ -456,7 +458,7 @@ def test_a_terminal_tool_answers_the_user_and_ends_the_turn() -> None:
 
 
 def test_a_terminal_tool_without_a_reply_hands_back_to_the_model() -> None:
-    security = _security(allowed_tools={"audit_contract_risk"}, department="LEGAL")
+    security = _security(allowed_tools={"audit_contract_risk"}, department="LEGAL", agent_role="LEGAL")
     review, decider, context = _review_context(
         security,
         {"status": "REVIEWED"},

@@ -10,7 +10,7 @@ from typing import Any
 from langgraph.checkpoint.memory import InMemorySaver
 
 from app.core.config import Settings, settings
-from app.orchestration.engine import LangGraphEngine
+from app.agents.registry import LangGraphEngine
 
 
 os.environ.setdefault("LANGGRAPH_STRICT_MSGPACK", "true")

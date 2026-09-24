@@ -84,10 +84,10 @@ def test_langchain_tools_delegate_to_gateway_with_policy() -> None:
 
 def test_the_legal_domain_can_review_contracts() -> None:
     """Without it, routing Legal through the graph silently drops contract review."""
-    from app.orchestration.subgraphs import DOMAIN_POLICIES
+    from app.agents.legal.agent import POLICY
     from app.tools.schemas import ContractRiskReviewInput
 
-    assert "audit_contract_risk" in DOMAIN_POLICIES["LEGAL"].tools
+    assert "audit_contract_risk" in POLICY.tools
     schema = ContractRiskReviewInput.model_json_schema()["properties"]
     # The contract and the user's side are read from the user's messages by the backend;
     # neither is the model's to supply.

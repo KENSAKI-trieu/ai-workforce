@@ -5,10 +5,10 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
+from app.agents.base.persistence import orchestration_engines
 from app.api.dependencies import require_internal_token
 from app.api.routes import health, llm, orchestration, rag
 from app.core.config import settings
-from app.orchestration.persistence import orchestration_engines
 from app.services.embedding.factory import get_embedding_provider
 
 __all__ = ["app", "lifespan", "require_internal_token"]

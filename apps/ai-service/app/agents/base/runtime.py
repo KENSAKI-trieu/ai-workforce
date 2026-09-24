@@ -9,8 +9,8 @@ from app.core.llm.factory import configured_chat_models
 from app.governance.guardrails import is_tool_allowed
 from app.governance.middleware.context import AgentRuntimeContext
 from app.governance.middleware.observability import GatewayTelemetrySink
-from app.orchestration.decision import DeterministicDecisionProvider, LangChainDecisionProvider
-from app.orchestration.engine import OrchestrationRuntimeContext
+from app.agents.base.decision import DeterministicDecisionProvider, LangChainDecisionProvider
+from app.agents.base.nodes import OrchestrationRuntimeContext
 from app.schemas.orchestration import OrchestrationRequest
 from app.tools.gateway import ToolGatewayClient
 from app.tools.registry import build_langchain_tools

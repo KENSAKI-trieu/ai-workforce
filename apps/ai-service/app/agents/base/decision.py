@@ -11,7 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.governance.middleware.context import AgentRuntimeContext
 from app.governance.middleware.observability import TelemetrySink
 from app.governance.middleware.stack import create_governed_agent
-from app.orchestration.state import WorkforceAgentState
+from app.agents.base.state import WorkforceAgentState
 
 
 class GraphDecision(BaseModel):

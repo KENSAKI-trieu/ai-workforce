@@ -6,7 +6,7 @@ import types
 import pytest
 
 from app.core.config import Settings
-from app.orchestration.persistence import OrchestrationEngineProvider
+from app.agents.base.persistence import OrchestrationEngineProvider
 
 
 def test_memory_checkpointer_is_rejected_for_enabled_production_graph() -> None:
@@ -57,7 +57,7 @@ def test_postgres_provider_runs_setup_and_closes_context(monkeypatch) -> None:
     fake_module.PostgresSaver = FakeSaver
     monkeypatch.setitem(sys.modules, "langgraph.checkpoint.postgres", fake_module)
     monkeypatch.setattr(
-        "app.orchestration.persistence.LangGraphEngine",
+        "app.agents.base.persistence.LangGraphEngine",
         lambda *, checkpointer: ("engine", checkpointer),
     )
     provider = OrchestrationEngineProvider(Settings(

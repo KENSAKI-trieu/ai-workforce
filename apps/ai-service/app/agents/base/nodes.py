@@ -1,53 +1,30 @@
-"""Real LangGraph parent graph with governed business subgraphs and interrupts."""
+"""The nodes every agent graph is built from.
+
+Each function is one step of a governed turn: guard the input, retrieve context, let the
+model decide, run a tool (or stop for approval), validate the output and verify its
+citations. ``agents/base/graph.py`` wires them into one graph per agent.
+"""
 
 from __future__ import annotations
 
 import json
 import re
-import unicodedata
 import uuid
 from dataclasses import dataclass
-from typing import Any, Callable, Iterator
+from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
-from langgraph.checkpoint.memory import InMemorySaver
-from langgraph.graph import END, START, StateGraph
 from langgraph.runtime import Runtime
-from langgraph.types import Command, interrupt
+from langgraph.types import interrupt
 
+from app.agents.base.decision import DecisionProvider
+from app.agents.base.state import WorkforceAgentState
 from app.governance.guardrails import is_tool_allowed, validate_grounded_output, validate_input
 from app.governance.middleware.context import AgentRuntimeContext
 from app.governance.middleware.redaction import redact_sensitive_data, redact_text
-from app.orchestration.decision import DecisionProvider
-from app.orchestration.state import WorkforceAgentState
-from app.orchestration.subgraphs import build_business_subgraphs
 
-
-AGENTS = {"LEGAL", "HR", "FINANCE", "CUSTOMER_SUPPORT", "KNOWLEDGE", "CEO"}
-REQUESTED_AGENT_ALIASES = {
-    "IT": "CUSTOMER_SUPPORT",
-    "SALES": "CUSTOMER_SUPPORT",
-}
 CITATION_PATTERN = re.compile(r"\[Citation:\s*([^\]]+)\]", re.IGNORECASE)
 CHUNK_REFERENCE_PATTERN = re.compile(r";?\s*chunk\s*=\s*([^\s;,\]]+)", re.IGNORECASE)
-
-PUBLIC_PHASE_BY_NODE = {
-    "input_guard": "ANALYZING",
-    "intent_router": "ANALYZING",
-    "agent_selector": "ANALYZING",
-    "legal": "ANALYZING",
-    "hr": "ANALYZING",
-    "finance": "ANALYZING",
-    "customer_support": "ANALYZING",
-    "knowledge": "ANALYZING",
-    "ceo": "ANALYZING",
-    "retrieve_context": "SEARCHING",
-    "model_decision": "ANALYZING",
-    "execute_read_tool": "TOOL_CALLING",
-    "approval_interrupt": "TOOL_CALLING",
-    "output_validation": "ANALYZING",
-    "citation_verification": "ANALYZING",
-}
 
 
 @dataclass(frozen=True)
@@ -66,18 +43,11 @@ def _latest_user_text(state: WorkforceAgentState) -> str:
     return ""
 
 
-def _normalized(text: str) -> str:
-    value = unicodedata.normalize("NFD", text.lower().replace("đ", "d"))
-    return " ".join(
-        "".join(character for character in value if unicodedata.category(character) != "Mn").split()
-    )
-
-
 def _trace(state: WorkforceAgentState, node: str, status: str = "COMPLETED") -> list[dict[str, Any]]:
     return [*(state.get("execution_trace") or []), {"node": node, "status": status}]
 
 
-def _input_guard(state: WorkforceAgentState, runtime: Runtime[OrchestrationRuntimeContext]) -> dict[str, Any]:
+def input_guard(state: WorkforceAgentState, runtime: Runtime[OrchestrationRuntimeContext]) -> dict[str, Any]:
     security = runtime.context.security
     if state.get("tenant_id") != str(security.tenant_id) or state.get("user_id") != str(security.user_id):
         raise PermissionError("Graph state identity does not match trusted runtime context")
@@ -99,47 +69,6 @@ def _input_guard(state: WorkforceAgentState, runtime: Runtime[OrchestrationRunti
         "model_iterations": 0,
         "execution_trace": _trace(state, "input_guard"),
     }
-
-
-def _intent_router(state: WorkforceAgentState) -> dict[str, Any]:
-    requested = str(state.get("requested_agent") or "").upper()
-    requested = REQUESTED_AGENT_ALIASES.get(requested, requested)
-    if requested in AGENTS:
-        intent = f"{requested}_REQUEST"
-    else:
-        text = _normalized(_latest_user_text(state))
-        rules = (
-            ("CEO_ORCHESTRATION", ("ceo", "dieu phoi", "chien luoc", "cross department")),
-            ("LEGAL_REVIEW", ("hop dong", "phap ly", "nda", "legal", "contract")),
-            ("HR_QUERY", ("nghi phep", "nhan su", "luong", "onboarding", "employee")),
-            ("FINANCE_QUERY", ("chi phi", "ngan sach", "hoa don", "cost", "finance", "invoice")),
-            ("SUPPORT_REQUEST", ("khach hang", "ho tro", "ticket", "support", "complaint")),
-        )
-        intent = next(
-            (candidate for candidate, markers in rules if any(marker in text for marker in markers)),
-            "KNOWLEDGE_QUERY",
-        )
-    return {"intent": intent, "execution_trace": _trace(state, "intent_router")}
-
-
-def _agent_selector(state: WorkforceAgentState) -> dict[str, Any]:
-    intent = state.get("intent", "KNOWLEDGE_QUERY")
-    mapping = {
-        "CEO_ORCHESTRATION": "CEO",
-        "LEGAL_REVIEW": "LEGAL",
-        "HR_QUERY": "HR",
-        "FINANCE_QUERY": "FINANCE",
-        "SUPPORT_REQUEST": "CUSTOMER_SUPPORT",
-        "KNOWLEDGE_QUERY": "KNOWLEDGE",
-    }
-    requested = str(state.get("requested_agent") or "").upper()
-    requested = REQUESTED_AGENT_ALIASES.get(requested, requested)
-    selected = requested if requested in AGENTS else mapping.get(intent, "KNOWLEDGE")
-    return {"selected_agent": selected, "execution_trace": _trace(state, "agent_selector")}
-
-
-def _selected_subgraph(state: WorkforceAgentState) -> str:
-    return str(state.get("selected_agent") or "KNOWLEDGE").lower()
 
 
 def _tool_payload(
@@ -164,7 +93,7 @@ def _tool_payload(
     return payload
 
 
-def _retrieve_context(
+def retrieve_context(
     state: WorkforceAgentState,
     runtime: Runtime[OrchestrationRuntimeContext],
 ) -> dict[str, Any]:
@@ -190,7 +119,7 @@ def _retrieve_context(
         }
 
 
-def _model_decision(
+def model_decision(
     state: WorkforceAgentState,
     runtime: Runtime[OrchestrationRuntimeContext],
 ) -> dict[str, Any]:
@@ -246,7 +175,7 @@ def _model_decision(
     }
 
 
-def _after_decision(state: WorkforceAgentState) -> str:
+def after_decision(state: WorkforceAgentState) -> str:
     pending = state.get("pending_tool_call")
     if not pending:
         return "output_validation"
@@ -316,7 +245,7 @@ def _execute_tool(
         }
 
 
-def _after_read_tool(state: WorkforceAgentState) -> str:
+def after_read_tool(state: WorkforceAgentState) -> str:
     """Back to the model for its next step, unless a terminal tool just answered."""
     calls = state.get("tool_calls") or []
     latest = calls[-1] if calls else {}
@@ -325,14 +254,14 @@ def _after_read_tool(state: WorkforceAgentState) -> str:
     return "model_decision"
 
 
-def _execute_read_tool(
+def execute_read_tool(
     state: WorkforceAgentState,
     runtime: Runtime[OrchestrationRuntimeContext],
 ) -> dict[str, Any]:
     return {**_execute_tool(state, runtime.context, approved=True), "execution_trace": _trace(state, "execute_read_tool")}
 
 
-def _approval_interrupt(
+def approval_interrupt(
     state: WorkforceAgentState,
     runtime: Runtime[OrchestrationRuntimeContext],
 ) -> dict[str, Any]:
@@ -375,7 +304,7 @@ def _approval_interrupt(
     }
 
 
-def _output_validation(state: WorkforceAgentState) -> dict[str, Any]:
+def output_validation(state: WorkforceAgentState) -> dict[str, Any]:
     try:
         answer = redact_text(validate_grounded_output(
             str(state.get("final_answer") or ""),
@@ -452,7 +381,7 @@ def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
     }
 
 
-def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
+def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     if state.get("tool_calls") or not state.get("citation_required"):
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
     if any(item.get("node") == "model_decision" for item in state.get("errors") or []):
@@ -477,162 +406,9 @@ def _citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     return {"execution_trace": _trace(state, "citation_verification")}
 
 
-def _response(state: WorkforceAgentState) -> dict[str, Any]:
+def response(state: WorkforceAgentState) -> dict[str, Any]:
     messages = [
         *(state.get("messages") or []),
         {"role": "assistant", "content": state.get("final_answer") or ""},
     ]
     return {"messages": messages, "is_complete": True, "execution_trace": _trace(state, "response")}
-
-
-class LangGraphEngine:
-    def __init__(self, *, checkpointer: Any | None = None) -> None:
-        self.checkpointer = checkpointer or InMemorySaver()
-        self.graph = self._build_graph().compile(checkpointer=self.checkpointer)
-
-    @staticmethod
-    def _build_graph() -> StateGraph:
-        builder = StateGraph(WorkforceAgentState, context_schema=OrchestrationRuntimeContext)
-        builder.add_node("input_guard", _input_guard)
-        builder.add_node("intent_router", _intent_router)
-        builder.add_node("agent_selector", _agent_selector)
-        subgraphs = build_business_subgraphs()
-        for name, subgraph in subgraphs.items():
-            builder.add_node(name.lower(), subgraph)
-        builder.add_node("retrieve_context", _retrieve_context)
-        builder.add_node("model_decision", _model_decision)
-        builder.add_node("execute_read_tool", _execute_read_tool)
-        builder.add_node("approval_interrupt", _approval_interrupt)
-        builder.add_node("output_validation", _output_validation)
-        builder.add_node("citation_verification", _citation_verification)
-        builder.add_node("response", _response)
-
-        builder.add_edge(START, "input_guard")
-        builder.add_edge("input_guard", "intent_router")
-        builder.add_edge("intent_router", "agent_selector")
-        builder.add_conditional_edges(
-            "agent_selector",
-            _selected_subgraph,
-            {name.lower(): name.lower() for name in AGENTS},
-        )
-        for name in AGENTS:
-            builder.add_edge(name.lower(), "retrieve_context")
-        builder.add_edge("retrieve_context", "model_decision")
-        builder.add_conditional_edges(
-            "model_decision",
-            _after_decision,
-            {
-                "execute_read_tool": "execute_read_tool",
-                "approval_interrupt": "approval_interrupt",
-                "output_validation": "output_validation",
-            },
-        )
-        builder.add_conditional_edges(
-            "execute_read_tool",
-            _after_read_tool,
-            {"model_decision": "model_decision", "output_validation": "output_validation"},
-        )
-        builder.add_edge("approval_interrupt", "output_validation")
-        builder.add_edge("output_validation", "citation_verification")
-        builder.add_edge("citation_verification", "response")
-        builder.add_edge("response", END)
-        return builder
-
-    def invoke(
-        self,
-        state: WorkforceAgentState,
-        *,
-        context: OrchestrationRuntimeContext,
-        thread_id: str,
-    ) -> dict[str, Any]:
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
-        snapshot = self.graph.get_state(config)
-        if snapshot.next:
-            raise ValueError("This orchestration is suspended and must be resumed before a new run")
-        return self.graph.invoke(
-            state,
-            config=config,
-            context=context,
-        )
-
-    def stream(
-        self,
-        state: WorkforceAgentState,
-        *,
-        context: OrchestrationRuntimeContext,
-        thread_id: str,
-    ) -> Iterator[dict[str, Any]]:
-        """Stream only public progress phases and the validated final answer.
-
-        Debug graph events are consumed inside the trusted AI service. Node names,
-        prompts, model decisions and intermediate state are never emitted.
-        """
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
-        snapshot = self.graph.get_state(config)
-        if snapshot.next:
-            raise ValueError("This orchestration is suspended and must be resumed before a new run")
-
-        current_phase: str | None = None
-        for event in self.graph.stream(
-            state,
-            config=config,
-            context=context,
-            stream_mode="debug",
-        ):
-            if event.get("type") != "task":
-                continue
-            node_name = str((event.get("payload") or {}).get("name") or "")
-            phase = PUBLIC_PHASE_BY_NODE.get(node_name)
-            if phase and phase != current_phase:
-                current_phase = phase
-                yield {"event": "status", "phase": phase}
-
-        snapshot = self.graph.get_state(config)
-        result = dict(snapshot.values or {})
-        interrupts = tuple(
-            interrupt_item
-            for task in snapshot.tasks
-            for interrupt_item in getattr(task, "interrupts", ())
-        )
-        if interrupts:
-            yield {"event": "status", "phase": "WAITING_APPROVAL"}
-        else:
-            answer = str(result.get("final_answer") or "")
-            for token in re.findall(r"\S+\s*|\s+", answer):
-                yield {"event": "token", "delta": token}
-            yield {"event": "status", "phase": "COMPLETED"}
-        result["__interrupt__"] = interrupts
-        yield {"event": "result", "result": result}
-
-    def resume(
-        self,
-        resume_value: Any,
-        *,
-        context: OrchestrationRuntimeContext,
-        thread_id: str,
-    ) -> dict[str, Any]:
-        config = {"configurable": {"thread_id": thread_id}, "recursion_limit": 50}
-        snapshot = self.graph.get_state(config)
-        checkpoint_state = snapshot.values or {}
-        security = context.security
-        expected_identity = (
-            str(security.tenant_id),
-            str(security.user_id),
-            str(security.conversation_id),
-            str(security.workflow_id),
-        )
-        checkpoint_identity = (
-            str(checkpoint_state.get("tenant_id") or ""),
-            str(checkpoint_state.get("user_id") or ""),
-            str(checkpoint_state.get("conversation_id") or ""),
-            str(checkpoint_state.get("workflow_id") or "None"),
-        )
-        if not snapshot.next:
-            raise ValueError("No suspended orchestration exists for this thread")
-        if checkpoint_identity != expected_identity:
-            raise PermissionError("Checkpoint identity does not match trusted runtime context")
-        return self.graph.invoke(
-            Command(resume=resume_value),
-            config=config,
-            context=context,
-        )

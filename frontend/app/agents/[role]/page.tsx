@@ -405,6 +405,11 @@ export default function AgentPage() {
         `/api/v1/agents/${role}/configuration-options`,
       );
       setConfigurationOptions(data);
+      // Tools the role never uses are not offered, so they are dropped from what Save
+      // sends rather than kept as grants nobody can see.
+      const offered = new Set(data.tools.map((tool) => tool.name));
+      setTools((current) => current.filter((tool) => offered.has(tool)));
+      setDeniedTools((current) => current.filter((tool) => offered.has(tool)));
     } catch (reason) {
       setError(messageFrom(reason));
       setShowSettings(false);

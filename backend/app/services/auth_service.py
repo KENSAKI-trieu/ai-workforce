@@ -17,7 +17,7 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
 )
-from app.core.gateway_tools import with_gateway_grants
+from app.core.gateway_tools import GATEWAY_TOOLS, with_gateway_grants
 from app.core.hr_capabilities import default_hr_tools
 from app.core.permissions import ROOT_POSITION_SLUG
 from app.models.models import Tenant, User, AIAgent, Department, RefreshToken
@@ -74,6 +74,23 @@ DEFAULT_AGENT_TOOLS = {
     role_code: with_gateway_grants(role_code, capabilities)
     for role_code, capabilities in DEFAULT_AGENT_CAPABILITIES.items()
 }
+
+
+def supported_agent_tools(role_code: str) -> frozenset[str]:
+    """Every tool name that changes what this role can do when granted.
+
+    A role's own capabilities, which its executor checks, plus every gateway tool for the
+    roles that run through LangGraph: gateway grants beyond the defaults are a per-tenant
+    choice. HR never runs through the graph, so gateway tools would do nothing for it --
+    as would another role's capability, such as `request_leave` on the Legal agent.
+    """
+    role = role_code.upper()
+    capabilities = frozenset(DEFAULT_AGENT_CAPABILITIES.get(role, ()))
+    if role == "HR":
+        return capabilities
+    return capabilities | GATEWAY_TOOLS
+
+
 DEFAULT_DEPARTMENTS = [
     ("BOARD", "Ban điều hành"),
     ("HR", "Nhân sự"),

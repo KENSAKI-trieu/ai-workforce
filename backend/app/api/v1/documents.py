@@ -34,6 +34,7 @@ from sqlalchemy.orm import Session
 from app.core.database import SyncSessionLocal, get_db
 from app.core.security import get_current_active_user
 from app.models.models import DocumentChunk, KnowledgeDocument, User
+from app.services.agent_knowledge_scope import prune_orphaned_knowledge_selectors
 from app.services.document_ingestion import (
     DocumentAlreadyProcessing,
     resume_document_ingestion,
@@ -1549,6 +1550,10 @@ def delete_document(
         db.delete(chunk)
     if record:
         db.delete(record)
+    db.flush()
+    # In the same transaction as the delete: an agent scoped to this document must not
+    # keep a selector the configuration page cannot show and the update API rejects.
+    pruned_agents = prune_orphaned_knowledge_selectors(db, current_user.tenant_id)
     db.commit()
 
     file_deleted = False
@@ -1567,4 +1572,5 @@ def delete_document(
         "version": version,
         "chunks_deleted": len(chunks),
         "file_deleted": file_deleted,
+        "agents_rescoped": sorted(agent.role_code for agent in pruned_agents),
     }

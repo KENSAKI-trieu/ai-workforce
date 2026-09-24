@@ -13,7 +13,8 @@ from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
 from app.core.security import RoleRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
-from app.services.auth_service import DEFAULT_AGENT_TOOLS, ensure_tenant_default_agents
+from app.services.agent_knowledge_scope import existing_knowledge_targets, orphaned_selectors
+from app.services.auth_service import ensure_tenant_default_agents, supported_agent_tools
 
 router = APIRouter(prefix="/agents", tags=["AI Agents"])
 AGENT_CONFIG_ROLES = {"Owner", "Admin", "CEO"}
@@ -90,7 +91,18 @@ def _public_agent_response(agent: AIAgent, current_user: User) -> AIAgentRespons
     })
 
 
-def _validate_knowledge_access(db: Session, current_user: User, values: list[str]) -> list[str]:
+def _validate_knowledge_access(
+    db: Session,
+    current_user: User,
+    values: list[str],
+    already_granted: frozenset[str] = frozenset(),
+) -> list[str]:
+    """Reject selectors naming knowledge that does not exist -- unless already granted.
+
+    A selector the agent already holds may point at a document deleted since; refusing it
+    made the agent unsaveable, because the page cannot show it for the operator to remove.
+    It is kept as it is (it matches nothing), and only newly added selectors must exist.
+    """
     selectors = sorted({str(value).strip() for value in values if str(value).strip()})
     if len(selectors) > 5000:
         raise HTTPException(status_code=422, detail="Too many knowledge selectors")
@@ -101,14 +113,15 @@ def _validate_knowledge_access(db: Session, current_user: User, values: list[str
     if selectors in ([], ["*"], ["none"]):
         return selectors or ["none"]
 
-    chunks = db.query(DocumentChunk).filter(
-        DocumentChunk.tenant_id == current_user.tenant_id
-    ).all()
-    valid_collections = {item.collection_name for item in chunks}
-    valid_documents = {item.document_id or item.document_name for item in chunks}
-    valid_chunks = {str(item.id) for item in chunks}
+    valid_collections, valid_documents, valid_chunks = existing_knowledge_targets(
+        db, current_user.tenant_id
+    )
     for selector in selectors:
         prefix, separator, value = selector.partition(":")
+        if separator and prefix not in {"collection", "document", "chunk"}:
+            raise HTTPException(status_code=422, detail=f"Unsupported knowledge selector: {selector}")
+        if selector in already_granted:
+            continue
         if not separator and selector not in valid_collections:
             raise HTTPException(status_code=422, detail=f"Unknown knowledge collection: {selector}")
         if prefix == "collection" and value not in valid_collections:
@@ -117,8 +130,6 @@ def _validate_knowledge_access(db: Session, current_user: User, values: list[str
             raise HTTPException(status_code=422, detail=f"Unknown knowledge document: {value}")
         if prefix == "chunk" and value not in valid_chunks:
             raise HTTPException(status_code=422, detail=f"Unknown knowledge chunk: {value}")
-        if separator and prefix not in {"collection", "document", "chunk"}:
-            raise HTTPException(status_code=422, detail=f"Unsupported knowledge selector: {selector}")
     return selectors
 
 
@@ -206,12 +217,15 @@ def get_agent_configuration_options(
     # well as revoking them in the migration, so the configuration UI never offers a
     # toggle that does nothing.
     retired = {"get_employee_profile"} | HR_RETIRED_TOOLS
-    tool_names = sorted((
-        set(DEFAULT_AGENT_TOOLS.get(agent.role_code, []))
-        | set(agent.tools_access or [])
+    # Only tools that change what this role does. Offering every granted name put toggles
+    # such as `request_leave` on the Legal agent, which no Legal branch ever checks.
+    supported = supported_agent_tools(agent.role_code)
+    tool_names = sorted(supported - retired)
+    granted = (
+        set(agent.tools_access or [])
         | set(agent.allowed_actions or [])
         | set(agent.disallowed_actions or [])
-    ) - retired)
+    )
     chunks = db.query(DocumentChunk).filter(
         DocumentChunk.tenant_id == current_user.tenant_id
     ).order_by(DocumentChunk.document_name, DocumentChunk.chunk_index).all()
@@ -239,6 +253,14 @@ def get_agent_configuration_options(
         })
     return {
         "agent_role": agent.role_code,
+        # Grants this role cannot use. The page drops them on the next save.
+        "unsupported_grants": sorted(granted - supported - retired),
+        # Selectors the agent holds for knowledge deleted since. The page lists them so the
+        # operator can see and remove them; they match nothing at retrieval time.
+        "orphaned_knowledge": orphaned_selectors(
+            agent.knowledge_access or [],
+            existing_knowledge_targets(db, current_user.tenant_id),
+        ),
         "tools": [
             {"name": name, "description": TOOL_DESCRIPTIONS.get(name, name)}
             for name in tool_names
@@ -263,7 +285,10 @@ def update_agent(
     data = req.model_dump(exclude_unset=True)
     if "knowledge_access" in data:
         data["knowledge_access"] = _validate_knowledge_access(
-            db, current_user, data["knowledge_access"]
+            db,
+            current_user,
+            data["knowledge_access"],
+            already_granted=frozenset(agent.knowledge_access or []),
         )
     submitted_tool_names = set().union(*(
         set(data.get(field_name, []))
@@ -280,6 +305,24 @@ def update_agent(
         raise HTTPException(
             status_code=422,
             detail=f"Unknown tools: {', '.join(sorted(unknown_tools))}",
+        )
+    # Grants the agent already holds are let through so an older configuration can still
+    # be saved; only newly added tools must be ones this role can use.
+    already_granted = (
+        set(agent.tools_access or [])
+        | set(agent.allowed_actions or [])
+        | set(agent.disallowed_actions or [])
+    )
+    unsupported_tools = (
+        submitted_tool_names - already_granted - supported_agent_tools(agent.role_code)
+    )
+    if unsupported_tools:
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"Tools not used by the {agent.role_code} agent: "
+                f"{', '.join(sorted(unsupported_tools))}"
+            ),
         )
     prospective_tools = set(data.get("tools_access", agent.tools_access or []))
     prospective_allowed = set(data.get("allowed_actions", agent.allowed_actions or []))

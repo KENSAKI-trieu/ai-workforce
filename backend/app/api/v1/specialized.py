@@ -17,7 +17,8 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user
-from app.models.models import AgentWorkflow, ContractReview, User, WorkflowApproval
+from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
+from app.services.agents.agent_executor import _can_use_tool
 from app.services.audit_service import log_audit_action
 from app.services import contract_review_store
 from app.services.document_parser import DocumentParseError, extract_file_text
@@ -41,6 +42,34 @@ from app.services.finance_service import audit_invoice_and_reconcile
 from app.services.sales_service import handle_sales_request
 
 router = APIRouter(tags=["Specialized Domain APIs"])
+
+
+def _legal_tool_required(tool_name: str):
+    """Refuse a Legal action whose tool is switched off for the tenant's Legal agent.
+
+    These endpoints used to run whatever the configuration page said: switching a Legal
+    tool off there changed nothing, so an operator who revoked it had no way to know it
+    was still in use.
+    """
+
+    def dependency(
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_active_user),
+    ) -> None:
+        agent = db.query(AIAgent).filter(
+            AIAgent.tenant_id == current_user.tenant_id,
+            AIAgent.role_code == "LEGAL",
+        ).first()
+        if agent is None or not _can_use_tool(agent, tool_name):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Công cụ `{tool_name}` chưa được bật cho Legal Counsel AI. "
+                    "Admin hoặc Owner có thể bật trong phần Cấu hình AI Employees."
+                ),
+            )
+
+    return Depends(dependency)
 MAX_LEGAL_FILE_BYTES = 10 * 1024 * 1024
 LEGAL_DOCUMENT_APPROVERS = {"Owner", "Admin", "CEO"}
 
@@ -300,7 +329,11 @@ def validate_legal_document_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.post("/legal/audit-contract", summary="Audit contract text for high-risk clauses")
+@router.post(
+    "/legal/audit-contract",
+    summary="Audit contract text for high-risk clauses",
+    dependencies=[_legal_tool_required("audit_contract_risk")],
+)
 def audit_contract_endpoint(
     req: ContractAuditRequest,
     db: Session = Depends(get_db),
@@ -327,7 +360,11 @@ def audit_contract_endpoint(
     return result
 
 
-@router.post("/legal/review-document", summary="Extract and review a legal document")
+@router.post(
+    "/legal/review-document",
+    summary="Extract and review a legal document",
+    dependencies=[_legal_tool_required("audit_contract_risk")],
+)
 async def review_legal_document(
     file: UploadFile = File(...),
     represented_party: str = Form(...),
@@ -498,7 +535,11 @@ def delete_contract_review_decision(
     return payload
 
 
-@router.post("/legal/compare-documents", summary="Compare two contract versions")
+@router.post(
+    "/legal/compare-documents",
+    summary="Compare two contract versions",
+    dependencies=[_legal_tool_required("compare_contract_versions")],
+)
 async def compare_legal_documents(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
@@ -510,7 +551,11 @@ async def compare_legal_documents(
     return {"old_document": old_name, "new_document": new_name, **result}
 
 
-@router.post("/legal/privacy-check", summary="Detect personal and restricted data")
+@router.post(
+    "/legal/privacy-check",
+    summary="Detect personal and restricted data",
+    dependencies=[_legal_tool_required("check_sensitive_data")],
+)
 async def privacy_check_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -525,7 +570,11 @@ async def privacy_check_document(
     return result
 
 
-@router.post("/legal/license-check", summary="Inspect a software dependency manifest")
+@router.post(
+    "/legal/license-check",
+    summary="Inspect a software dependency manifest",
+    dependencies=[_legal_tool_required("check_software_licenses")],
+)
 async def license_check_manifest(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -555,6 +604,7 @@ def generate_legal_document_endpoint(
     "/legal/document-drafts",
     status_code=201,
     summary="Generate and submit a legal document for approval",
+    dependencies=[_legal_tool_required("generate_legal_document")],
 )
 def submit_legal_document_draft(
     req: LegalDocumentGenerateRequest,

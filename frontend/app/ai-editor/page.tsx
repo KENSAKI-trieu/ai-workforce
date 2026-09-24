@@ -70,6 +70,10 @@ interface ConfigurationOptions {
   agent_role: string;
   tools: ToolOption[];
   documents: DocumentOption[];
+  // Selectors the agent still holds for knowledge that has since been deleted.
+  orphaned_knowledge?: string[];
+  // Tools granted to the agent that its role never uses; dropped on the next save.
+  unsupported_grants?: string[];
 }
 
 interface AgentDraft {
@@ -158,6 +162,7 @@ export default function AIEditorPage() {
         api.get<ConfigurationOptions>(`/api/v1/agents/${role}/configuration-options`),
       ]);
       const agent = agentResponse.data;
+      const offered = new Set(optionResponse.data.tools.map((tool) => tool.name));
       setOptions(optionResponse.data);
       setDraft({
         name: agent.name,
@@ -166,7 +171,7 @@ export default function AIEditorPage() {
         model_name: agent.model_name,
         is_active: agent.is_active,
         tools: (agent.tools_access || []).filter(
-          (tool) => !(agent.disallowed_actions || []).includes(tool)
+          (tool) => !(agent.disallowed_actions || []).includes(tool) && offered.has(tool)
         ),
         knowledgeAccess: normalizeKnowledgeAccess(agent.knowledge_access || []),
       });
@@ -386,6 +391,7 @@ export default function AIEditorPage() {
                       </div>
                       <span className="ta-badge ta-badge-info">{draft.tools.length}/{options.tools.length} tool</span>
                     </div>
+                    {(options.unsupported_grants || []).length > 0 && <p style={{ marginBottom: 10, padding: "8px 10px", borderRadius: 8, background: "#FFFBEB", color: "#92400E", fontSize: 11 }}>Agent này đang được cấp {(options.unsupported_grants || []).join(", ")} — tool của vai trò khác, không có tác dụng với agent này. Sẽ được gỡ khi lưu cấu hình.</p>}
                     {options.tools.length === 0 ? <p style={{ color: "var(--text-muted)", fontSize: 12 }}>Agent này chưa có tool khả dụng.</p> : (
                       <div style={{ display: "grid", gridTemplateColumns: "repeat(2, minmax(0, 1fr))", gap: 9 }}>
                         {options.tools.map((tool) => {
@@ -424,6 +430,22 @@ export default function AIEditorPage() {
                       <div style={{ border: "1px solid var(--border)", borderRadius: 11, overflow: "hidden" }}>
                         <div style={{ display: "flex", alignItems: "center", gap: 8, padding: 10, borderBottom: "1px solid var(--border)", background: "#F8FAFC" }}><Search size={15} color="var(--text-muted)" /><input value={documentQuery} onChange={(event) => setDocumentQuery(event.target.value)} placeholder="Tìm collection hoặc tài liệu..." style={{ flex: 1, border: 0, outline: 0, background: "transparent", fontSize: 12 }} /></div>
                         <div style={{ maxHeight: 520, overflowY: "auto" }}>
+                          {(options.orphaned_knowledge || []).length > 0 && (
+                            <div style={{ borderBottom: "1px solid var(--border)", background: "#FFFBEB", padding: "10px 12px" }}>
+                              <strong style={{ display: "block", fontSize: 12, color: "#92400E" }}>Phạm vi trỏ tới tài liệu đã bị xoá</strong>
+                              <span style={{ display: "block", marginTop: 2, color: "#92400E", fontSize: 10.5 }}>Không còn khớp tài liệu nào. Bỏ chọn để gỡ khỏi cấu hình.</span>
+                              <div style={{ display: "grid", gap: 5, marginTop: 8 }}>
+                                {(options.orphaned_knowledge || []).map((selector) => (
+                                  <label key={selector} style={{ display: "flex", alignItems: "center", gap: 8, fontSize: 11, cursor: "pointer" }}>
+                                    <input type="checkbox" checked={draft.knowledgeAccess.includes(selector)} onChange={() => toggleSelector(selector)} />
+                                    <FileText size={13} color="#B45309" />
+                                    <span style={{ overflowWrap: "anywhere" }}>{selector.replace(/^(document|chunk|collection):/, "")}</span>
+                                    <span style={{ color: "#B45309", fontSize: 10 }}>đã bị xoá</span>
+                                  </label>
+                                ))}
+                              </div>
+                            </div>
+                          )}
                           {collections.length === 0 && <p style={{ padding: 20, color: "var(--text-muted)", fontSize: 12, textAlign: "center" }}>Không tìm thấy tài liệu.</p>}
                           {collections.map(([collectionName, documents]) => {
                             const collectionSelector = `collection:${collectionName}`;

@@ -14,9 +14,9 @@ from types import SimpleNamespace
 import pytest
 
 from app.core.config import Settings, _configured_keys, settings
-from app.core.llm.bedrock_provider import BedrockProvider
+from app.core.llm.providers import BedrockProvider
 from app.core.llm.fallback import generate_with_fallback
-from app.core.llm.openai_provider import OpenAIProvider
+from app.core.llm.providers import OpenAIProvider
 from app.core.llm.router import LLMRouter
 
 

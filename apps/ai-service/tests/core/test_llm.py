@@ -4,7 +4,7 @@ import pytest
 
 from app.core.llm.base import LLMProvider, LLMResult
 from app.core.llm.fallback import generate_with_fallback
-from app.core.llm.openai_provider import OpenAIProvider
+from app.core.llm.providers import OpenAIProvider
 from app.core.llm.router import LLMRouter
 from app.core.llm.factory import configured_chat_models, create_chat_model
 
@@ -104,7 +104,9 @@ def test_chat_models_follow_the_configured_default_provider(monkeypatch) -> None
     a failing call before reaching the provider it was configured for.
     """
     monkeypatch.setattr("app.core.llm.factory.settings.OPENAI_API_KEY", "openai-key")
+    monkeypatch.setattr("app.core.llm.factory.settings.OPENAI_API_KEY_2", None)
     monkeypatch.setattr("app.core.llm.factory.settings.GOOGLE_AI_API_KEY", "gemini-key")
+    monkeypatch.setattr("app.core.llm.factory.settings.GOOGLE_AI_API_KEY_2", None)
     monkeypatch.setattr("app.core.llm.factory.settings.BEDROCK_ENABLED", False)
 
     monkeypatch.setattr("app.core.llm.factory.settings.LLM_DEFAULT_PROVIDER", "gemini")
@@ -119,6 +121,26 @@ def test_chat_models_follow_the_configured_default_provider(monkeypatch) -> None
 
     monkeypatch.setattr("app.core.llm.factory.settings.LLM_DEFAULT_PROVIDER", "local")
     assert configured_chat_models() == []
+
+
+@pytest.mark.bedrock_flag
+def test_the_graph_gets_every_key_of_a_vendor_in_order(monkeypatch) -> None:
+    """A second key used to reach only /v1/llm/generate; the graph ran on the first alone,
+    so one exhausted free-tier quota stopped every graph turn."""
+    monkeypatch.setattr("app.core.llm.factory.settings.LLM_DEFAULT_PROVIDER", "gemini")
+    monkeypatch.setattr("app.core.llm.factory.settings.BEDROCK_ENABLED", False)
+    monkeypatch.setattr("app.core.llm.factory.settings.GOOGLE_AI_API_KEY", "gemini-key-1")
+    monkeypatch.setattr("app.core.llm.factory.settings.GOOGLE_AI_API_KEY_2", "gemini-key-2")
+    monkeypatch.setattr("app.core.llm.factory.settings.OPENAI_API_KEY", "openai-key")
+    monkeypatch.setattr("app.core.llm.factory.settings.OPENAI_API_KEY_2", None)
+
+    models = configured_chat_models(model="gemini-2.5-flash")
+    assert [type(item).__name__ for item in models] == [
+        "ChatGoogleGenerativeAI", "ChatGoogleGenerativeAI", "ChatOpenAI",
+    ]
+    # The requested model belongs to the leading vendor and survives its key switch.
+    assert [models[0].model, models[1].model] == ["gemini-2.5-flash", "gemini-2.5-flash"]
+    assert models[2].model_name != "gemini-2.5-flash"
 
 
 @pytest.mark.bedrock_flag

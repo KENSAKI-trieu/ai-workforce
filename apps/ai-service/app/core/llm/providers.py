@@ -1,9 +1,19 @@
+"""LLM providers behind /v1/llm/generate: one class per vendor, plus the offline local one.
+
+Each vendor provider wraps LangChain chat models built by ``factory.create_chat_model``,
+so the graph (which uses those chat models directly) and this text path share one
+construction policy -- timeouts, retries, and the same credentials.
+"""
+
+from __future__ import annotations
+
 import logging
 from collections.abc import Callable, Sequence
 from typing import Any
 
 from langchain_core.language_models.chat_models import BaseChatModel
 
+from app.core.config import settings
 from app.core.llm.base import LLMProvider, LLMResult
 from app.core.llm.factory import LangChainProvider, create_chat_model
 
@@ -121,3 +131,48 @@ class LangChainChatProvider(LLMProvider):
                 usage=_usage(response),
             )
         raise last_error if last_error else RuntimeError("no credential was tried")
+
+
+class OpenAIProvider(LangChainChatProvider):
+    name = "openai"
+
+    def __init__(self, api_key: str | Sequence[str], default_model: str | None = None, **kwargs) -> None:
+        super().__init__("openai", api_key, default_model or settings.OPENAI_CHAT_MODEL, **kwargs)
+
+
+class GeminiProvider(LangChainChatProvider):
+    name = "gemini"
+
+    def __init__(self, api_key: str | Sequence[str], default_model: str | None = None, **kwargs) -> None:
+        super().__init__("gemini", api_key, default_model or settings.GEMINI_CHAT_MODEL, **kwargs)
+
+
+class BedrockProvider(LangChainChatProvider):
+    """Claude on Amazon Bedrock.
+
+    Unlike the other providers there is no API key: the boto3 client carries the
+    credentials, so the inherited api_key field is left empty on purpose.
+    """
+
+    name = "bedrock"
+
+    def __init__(self, default_model: str | None = None, **kwargs) -> None:
+        super().__init__("bedrock", "", default_model or settings.BEDROCK_CHAT_MODEL, **kwargs)
+
+
+class LocalProvider(LLMProvider):
+    """Offline echo used when no vendor is configured or all of them failed."""
+
+    name = "local"
+
+    def generate(self, messages: list[dict[str, str]], *, model: str | None = None) -> LLMResult:
+        last_user_message = next(
+            (item["content"] for item in reversed(messages) if item["role"] == "user"),
+            "",
+        )
+        return LLMResult(
+            content=f"Local provider received: {last_user_message}",
+            model=model or "local-deterministic",
+            provider=self.name,
+            usage={"prompt_tokens": sum(len(item["content"].split()) for item in messages), "completion_tokens": 4},
+        )

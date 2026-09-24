@@ -9,6 +9,22 @@ from app.core.config import settings
 
 LangChainProvider = Literal["openai", "gemini", "bedrock"]
 
+# Vendor order when none is preferred ("auto"). Shared by the chat models built here for
+# the graph and by LLMRouter for /v1/llm/generate, so both paths fall back the same way.
+# Bedrock leads only when BEDROCK_ENABLED is set; otherwise it is skipped.
+PROVIDER_ORDER: tuple[LangChainProvider, ...] = ("bedrock", "openai", "gemini")
+
+
+def provider_keys(provider: str) -> tuple[str, ...]:
+    """Every credential configured for a vendor; Bedrock has none but one empty slot."""
+    if provider == "bedrock":
+        return ("",) if settings.BEDROCK_ENABLED else ()
+    if provider == "openai":
+        return settings.openai_api_keys
+    if provider == "gemini":
+        return settings.google_api_keys
+    return ()
+
 
 def default_model_for(provider: LangChainProvider) -> str:
     if provider == "openai":
@@ -70,33 +86,31 @@ def configured_chat_models(
     model: str | None = None,
     max_retries: int | None = None,
 ) -> list[BaseChatModel]:
-    """Build configured external models in provider-fallback order.
+    """Build configured external models in fallback order: one model per credential.
 
     With no explicit provider the configured default leads, as it does for
-    `LLMRouter`: "auto" keeps the built-in order and "local" builds no external
-    model, so callers fall back to their deterministic path.
+    `LLMRouter`: "auto" keeps PROVIDER_ORDER and "local" builds no external model, so
+    callers fall back to their deterministic path.
+
+    Every key of a vendor gets its own model, next to each other in the list, so the
+    graph's fallback middleware moves to the vendor's second key when the first one's
+    quota runs out -- the graph used to be given only the first key. A requested model
+    applies to every key of the leading vendor, which serves the same catalogue under
+    each of them; other vendors use their own defaults.
     """
     configured_default = settings.LLM_DEFAULT_PROVIDER
     selected = (provider or ("" if configured_default == "auto" else configured_default)).lower()
-    if selected not in {"", "openai", "gemini", "bedrock"}:
+    if selected not in {"", *PROVIDER_ORDER}:
         return []
     order = [selected] if selected else []
-    order.extend(item for item in ("openai", "gemini", "bedrock") if item not in order)
+    order.extend(item for item in PROVIDER_ORDER if item not in order)
     result: list[BaseChatModel] = []
-    for index, provider_name in enumerate(order):
-        if provider_name == "bedrock":
-            # Bedrock has no per-request key; BEDROCK_ENABLED is what gates it.
-            api_key = "" if settings.BEDROCK_ENABLED else None
-        elif provider_name == "openai":
-            api_key = settings.OPENAI_API_KEY
-        else:
-            api_key = settings.GOOGLE_AI_API_KEY
-        if api_key is None or (provider_name != "bedrock" and not api_key):
-            continue
-        result.append(create_chat_model(
-            cast(LangChainProvider, provider_name),
-            api_key=api_key,
-            model=model if index == 0 else None,
-            max_retries=max_retries,
-        ))
+    for position, provider_name in enumerate(order):
+        for api_key in provider_keys(provider_name):
+            result.append(create_chat_model(
+                cast(LangChainProvider, provider_name),
+                api_key=api_key,
+                model=model if position == 0 else None,
+                max_retries=max_retries,
+            ))
     return result

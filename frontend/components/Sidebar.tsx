@@ -36,13 +36,13 @@ import {
 
 // ─── Nav Config ──────────────────────────────────────────────────────────────
 const AGENTS = [
-  { name: { vi: "Trợ lý CEO", ja: "CEOエージェント" }, role: "CEO", emoji: "👔", icon: Bot, path: "/agents/CEO", isNew: false },
-  { name: { vi: "Trợ lý Nhân sự", ja: "人事エージェント" }, role: "HR", emoji: "🧑‍💼", icon: Users, path: "/agents/HR", isNew: false },
-  { name: { vi: "Trợ lý Pháp lý", ja: "法務エージェント" }, role: "LEGAL", emoji: "⚖️", icon: Scale, path: "/agents/LEGAL", isNew: false },
-  { name: { vi: "Trợ lý CNTT", ja: "ITエージェント" }, role: "IT", emoji: "💻", icon: Laptop, path: "/agents/IT", isNew: false },
-  { name: { vi: "Trợ lý Tài chính", ja: "財務エージェント" }, role: "FINANCE", emoji: "💰", icon: DollarSign, path: "/agents/FINANCE", isNew: true },
-  { name: { vi: "Trợ lý Kinh doanh", ja: "営業エージェント" }, role: "SALES", emoji: "📈", icon: TrendingUp, path: "/agents/SALES", isNew: true },
-  { name: { vi: "Trợ lý Tri thức", ja: "ナレッジエージェント" }, role: "KNOWLEDGE", emoji: "📚", icon: BookOpen, path: "/agents/KNOWLEDGE", isNew: false },
+  { name: { vi: "Trợ lý CEO", ja: "CEOエージェント" }, role: "CEO", emoji: "👔", icon: Bot, path: "/agents/CEO" },
+  { name: { vi: "Trợ lý Nhân sự", ja: "人事エージェント" }, role: "HR", emoji: "🧑‍💼", icon: Users, path: "/agents/HR" },
+  { name: { vi: "Trợ lý Pháp lý", ja: "法務エージェント" }, role: "LEGAL", emoji: "⚖️", icon: Scale, path: "/agents/LEGAL" },
+  { name: { vi: "Trợ lý CNTT", ja: "ITエージェント" }, role: "IT", emoji: "💻", icon: Laptop, path: "/agents/IT" },
+  { name: { vi: "Trợ lý Tài chính", ja: "財務エージェント" }, role: "FINANCE", emoji: "💰", icon: DollarSign, path: "/agents/FINANCE" },
+  { name: { vi: "Trợ lý Kinh doanh", ja: "営業エージェント" }, role: "SALES", emoji: "📈", icon: TrendingUp, path: "/agents/SALES" },
+  { name: { vi: "Trợ lý Tri thức", ja: "ナレッジエージェント" }, role: "KNOWLEDGE", emoji: "📚", icon: BookOpen, path: "/agents/KNOWLEDGE" },
 ];
 
 const SIDEBAR_TEXT = {
@@ -102,27 +102,6 @@ const SIDEBAR_TEXT = {
 
 interface SidebarProps {
   agentStatuses?: Record<string, boolean>;
-}
-
-// ─── Badge "NEW" ────────────────────────────────────────────────────────────
-function NewBadge({ locale }: { locale: AppLocale }) {
-  return (
-    <span
-      style={{
-        fontSize: "0.6rem",
-        fontWeight: 700,
-        padding: "2px 6px",
-        borderRadius: "999px",
-        background: "#10B981",
-        color: "#FFFFFF",
-        letterSpacing: "0.04em",
-        lineHeight: 1,
-        flexShrink: 0,
-      }}
-    >
-      {locale === "ja" ? "新着" : "MỚI"}
-    </span>
-  );
 }
 
 // Listed so the product shows where it is heading; the backend refuses its chat.
@@ -370,7 +349,6 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           label={text.analytics}
           href="/analytics"
           active={pathname === "/analytics"}
-          badge="NEW"
         />
 
         {/* Quản Lý Chi Phí AI */}
@@ -379,7 +357,6 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           label={text.costs}
           href="/costs"
           active={pathname === "/costs"}
-          badge="NEW"
         />
 
         {/* Plugin Prompt & Skill */}
@@ -388,7 +365,6 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           label={text.plugins}
           href="/plugins"
           active={pathname === "/plugins"}
-          badge="NEW"
         />
 
         {/* Knowledge Base */}
@@ -599,8 +575,6 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
                         {agent.name[locale]}
                       </span>
 
-                      {/* NEW badge */}
-                      {agent.isNew && <NewBadge locale={locale} />}
                       {underDevelopment.has(agent.role) && <UnderDevelopmentBadge />}
 
                       {/* Online dot */}
@@ -696,14 +670,12 @@ function NavItem({
   label,
   href,
   active,
-  badge,
   disabled = false,
 }: {
   icon: React.ReactNode;
   label: string;
   href: string;
   active: boolean;
-  badge?: string;
   disabled?: boolean;
 }) {
   const content = (
@@ -747,24 +719,6 @@ function NavItem({
         {label}
       </span>
 
-      {/* Badge */}
-      {badge && (
-        <span
-          style={{
-            fontSize: "0.6rem",
-            fontWeight: 700,
-            padding: "2px 6px",
-            borderRadius: "999px",
-            background: "#10B981",
-            color: "#FFFFFF",
-            letterSpacing: "0.04em",
-            lineHeight: 1,
-            flexShrink: 0,
-          }}
-        >
-          {badge}
-        </span>
-      )}
     </div>
   );
 

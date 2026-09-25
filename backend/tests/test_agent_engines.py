@@ -117,3 +117,87 @@ def test_a_graph_that_fails_mid_stream_falls_back_to_the_deterministic_flow(
     ]
     replies = [item.get("reply") for item in payloads if isinstance(item, dict) and "reply" in item]
     assert replies and replies[-1]
+
+
+def test_graph_citations_are_shown_as_the_chunks_they_cite() -> None:
+    """The model's own citation objects vary per turn; the chat shows the retrieved chunk."""
+    chunk = {
+        "id": "050d54c9",
+        "document_id": "Chinh_sach_Nghi_phep_2025.md",
+        "document_name": "Chinh_sach_Nghi_phep_2025.md",
+        "section_title": "1. Quyền Lợi",
+        "citation_tag": "[Citation: Chinh_sach_Nghi_phep_2025.md, v1.0, 1. Quyền Lợi; chunk=050d54c9]",
+        "content": "12 ngày phép.",
+    }
+    other = {**chunk, "id": "c95b77f9", "document_id": "Quy_dinh.md", "document_name": "Quy_dinh.md",
+             "citation_tag": "[Citation: Quy_dinh.md; chunk=c95b77f9]"}
+    state = {
+        "retrieved_context": [chunk, other],
+        "citations": [
+            {"chunk_id": "050d54c9", "section_title": "1. Quyền Lợi"},
+            {"source": chunk["citation_tag"]},  # the same chunk again
+            {"source": "Không_có_thật.md"},
+        ],
+    }
+    cited = LangGraphEngine.public_citations(state)
+    assert len(cited) == 1
+    assert cited[0]["document_name"] == "Chinh_sach_Nghi_phep_2025.md"
+    assert cited[0]["citation_tag"] == chunk["citation_tag"]
+    assert "content" not in cited[0]
+
+
+FAILED_TURN = {
+    "thread_id": "t",
+    "status": "COMPLETED",
+    "state": {
+        "final_answer": "The decision model could not produce a validated result.",
+        "errors": [{"node": "model_decision", "error": "ServerError"}],
+        "tool_calls": [],
+        "execution_trace": [],
+    },
+}
+
+
+class _FailingModelClient:
+    """An AI service whose graph ran but whose model never answered (Gemini 503)."""
+
+    enabled = True
+
+    def run_orchestration(self, payload, *, internal_tool_jwt):
+        return FAILED_TURN
+
+    def stream_orchestration(self, payload, *, internal_tool_jwt):
+        yield {"event": "status", "phase": "ANALYZING"}
+        yield {"event": "token", "delta": "The decision model could not produce a validated result."}
+        yield {"event": "result", **FAILED_TURN}
+
+
+def test_a_failed_model_is_told_apart_from_a_turn_that_ran_a_tool() -> None:
+    from app.agents.langgraph.engine import model_unavailable
+
+    assert model_unavailable(FAILED_TURN)
+    ran_tool = {**FAILED_TURN, "state": {**FAILED_TURN["state"], "tool_calls": [{"name": "rag_search"}]}}
+    assert not model_unavailable(ran_tool)
+    assert not model_unavailable({"status": "COMPLETED", "state": {"errors": [], "tool_calls": []}})
+
+
+@pytest.mark.parametrize("path", ["/api/v1/agent/chat", "/api/v1/agent/chat/stream"])
+def test_an_unavailable_model_falls_back_to_the_deterministic_flow(
+    path, client, employee_token_headers, engines, monkeypatch
+) -> None:
+    engines("KNOWLEDGE=langgraph")
+    monkeypatch.setattr("app.agents.langgraph.engine.get_ai_service_client", lambda: _FailingModelClient())
+    response = client.post(
+        path,
+        json={"agent_role": "KNOWLEDGE", "message": "Chính sách nghỉ phép năm là gì?"},
+        headers=employee_token_headers,
+    )
+    assert response.status_code == 200, response.text
+    # The graph's failure notice never reaches the user, streamed or not.
+    assert "decision model" not in response.text
+    if path.endswith("/stream"):
+        payloads = [json.loads(line[len("data:"):]) for line in response.text.splitlines() if line.startswith("data:")]
+        reply = next(item["reply"] for item in payloads if isinstance(item, dict) and "reply" in item)
+    else:
+        reply = response.json()["reply"]
+    assert reply

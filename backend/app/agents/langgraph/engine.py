@@ -42,6 +42,30 @@ HISTORY_MESSAGE_CHARS = 1500
 HISTORY_TOTAL_CHARS = 6000
 
 
+class GraphModelUnavailable(AIServiceError):
+    """The graph's decision model failed before any tool ran, so the turn produced nothing.
+
+    Raised as a 503 so the chat falls back to the deterministic flow exactly as it does
+    when the AI service itself is down. A provider outage (Gemini answered "503 high
+    demand" three times in a row during testing) used to reach the user as the graph's
+    English failure notice.
+    """
+
+    def __init__(self) -> None:
+        super().__init__("The graph's decision model is unavailable", status_code=503)
+
+
+def model_unavailable(result: dict[str, Any]) -> bool:
+    state = result.get("state") or {}
+    if result.get("status") == "AWAITING_APPROVAL" or state.get("tool_calls"):
+        # A tool already ran: falling back would repeat its effects.
+        return False
+    return any(
+        isinstance(item, dict) and item.get("node") == "model_decision"
+        for item in state.get("errors") or []
+    )
+
+
 SUSPENDED_CONVERSATION_REPLY = (
     "Cuộc hội thoại này đang chờ phê duyệt cho một hành động trước đó, nên tôi chưa xử lý "
     "tin nhắn mới ở đây. Tôi sẽ tiếp tục khi yêu cầu được duyệt hoặc từ chối. Nếu cần hỏi "
@@ -314,6 +338,8 @@ class LangGraphEngine:
                 ),
                 internal_tool_jwt=token,
             )
+            if model_unavailable(result):
+                raise GraphModelUnavailable()
             approval = self._sync_result(
                 db,
                 result=result,
@@ -323,11 +349,11 @@ class LangGraphEngine:
             )
             self._persist_sanitized_trace(db, workflow, user, agent, result)
             db.commit()
-        except Exception:
+        except Exception as exc:
             db.rollback()
             persisted = db.query(AgentWorkflow).filter(AgentWorkflow.id == workflow.id).first()
             if persisted is not None:
-                persisted.status = "RESUME_FAILED"
+                persisted.status = "FAILED" if isinstance(exc, GraphModelUnavailable) else "RESUME_FAILED"
                 db.commit()
             raise
         return self.to_chat_response(
@@ -359,6 +385,9 @@ class LangGraphEngine:
         db.commit()
         token = create_internal_tool_token(user, agent_role=agent.role_code)
         result: dict[str, Any] | None = None
+        # Held until the result says the turn succeeded: a failed turn falls back to the
+        # deterministic flow, and its tokens must not reach the user first.
+        tokens: list[dict[str, Any]] = []
         try:
             for item in self.client.stream_orchestration(
                 self._payload(
@@ -372,8 +401,10 @@ class LangGraphEngine:
                 internal_tool_jwt=token,
             ):
                 event = item.get("event")
-                if event in {"status", "token"}:
+                if event == "status":
                     yield item
+                elif event == "token":
+                    tokens.append(item)
                 elif event == "error":
                     raise AIServiceError("AI orchestration stream failed")
                 elif event == "result":
@@ -381,6 +412,8 @@ class LangGraphEngine:
 
             if result is None:
                 raise AIServiceError("AI orchestration stream ended without a result")
+            if model_unavailable(result):
+                raise GraphModelUnavailable()
             approval = self._sync_result(
                 db,
                 result=result,
@@ -390,13 +423,14 @@ class LangGraphEngine:
             )
             self._persist_sanitized_trace(db, workflow, user, agent, result)
             db.commit()
-        except Exception:
+        except Exception as exc:
             db.rollback()
             persisted = db.query(AgentWorkflow).filter(AgentWorkflow.id == workflow.id).first()
             if persisted is not None:
-                persisted.status = "RESUME_FAILED"
+                persisted.status = "FAILED" if isinstance(exc, GraphModelUnavailable) else "RESUME_FAILED"
                 db.commit()
             raise
+        yield from tokens
         yield {
             "event": "complete",
             "response": self.to_chat_response(
@@ -651,6 +685,53 @@ class LangGraphEngine:
         return None
 
     @staticmethod
+    def public_citations(state: dict[str, Any]) -> list[dict[str, Any]]:
+        """The retrieved chunks the answer cites, in the shape the chat shows.
+
+        The model writes its own citation objects, and their keys vary from turn to turn
+        (`chunk_id` one time, `source` or a pasted tag the next), so the chat showed
+        "Tài liệu nội bộ" instead of the document. Each citation is matched back to the
+        retrieved chunk it names and replaced by that chunk's own metadata; one that
+        matches nothing retrieved is dropped (the graph has already verified the answer).
+        """
+        context = [item for item in (state.get("retrieved_context") or []) if isinstance(item, dict)]
+        cited: list[dict[str, Any]] = []
+        for citation in state.get("citations") or []:
+            if not isinstance(citation, dict):
+                continue
+            keys = {
+                str(value).strip().casefold()
+                for field in ("chunk_id", "id", "document_id", "document_title", "document_name", "source", "citation_tag")
+                for value in [citation.get(field)]
+                if value
+            }
+            chunk_ids = {key.split("chunk=")[-1].rstrip("]").strip() for key in keys if "chunk=" in key}
+            match = next(
+                (
+                    item for item in context
+                    if str(item.get("id") or "").casefold() in keys | chunk_ids
+                ),
+                None,
+            ) or next(
+                (
+                    item for item in context
+                    if {
+                        str(item.get(field) or "").casefold()
+                        for field in ("document_id", "document_title", "document_name")
+                    } & keys
+                ),
+                None,
+            )
+            if match is None or any(item.get("id") == match.get("id") for item in cited):
+                continue
+            cited.append({
+                field: match.get(field)
+                for field in ("id", "document_id", "document_name", "document_title", "section_title", "version", "citation_tag")
+                if match.get(field) is not None
+            })
+        return cited
+
+    @staticmethod
     def to_chat_response(
         result: dict[str, Any],
         agent: AIAgent,
@@ -668,7 +749,7 @@ class LangGraphEngine:
             "reply": state.get("final_answer") or (
                 "This action is waiting for human approval." if approval_card else ""
             ),
-            "citations": state.get("citations") or [],
+            "citations": LangGraphEngine.public_citations(state),
             "tools_executed": LangGraphEngine.sanitize_tool_calls(state),
             "approval_card": approval_card,
             "hr_card": None,

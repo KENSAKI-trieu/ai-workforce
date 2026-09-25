@@ -15,6 +15,11 @@ from app.core.config import settings
 from app.clients.ai_service_client import get_ai_service_client
 
 _TOKEN_PATTERN = re.compile(r"\S+")
+# Token counting only runs the tokenizer, so it must not inherit the embedding
+# batch size: at EMBEDDING_BATCH_SIZE=1 a large document made one HTTP call per
+# chunk and sat for minutes between chunking and embedding with no progress.
+# Matches the ai-service /v1/token-count request limit.
+TOKEN_COUNT_BATCH_SIZE = 128
 logger = logging.getLogger(__name__)
 
 
@@ -197,8 +202,8 @@ class EmbeddingService:
         ai_client = get_ai_service_client()
         if ai_client.enabled:
             counts: list[int] = []
-            for start in range(0, len(texts), self.batch_size):
-                batch = texts[start:start + self.batch_size]
+            for start in range(0, len(texts), TOKEN_COUNT_BATCH_SIZE):
+                batch = texts[start:start + TOKEN_COUNT_BATCH_SIZE]
                 result = ai_client.count_tokens(batch)
                 self._remote_max_input_tokens = int(result["max_input_tokens"])
                 batch_counts = [int(count) for count in result["token_counts"]]

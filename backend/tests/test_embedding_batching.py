@@ -54,7 +54,22 @@ def test_remote_embedding_service_batches_large_requests(monkeypatch) -> None:
         total_count=len(texts),
         progress_callback=progress.append,
     )) == 5
-    assert [len(batch) for batch in client.token_batches] == [2, 2, 1]
+    # Token counting is not bound by the embedding batch size.
+    assert [len(batch) for batch in client.token_batches] == [5]
     assert [len(batch) for batch in client.embedding_batches] == [2, 2, 1]
     assert [item["embedded_count"] for item in progress] == [2, 4, 5]
     assert [item["remaining_count"] for item in progress] == [3, 1, 0]
+
+
+def test_token_counting_respects_ai_service_request_limit(monkeypatch) -> None:
+    client = FakeAIClient()
+    monkeypatch.setattr(
+        "app.domains.knowledge.embedding_service.get_ai_service_client",
+        lambda: client,
+    )
+    service = EmbeddingService()
+    service.batch_size = 1
+    texts = [f"text {index}" for index in range(300)]
+
+    assert len(service.count_tokens_batch(texts)) == 300
+    assert [len(batch) for batch in client.token_batches] == [128, 128, 44]

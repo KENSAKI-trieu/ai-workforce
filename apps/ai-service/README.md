@@ -1,7 +1,7 @@
 # AI Workforce AI Service
 
-Stateless service that owns AI-specific computation: semantic chunking, embeddings,
-reranking, prompt loading, provider routing, agent metadata and guardrails.
+Service that owns AI-specific computation: semantic chunking, embeddings, reranking,
+LLM provider routing, and the LangGraph graph of each AI Employee with its guardrails.
 
 The business backend remains the authority for tenants, ACL, database persistence,
 audit logs and tool execution. It sends only the minimum authorized payload to this
@@ -23,12 +23,11 @@ python -m pip install -e ".[huggingface,test]"
 
 Main internal endpoints:
 
-- `POST /v1/rag/chunk`
-- `POST /v1/embeddings`
-- `POST /v1/token-count`
-- `POST /v1/rag/rerank`
-- `POST /v1/agents/route`
+- `POST /v1/rag/chunk` (and `/v1/rag/chunk/stream`), `POST /v1/rag/rerank`
+- `POST /v1/embeddings`, `POST /v1/token-count`
 - `POST /v1/llm/generate`
+- `POST /v1/orchestration/run`, `/run/stream`, `/resume` — one agent turn on its graph
+- `GET /health`, `/health/runtime`, `/health/accelerator`
 
 Set `AI_SERVICE_INTERNAL_TOKEN` in both services outside local development.
 
@@ -41,8 +40,35 @@ the other configured provider and finally the deterministic local provider.
 An explicit model override applies only to the primary provider.
 
 `app/services/generation.py` holds the chat chain behind `/v1/llm/generate`.
-Agents run as LangGraph graphs under `app/orchestration`; the backend decides which
-agent a turn goes to, so the AI service has no routing endpoint of its own.
+Graph turns use the same provider stack (`app/core/llm/`), with one chat model per
+configured key so a second key takes over when the first one's quota runs out.
+
+## Layout
+
+```
+app/
+  main.py            FastAPI app, lifespan, routers
+  api/               routes/{health,rag,llm,orchestration}.py, dependencies.py, sse.py
+  agents/            one LangGraph graph per AI Employee
+    registry.py      role → compiled graph (IT/Sales → customer_support); unknown role → 422
+    base/            nodes, graph skeleton, policy, decision node, runtime, checkpointer, state
+    hr/ legal/ knowledge/   agent.py (policy), graph.py, prompts.py, tools.py (tool ceiling)
+    finance/ customer_support/ ceo/   under development; the backend does not route them
+  core/              config, llm/ (providers, router, factory), aws, model_memory
+  governance/        guardrails.py and the LangChain middleware stack
+  services/          chunking/, embedding/, reranking/, generation.py, pipeline_events.py
+  tools/             gateway client and tools built from the backend's contracts
+  schemas/           request/response bodies per endpoint group
+evaluation/          offline metrics and the archived pre-LangChain baseline
+tests/               agents/ tools/ governance/ core/ services/ integration/
+```
+
+The backend decides which agent a turn goes to and which engine runs it
+(`AGENT_ENGINES` in the backend), so the AI service has no routing endpoint of its own.
+Tools are not declared here: each turn reads the backend's contracts from
+`GET /api/v1/internal/tools` (already filtered for the caller) and calls back through the
+gateway, which runs the tool. A tenant's prompt customisations arrive as
+`tenant_instructions` and are placed after the graph's own rules.
 
 ### HR question/action flow
 

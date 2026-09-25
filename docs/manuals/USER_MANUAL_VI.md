@@ -7,7 +7,7 @@
 
 AI Workforce là nền tảng quản lý công việc doanh nghiệp kết hợp nhiều trợ lý AI chuyên trách. Hệ thống hỗ trợ điều phối công việc, hỏi đáp tài liệu nội bộ, quản lý task, phê duyệt có người kiểm soát, theo dõi chi phí AI và nhật ký kiểm toán.
 
-Tài liệu này dành cho người dùng cuối, quản lý và quản trị viên. Hướng dẫn cài đặt dành cho kỹ thuật nằm trong [README của dự án](../README.md).
+Tài liệu này dành cho người dùng cuối, quản lý và quản trị viên. Hướng dẫn cài đặt dành cho kỹ thuật nằm trong [README của dự án](../../README.md).
 
 ## 2. Bắt đầu nhanh
 

@@ -1,7 +1,7 @@
 # Evaluation
 
 Versioned evaluation assets must contain only synthetic or explicitly approved,
-non-sensitive data. Shared RAG metrics live in `app/rag/evaluation`.
+non-sensitive data. Shared RAG metrics live in `evaluation/metrics/`.
 
 ## Pre-LangChain baseline (archived)
 

@@ -1,16 +1,18 @@
 # Báo cáo: Tính năng và luồng hoạt động của Legal Agent
 
+> **Ghi chú (2026-09-24):** báo cáo này mô tả code tại thời điểm viết. Các đường dẫn `backend/app/services/...` và `agent_executor.py` đã đổi sau đợt refactor — xem [plans/REFACTOR_PLAN_2026-09-24.md](../plans/REFACTOR_PLAN_2026-09-24.md).
+
 **Ngày:** 2026-09-05
 **Phạm vi:** Toàn bộ các tính năng của Legal Agent — cả luồng chat (`/api/v1/agent/chat`) lẫn bộ API nghiệp vụ riêng (`/api/v1/legal/*`) mà trang **Legal Agent** trên frontend đang dùng.
 **Mã nguồn liên quan:**
-- [agent_executor.py](../backend/app/services/agents/agent_executor.py) — nhánh xử lý chat cho role `LEGAL`
-- [specialized.py](../backend/app/api/v1/specialized.py) — toàn bộ API `/legal/*`
-- [contract_review/analyzer.py](../backend/app/services/contract_review/analyzer.py), [clause_parser.py](../backend/app/services/contract_review/clause_parser.py), [schemas.py](../backend/app/services/contract_review/schemas.py) — bộ máy rà soát hợp đồng
-- [legal_service.py](../backend/app/services/legal_service.py) — dò dữ liệu nhạy cảm, so sánh phiên bản, quét license
-- [legal_documents/](../backend/app/services/legal_documents/) — schema + template 7 loại văn bản
-- [legal_document_generator.py](../backend/app/services/legal_document_generator.py), [legal_draft_storage.py](../backend/app/services/legal_draft_storage.py) — sinh file DOCX/PDF và lưu trữ có cách ly theo tenant
-- [approvals.py](../backend/app/api/v1/approvals.py) — vòng phê duyệt dùng chung
-- [app/agents/LEGAL/page.tsx](../frontend/app/agents/LEGAL/page.tsx), [LegalDocumentGeneratorModal.tsx](../frontend/components/legal/LegalDocumentGeneratorModal.tsx) — giao diện
+- [agent_executor.py](../../backend/app/services/agents/agent_executor.py) — nhánh xử lý chat cho role `LEGAL`
+- [specialized.py](../../backend/app/api/v1/specialized.py) — toàn bộ API `/legal/*`
+- [contract_review/analyzer.py](../../backend/app/services/contract_review/analyzer.py), [clause_parser.py](../../backend/app/services/contract_review/clause_parser.py), [schemas.py](../../backend/app/services/contract_review/schemas.py) — bộ máy rà soát hợp đồng
+- [legal_service.py](../../backend/app/services/legal_service.py) — dò dữ liệu nhạy cảm, so sánh phiên bản, quét license
+- [legal_documents/](../../backend/app/services/legal_documents/) — schema + template 7 loại văn bản
+- [legal_document_generator.py](../../backend/app/services/legal_document_generator.py), [legal_draft_storage.py](../../backend/app/services/legal_draft_storage.py) — sinh file DOCX/PDF và lưu trữ có cách ly theo tenant
+- [approvals.py](../../backend/app/api/v1/approvals.py) — vòng phê duyệt dùng chung
+- [app/agents/LEGAL/page.tsx](../../frontend/app/agents/LEGAL/page.tsx), [LegalDocumentGeneratorModal.tsx](../../frontend/components/legal/LegalDocumentGeneratorModal.tsx) — giao diện
 
 ---
 
@@ -125,7 +127,7 @@ Khi `review-document`, `privacy-check`, hoặc `license-check` phát hiện rủ
 
 ## 4. Những điểm cần lưu ý (rủi ro vận hành, không phải lỗi code nghiêm trọng)
 
-1. **Nút Accept / Reject / Edit trên từng finding (trang rà soát hợp đồng) chỉ là state cục bộ trong trình duyệt** — `ContractReviewResult` ở [page.tsx](../frontend/app/agents/LEGAL/page.tsx) lưu quyết định vào `useState`, không có lệnh gọi API nào gửi quyết định này lên server. Nghĩa là: nếu người rà soát bấm Accept/Reject/sửa câu chữ rồi refresh trang hoặc rời đi, **toàn bộ quyết định biến mất**, và hệ thống không có bản ghi nào về việc ai đã chấp nhận/từ chối điều khoản nào. Đây thuần là công cụ hỗ trợ đọc, chưa phải workflow redline có lưu vết.
+1. **Nút Accept / Reject / Edit trên từng finding (trang rà soát hợp đồng) chỉ là state cục bộ trong trình duyệt** — `ContractReviewResult` ở [page.tsx](../../frontend/app/agents/LEGAL/page.tsx) lưu quyết định vào `useState`, không có lệnh gọi API nào gửi quyết định này lên server. Nghĩa là: nếu người rà soát bấm Accept/Reject/sửa câu chữ rồi refresh trang hoặc rời đi, **toàn bộ quyết định biến mất**, và hệ thống không có bản ghi nào về việc ai đã chấp nhận/từ chối điều khoản nào. Đây thuần là công cụ hỗ trợ đọc, chưa phải workflow redline có lưu vết.
 2. **`GET /legal/download-redline/{file_id}` trả về nội dung giả lập cố định** ("SIMULATED REDLINE DOCX FILE FOR..."), không sinh file thật từ kết quả rà soát. Đường dẫn này được tạo ra trong `audit_contract_text()` (dùng ở nhánh chat) nhưng chưa được nối vào bộ sinh văn bản thật.
 3. **Góc nhìn (Bên A/B/Neutral) không nhất quán giữa 2 lối vào**: dán hợp đồng qua chat luôn rà soát ở góc nhìn `NEUTRAL` cố định, còn upload file qua trang Legal Agent thì bắt buộc chọn góc nhìn. Vì mức độ nghiêm trọng của nhiều finding phụ thuộc vào góc nhìn (mục 3.3, bước 5), **cùng một hợp đồng có thể ra risk score khác nhau tuỳ vào việc người dùng dán vào chat hay upload file**.
 4. **Ngưỡng nhận diện "đây là hợp đồng cần rà soát" trong chat khá thô** (từ khóa + độ dài ≥ 180 ký tự). Một hợp đồng ngắn hoặc không chứa đúng từ khóa rủi ro có thể bị rơi vào nhánh RAG/từ điển thuật ngữ thay vì được audit — người dùng sẽ không biết là hợp đồng của họ chưa từng được rà soát thật.

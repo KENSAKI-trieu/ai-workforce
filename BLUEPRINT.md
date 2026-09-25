@@ -161,7 +161,7 @@ flowchart TB
 - **Workflow Đặc sắc**: Nhận câu hỏi báo giá -> Tìm kiếm tồn kho -> Lập báo giá PDF chính thức -> Đẩy thông tin Khách hàng lên CRM -> Gửi Email tự động.
 
 #### 7. Knowledge Agent (Kho Tri Thức Nội Bộ)
-- **Công cụ**: `hybrid_rag_search`, `document_citation_formatter`, `access_filter_search`.
+- **Công cụ**: `rag_search`, `document_citation_formatter`, `access_filter_search`.
 - **Workflow Đặc sắc**: Trả lời bất kỳ thắc mắc nào về chính sách/quy trình của doanh nghiệp đi kèm với **Trích dẫn nguồn chính xác** (Trang, File, Chương).
 
 ---

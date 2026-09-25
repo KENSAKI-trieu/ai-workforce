@@ -2,8 +2,8 @@
 
 ## User Manual / Hướng dẫn sử dụng
 
-- [日本語ユーザーマニュアル](docs/USER_MANUAL_JA.md)
-- [Hướng dẫn sử dụng tiếng Việt](docs/USER_MANUAL_VI.md)
+- [日本語ユーザーマニュアル](docs/manuals/USER_MANUAL_JA.md)
+- [Hướng dẫn sử dụng tiếng Việt](docs/manuals/USER_MANUAL_VI.md)
 
 ## テスト用メインアカウント
 

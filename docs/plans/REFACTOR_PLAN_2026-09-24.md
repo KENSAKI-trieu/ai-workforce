@@ -1,11 +1,11 @@
 # Kế hoạch refactor: gom nghiệp vụ agent về gateway tool, dọn cấu trúc backend và ai-service
 
-Ngày lập: 2026-09-24. Trạng thái: **đã chốt, chưa thực hiện**. Các quyết định nằm ở mục 2; cấu trúc ở mục 4 đã được duyệt ngày 2026-09-24.
+Ngày lập: 2026-09-24. Trạng thái: **đã thực hiện trên nhánh `refactor/gateway-tools-langgraph`** (xem mục 9), trừ tool HR. Các quyết định nằm ở mục 2; cấu trúc ở mục 4 đã được duyệt ngày 2026-09-24.
 
 ## 1. Hiện trạng (số liệu đo trên nhánh `legal-agent-langgraph-fixes`)
 
 ### 1.1 `agent_executor.py` gánh mọi thứ
-[`backend/app/services/agents/agent_executor.py`](../backend/app/services/agents/agent_executor.py) dài 2.775 dòng. File này gánh cả hiểu ý định, hỏi lại, slot filling, kiểm quyền, gọi nghiệp vụ, dựng card lẫn câu trả lời.
+[`backend/app/services/agents/agent_executor.py`](../../backend/app/services/agents/agent_executor.py) dài 2.775 dòng. File này gánh cả hiểu ý định, hỏi lại, slot filling, kiểm quyền, gọi nghiệp vụ, dựng card lẫn câu trả lời.
 
 | Nhánh | Kích thước | Ghi chú |
 |---|---|---|
@@ -327,3 +327,33 @@ Làm P5 sớm, vì P1 sẽ viết `tools/registry.py` mới của ai-service nga
 ## 8. Còn cần xác nhận
 1. ~~Các điểm lệch so với cấu trúc mẫu~~ → đã duyệt ngày 2026-09-24.
 2. ~~Ẩn hay hiện 4 agent đang phát triển trên frontend~~ → đã chốt: hiện kèm nhãn "Under development" (quyết định 5).
+
+
+## 9. Trạng thái thực hiện (2026-09-25)
+
+Nhánh `refactor/gateway-tools-langgraph`, mỗi giai đoạn là một hoặc vài commit, test xanh sau từng commit.
+
+| Giai đoạn | Commit | Ghi chú |
+|---|---|---|
+| Plan | `2ce5068` | |
+| Gỡ `.venv` của ai-service khỏi git | `becb0f4` | 6.896 file |
+| P0 | `d60ba56` | IT/Finance/Sales/CEO "Under development": chat trả câu cố định, API `/it`, `/finance`, `/sales` trả 503, service chuyển sang `domains/incubating/` |
+| P5.1–P5.4 | `8a05481`, `49c2949`, `1fdaa57`, `f5d2759` | ai-service theo cấu trúc mục 4.2; bỏ graph cha; một bộ LLM, graph xoay vòng key |
+| P1 | `7b119d4` | ai-service đọc hợp đồng tool từ `GET /internal/tools`; `tenant_instructions`; sửa lỗi ô text Legal |
+| P2 | `b789606` | `rag_search` thay 3 tên; migration `w86d1f3a7b95`; một hàm `grant_decision` |
+| P4.1–P4.2 | `0758834`, `bfc5d50` | `services/` → `domains/` + `clients/`; `agent_executor.py` → `app/agents/` |
+| P6 | `8431b03` | `AGENT_ENGINES` theo từng agent; graph nhớ 10 lượt gần nhất; stream có fallback |
+| P7 | (commit tài liệu) | `docs/plans`, `docs/reports`, `docs/manuals`; README ai-service, BACKEND_FLOW |
+
+**Lệch so với plan:**
+- **P4 làm trước P3** vì chuyển file là việc cơ học; làm trước để thay đổi logic nằm ngay ở vị trí đích.
+- **`tools/invoker.py` chưa tách.** Chưa có luồng deterministic nào gọi tool qua gateway, nên tách lúc này chỉ tạo ra một lớp trừu tượng không ai dùng. Sẽ tách khi luồng chat bắt đầu gọi tool.
+- **Không có `core/security.py`, `core/database.py` trong ai-service:** chưa có nội dung. Guard nằm ở `api/dependencies.py`, URL checkpoint nằm trong `core/config.py`.
+- **P3 (tool HR) để sang PR chuyển HR sang LangGraph.** Lý do: tool HR chỉ có ích khi HR chạy trên graph, và thiết kế của chúng phụ thuộc vào graph HR:
+  - Đơn nghỉ phép hiện đi qua bản nháp, hỏi thêm thông tin thiếu, rồi chốt. Graph cần một bước tương đương.
+  - `request_leave` tự tạo phê duyệt của quản lý. Không được để cơ chế tạm dừng chờ duyệt của graph chồng lên thành phê duyệt hai lần.
+  - `employee_lookup` còn để model chọn `purpose`. Tool HR mới phải suy ra `purpose` từ section được yêu cầu, như luồng hiện tại vẫn làm.
+
+  Legal và Knowledge đã có đủ tool cho chat: `rag_search`, `audit_contract_risk`, `generate_legal_document`. Card vẫn dựng riêng cho Legal (`legal_risk_card`); cơ chế card chung làm cùng tool HR.
+
+**Khi deploy:** chạy `alembic upgrade head` (migration `w86d1f3a7b95`), rồi restart backend và ai-service. Bật LangGraph cho từng agent bằng `AGENT_ENGINES`, ví dụ `KNOWLEDGE=langgraph`.

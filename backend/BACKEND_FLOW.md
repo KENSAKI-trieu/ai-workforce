@@ -24,8 +24,13 @@ Dự án sử dụng mô hình **Layered Architecture (Kiến trúc phân tầng
       │                             │
       └──────────────┬──────────────┘
                      ▼
-        [ Service Layer (app/services/) ]
-         (Business Logic, LLM, RAG)
+   [ Chat flows (app/agents/) ──► Tools (app/tools/) ]
+     (per-agent flow, LangGraph)     (one definition, ACL, audit)
+                     │
+                     ▼
+        [ Domains (app/domains/) + Clients (app/clients/) ]
+         (hr, legal, knowledge, platform, support;
+          AI service and Cloudinary clients)
                      │
                      ▼
         [ Database Models (app/models/) ]

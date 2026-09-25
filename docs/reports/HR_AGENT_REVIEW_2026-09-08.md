@@ -1,5 +1,7 @@
 # Báo cáo rà soát lại HR Agent
 
+> **Ghi chú (2026-09-24):** báo cáo này mô tả code tại thời điểm viết. Các đường dẫn `backend/app/services/...` và `agent_executor.py` đã đổi sau đợt refactor — xem [plans/REFACTOR_PLAN_2026-09-24.md](../plans/REFACTOR_PLAN_2026-09-24.md).
+
 **Ngày:** 2026-09-08
 **Phạm vi:** Toàn bộ đường đi của một tin nhắn gửi tới AI Agent `HR` (định tuyến ý định → kiểm soát quyền → nghiệp vụ → sinh câu trả lời), cộng thêm các đường API mà agent này gọi tới.
 **Đối chiếu:** [HR_AGENT_FLOW_REPORT_2026-09-04_EN.md](HR_AGENT_FLOW_REPORT_2026-09-04_EN.md) mô tả kiến trúc; báo cáo này chỉ nói về **kết quả kiểm tra lại**.
@@ -27,7 +29,7 @@ Không tìm thấy lỗ hổng rò rỉ dữ liệu xuyên tenant hay vượt sc
 
 ### 2.1. [CAO] Hồ sơ nhân viên gây lỗi 500 khi quyền BASIC bị từ chối
 
-**Hiện trạng.** Policy engine cho phép yêu cầu đi tiếp nếu **ít nhất một** section được duyệt. Nếu người hỏi có `hr.contract.view` nhưng **không** có `hr.directory.view`, quyết định trả về `allowed=True`, `allowed_sections=('CONTRACT',)`, `denied=('BASIC',)`. Khi đó [agent_executor.py:185](../backend/app/services/agents/agent_executor.py#L185) lấy `basic` rỗng, còn [agent_executor.py:236](../backend/app/services/agents/agent_executor.py#L236) truy cập khóa `name` của thẻ hồ sơ → `KeyError` → HTTP 500 (trên luồng stream hiện ra là "Không thể hoàn tất yêu cầu").
+**Hiện trạng.** Policy engine cho phép yêu cầu đi tiếp nếu **ít nhất một** section được duyệt. Nếu người hỏi có `hr.contract.view` nhưng **không** có `hr.directory.view`, quyết định trả về `allowed=True`, `allowed_sections=('CONTRACT',)`, `denied=('BASIC',)`. Khi đó [agent_executor.py:185](../../backend/app/services/agents/agent_executor.py#L185) lấy `basic` rỗng, còn [agent_executor.py:236](../../backend/app/services/agents/agent_executor.py#L236) truy cập khóa `name` của thẻ hồ sơ → `KeyError` → HTTP 500 (trên luồng stream hiện ra là "Không thể hoàn tất yêu cầu").
 
 **Đã tái hiện** bằng cách gọi trực tiếp policy engine với một chức vụ tùy biến mang `permissions=['hr.contract.view','hr.scope.company']`:
 
@@ -42,19 +44,19 @@ allowed= True   allowed_sections= ('CONTRACT',)   denied= ('BASIC',)   {'BASIC':
 
 ### 2.2. [CAO] Đường danh bạ chỉ kiểm tra scope, không kiểm tra quyền section
 
-**Hiện trạng.** `query_company_users_sql` ([hr_employee_tools.py:82](../backend/app/services/hr_employee_tools.py#L82)) và `export_company_users_dataset` ([hr_employee_tools.py:203](../backend/app/services/hr_employee_tools.py#L203)) chỉ lọc theo `authorized_employee_ids` (tức `hr.scope.*`). Chúng **không** đi qua `authorize_employee_access`, nên **không** kiểm tra `hr.directory.view` — trong khi đúng dữ liệu BASIC đó, khi hỏi qua đường hồ sơ, lại bị từ chối `MISSING_PERMISSION` nếu thiếu quyền này.
+**Hiện trạng.** `query_company_users_sql` ([hr_employee_tools.py:82](../../backend/app/services/hr_employee_tools.py#L82)) và `export_company_users_dataset` ([hr_employee_tools.py:203](../../backend/app/services/hr_employee_tools.py#L203)) chỉ lọc theo `authorized_employee_ids` (tức `hr.scope.*`). Chúng **không** đi qua `authorize_employee_access`, nên **không** kiểm tra `hr.directory.view` — trong khi đúng dữ liệu BASIC đó, khi hỏi qua đường hồ sơ, lại bị từ chối `MISSING_PERMISSION` nếu thiếu quyền này.
 
 **Hệ quả.** Một chức vụ tùy biến có `hr.scope.company` nhưng không có `hr.directory.view` vẫn liệt kê và xuất file được toàn bộ danh bạ công ty (tên, email, phòng ban, chức danh, quản lý trực tiếp). Hai đường cùng một loại dữ liệu cho hai kết quả trái ngược — đây là cặp đôi của mục 2.1: một bên quá chặt đến mức vỡ, một bên quá lỏng.
 
 **Đề xuất.** Chốt một quy tắc duy nhất: hoặc bổ sung kiểm tra `hr.directory.view` vào hai hàm trên, hoặc tuyên bố rõ "BASIC = scope, không cần quyền section" và bỏ `BASIC` khỏi `HR_SECTION_PERMISSIONS`. Không nên để hai luật song song như hiện nay.
 
-> Ghi chú kèm theo: endpoint `GET /hr/employees/export` ([hr.py:44](../backend/app/api/v1/hr.py#L44)) chỉ yêu cầu đăng nhập, quyền được suy ra từ scope bên trong. Việc thu hồi tool `export_hr_directory` của agent do đó chỉ ẩn tính năng khỏi khung chat chứ không chặn endpoint. Điều này **đã được ghi chú trong code** và là chủ ý, nhưng cần nói rõ với người vận hành để tránh hiểu nhầm là đã khóa dữ liệu.
+> Ghi chú kèm theo: endpoint `GET /hr/employees/export` ([hr.py:44](../../backend/app/api/v1/hr.py#L44)) chỉ yêu cầu đăng nhập, quyền được suy ra từ scope bên trong. Việc thu hồi tool `export_hr_directory` của agent do đó chỉ ẩn tính năng khỏi khung chat chứ không chặn endpoint. Điều này **đã được ghi chú trong code** và là chủ ý, nhưng cần nói rõ với người vận hành để tránh hiểu nhầm là đã khóa dữ liệu.
 
 ### 2.3. [TRUNG] Chi phí LLM của HR không được ghi nhận — ĐÃ SỬA (2026-09-08)
 
-HR gọi mô hình 1–3 lần mỗi lượt chat (phân loại ý định → trích xuất ngày nghỉ → viết lại câu trả lời) qua `AIServiceClient.generate_text`. AI service **có** trả về khối `usage`, nhưng [hr_llm_flow.py](../backend/app/services/agents/hr_llm_flow.py) chỉ đọc `content` và `provider` rồi bỏ phần còn lại. `log_llm_cost` khi đó chỉ được gọi từ [tool_gateway.py:319](../backend/app/api/v1/tool_gateway.py#L319) (đường orchestration), nên toàn bộ token của HR agent không xuất hiện trong dashboard chi phí và không tính vào ngân sách tenant.
+HR gọi mô hình 1–3 lần mỗi lượt chat (phân loại ý định → trích xuất ngày nghỉ → viết lại câu trả lời) qua `AIServiceClient.generate_text`. AI service **có** trả về khối `usage`, nhưng [hr_llm_flow.py](../../backend/app/services/agents/hr_llm_flow.py) chỉ đọc `content` và `provider` rồi bỏ phần còn lại. `log_llm_cost` khi đó chỉ được gọi từ [tool_gateway.py:319](../../backend/app/api/v1/tool_gateway.py#L319) (đường orchestration), nên toàn bộ token của HR agent không xuất hiện trong dashboard chi phí và không tính vào ngân sách tenant.
 
-**Đã xử lý.** Ba lời gọi mô hình của HR nay báo `usage` về cho `_hr_llm_usage_recorder` trong [agent_executor.py](../backend/app/services/agents/agent_executor.py), hàm này ghi một dòng `LLMCostLog` với `agent_role="HR"`, `usage_source="PROVIDER"`, kèm `user_id` và phòng ban của người hỏi — đủ cho cả bốn cách bóc tách của dashboard (theo agent, theo nhân viên, theo phòng ban, theo tháng). Việc đo không bao giờ được phép làm hỏng câu trả lời: mô hình chưa có bảng giá, payload token sai, hay lỗi database đều chỉ ghi cảnh báo. Provider `local` không tính tiền nên không ghi dòng nào.
+**Đã xử lý.** Ba lời gọi mô hình của HR nay báo `usage` về cho `_hr_llm_usage_recorder` trong [agent_executor.py](../../backend/app/services/agents/agent_executor.py), hàm này ghi một dòng `LLMCostLog` với `agent_role="HR"`, `usage_source="PROVIDER"`, kèm `user_id` và phòng ban của người hỏi — đủ cho cả bốn cách bóc tách của dashboard (theo agent, theo nhân viên, theo phòng ban, theo tháng). Việc đo không bao giờ được phép làm hỏng câu trả lời: mô hình chưa có bảng giá, payload token sai, hay lỗi database đều chỉ ghi cảnh báo. Provider `local` không tính tiền nên không ghi dòng nào.
 
 Kèm theo đó, `gpt-4o-mini` — mô hình mặc định của AI service — được bổ sung bảng giá riêng. Trước đây nó rơi vào tiền tố `gpt-4o-` và **bị tính giá gấp khoảng 16 lần** giá thật.
 
@@ -62,7 +64,7 @@ Kèm theo đó, `gpt-4o-mini` — mô hình mặc định của AI service — �
 
 ### 2.4. [TRUNG] Rủi ro treo lâu: 3 lần gọi LLM tuần tự × timeout 120 giây
 
-`AI_SERVICE_TIMEOUT_SECONDS` mặc định **120s** ([config.py:87](../backend/app/core/config.py#L87)) và áp cho mọi lời gọi. Một lượt xin nghỉ phép gọi 2 lần, một câu hỏi chính sách gọi 2 lần → trường hợp xấu nhất người dùng chờ **4–6 phút** rồi mới nhận fallback.
+`AI_SERVICE_TIMEOUT_SECONDS` mặc định **120s** ([config.py:87](../../backend/app/core/config.py#L87)) và áp cho mọi lời gọi. Một lượt xin nghỉ phép gọi 2 lần, một câu hỏi chính sách gọi 2 lần → trường hợp xấu nhất người dùng chờ **4–6 phút** rồi mới nhận fallback.
 
 **Đề xuất.** Đặt timeout riêng, ngắn (5–10s) cho phân loại ý định và trích xuất slot — hai việc này vốn đã có nhánh fallback an toàn, chờ lâu không đem lại lợi ích gì.
 
@@ -70,9 +72,9 @@ Kèm theo đó, `gpt-4o-mini` — mô hình mặc định của AI service — �
 
 `request_leave` chỉ Việt hóa trường hợp hết quỹ phép; ba trường hợp còn lại trả nguyên `detail` tiếng Anh vào khung chat:
 
-- `Leave cannot start in the past` ([hr_service.py:281](../backend/app/services/hr_service.py#L281))
-- `This leave period overlaps an existing request` ([hr_service.py:291](../backend/app/services/hr_service.py#L291))
-- `No eligible manager is configured for this employee` ([hr_service.py:295](../backend/app/services/hr_service.py#L295))
+- `Leave cannot start in the past` ([hr_service.py:281](../../backend/app/services/hr_service.py#L281))
+- `This leave period overlaps an existing request` ([hr_service.py:291](../../backend/app/services/hr_service.py#L291))
+- `No eligible manager is configured for this employee` ([hr_service.py:295](../../backend/app/services/hr_service.py#L295))
 
 ### 2.6. [TRUNG] Lớp fallback từ khóa bỏ sót nhiều câu phổ biến
 
@@ -89,7 +91,7 @@ Trường hợp thứ ba đáng lưu ý nhất: nó **không** rơi vào nhánh 
 
 ### 2.7. [TRUNG] Chỉ quỹ phép được chặn "hỏi hộ người khác"
 
-`_leave_balance_names_another_person` ([agent_executor.py:487](../backend/app/services/agents/agent_executor.py#L487)) chặn câu "An còn bao nhiêu ngày phép" để khỏi trả số liệu của chính người hỏi dưới tên người khác. Các nhánh `SELF_COMPENSATION`, `SELF_PRIVATE_PROFILE`, `SELF_CONTRACT` **không có** lớp bảo vệ tương đương: nếu router LLM gán nhầm "lương của An là bao nhiêu" thành `SELF_COMPENSATION`, hệ thống trả lương **của người hỏi**. Không rò rỉ dữ liệu người khác (câu trả lời có ghi tên chủ hồ sơ), nhưng là câu trả lời sai một cách âm thầm — đúng loại lỗi mà guard của quỹ phép sinh ra để chặn.
+`_leave_balance_names_another_person` ([agent_executor.py:487](../../backend/app/services/agents/agent_executor.py#L487)) chặn câu "An còn bao nhiêu ngày phép" để khỏi trả số liệu của chính người hỏi dưới tên người khác. Các nhánh `SELF_COMPENSATION`, `SELF_PRIVATE_PROFILE`, `SELF_CONTRACT` **không có** lớp bảo vệ tương đương: nếu router LLM gán nhầm "lương của An là bao nhiêu" thành `SELF_COMPENSATION`, hệ thống trả lương **của người hỏi**. Không rò rỉ dữ liệu người khác (câu trả lời có ghi tên chủ hồ sơ), nhưng là câu trả lời sai một cách âm thầm — đúng loại lỗi mà guard của quỹ phép sinh ra để chặn.
 
 ### 2.8. [THẤP] Các điểm nhỏ còn lại
 
@@ -97,7 +99,7 @@ Trường hợp thứ ba đáng lưu ý nhất: nó **không** rơi vào nhánh 
 |---|---|---|
 | 1 | `FULL_PROFILE` chỉ nhận mục đích qua cụm tiếng Việt (cộng thêm `contract renewal`, `payroll`, `onboarding`); "performance review" tiếng Anh bị từ chối | agent_executor.py, nhánh FULL_PROFILE |
 | 2 | Lọc phòng ban chỉ kích hoạt khi câu có "phòng/bộ phận/department" — "team kế toán" sẽ liệt kê **toàn công ty** mà không cảnh báo lệch phạm vi | `_resolve_requested_departments` |
-| 3 | `SECTION_PERMISSIONS` trong [hr_access_policy.py:26](../backend/app/services/hr_access_policy.py#L26) trỏ tới mã quyền cũ `employee.*.read` không còn trong catalog; chỉ dùng cho `decision.permissions` mà không nơi nào đọc → mã chết dễ gây nhầm khi audit quyền | hr_access_policy.py |
+| 3 | `SECTION_PERMISSIONS` trong [hr_access_policy.py:26](../../backend/app/services/hr_access_policy.py#L26) trỏ tới mã quyền cũ `employee.*.read` không còn trong catalog; chỉ dùng cho `decision.permissions` mà không nơi nào đọc → mã chết dễ gây nhầm khi audit quyền | hr_access_policy.py |
 | 4 | Chưa có năng lực: đếm người nghỉ theo ngày (đang chuyển sang tra tài liệu), duyệt đơn qua chat, người dùng tự cập nhật thông tin cá nhân | — |
 | 5 | Câu trả lời cứng bằng tiếng Việt; người hỏi tiếng Anh vẫn nhận tiếng Việt, trừ 5 intent được LLM viết lại | toàn bộ nhánh |
 | 6 | `create_leave_request` chặn "ngày trong quá khứ" theo `date.today()` của máy chủ, trong khi ngày tham chiếu lại lấy theo timezone của tenant | hr_service.py:281 |

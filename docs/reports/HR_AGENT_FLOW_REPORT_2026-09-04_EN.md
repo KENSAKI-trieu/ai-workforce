@@ -1,12 +1,14 @@
 # Report: How the HR Agent Works
 
+> **Ghi chú (2026-09-24):** báo cáo này mô tả code tại thời điểm viết. Các đường dẫn `backend/app/services/...` và `agent_executor.py` đã đổi sau đợt refactor — xem [plans/REFACTOR_PLAN_2026-09-24.md](../plans/REFACTOR_PLAN_2026-09-24.md).
+
 **Date:** 2026-09-04
 **Scope:** The full path of a chat message sent to the `HR` AI Agent, from the moment it arrives to the moment it gets answered.
 **Related code:**
-- [agent_executor.py](../backend/app/services/agents/agent_executor.py) — the main router and executor
-- [hr_llm_flow.py](../backend/app/services/agents/hr_llm_flow.py) — the LLM calls (intent labeling, field extraction, answer writing)
-- [hr_access_policy.py](../backend/app/services/hr_access_policy.py) — the engine that controls access to HR data
-- [chat.py](../backend/app/api/v1/chat.py) — the `/chat` and `/chat/stream` API endpoints
+- [agent_executor.py](../../backend/app/services/agents/agent_executor.py) — the main router and executor
+- [hr_llm_flow.py](../../backend/app/services/agents/hr_llm_flow.py) — the LLM calls (intent labeling, field extraction, answer writing)
+- [hr_access_policy.py](../../backend/app/services/hr_access_policy.py) — the engine that controls access to HR data
+- [chat.py](../../backend/app/api/v1/chat.py) — the `/chat` and `/chat/stream` API endpoints
 
 ---
 

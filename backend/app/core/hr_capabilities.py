@@ -5,17 +5,17 @@ flat allow-list, checked by ``_require_tool`` before a hard-coded intent branch 
 names therefore have to agree across four places that used to keep their own copies --
 the executor, registration seeding, database seeding, and the configuration API. They
 live in ``app.core`` because that is the only package all four already depend on;
-importing them from ``app.services`` would close an import cycle through
-``app/services/__init__.py``.
+importing them from the domain or agent packages would close an import cycle.
 """
 
 from __future__ import annotations
 
 # Every capability the HR executor can actually dispatch. Each name is reachable from a
-# `_require_tool` call in `agent_executor._execute_agent_chat_core`, except
+# `_require_tool` call in `app/agents/hr/flow.py` (run_hr_turn), except
 # `get_employee_leave_summary`, which is deliberately optional -- see below.
 HR_CORE_TOOLS: frozenset[str] = frozenset({
-    "hybrid_rag_search",
+    # Knowledge search; `hybrid_rag_search` before the tool names were unified.
+    "rag_search",
     "get_employee_private_profile",
     "get_employee_contract_summary",
     "get_employee_compensation_summary",

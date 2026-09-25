@@ -10,8 +10,8 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_active_user, RoleRequired
 from app.models.models import User
-from app.services.rag_service import hybrid_search_documents
-from app.services.eval_service import evaluate_rag_quality
+from app.domains.knowledge.rag_service import hybrid_search_documents
+from app.domains.platform.eval_service import evaluate_rag_quality
 
 router = APIRouter(prefix="/eval", tags=["RAG Benchmark & Evaluation"])
 

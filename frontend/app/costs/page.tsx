@@ -39,6 +39,7 @@ const MODEL_COLORS: Record<string, string> = {
   "gpt-3.5-turbo": "#10B981",
   "gemini-2.5-flash": "#8B5CF6",
   "gemini-3.6-flash": "#7C3AED",
+  "gemini-3.5-flash-lite": "#A78BFA",
   "claude-sonnet-4": "#EC4899",
   "gemini-1.5-pro": "#F59E0B",
   "gemini-1.5-flash": "#8B5CF6",

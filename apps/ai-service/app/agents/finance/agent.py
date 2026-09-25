@@ -1,8 +1,7 @@
-from app.agents.base.agent import BaseAgent
+"""Domain policy of the Finance agent."""
 
-agent = BaseAgent(
-    role="FINANCE",
-    name="Finance AI",
-    description="Analyze invoices, budgets and finance policies.",
-    capabilities=("search_finance_policy", "extract_invoice", "reconcile_purchase_order"),
-)
+from app.agents.base.policy import DomainPolicy
+from app.agents.finance.prompts import DOMAIN_PROMPT
+from app.agents.finance.tools import TOOLS
+
+POLICY = DomainPolicy("FINANCE", TOOLS, DOMAIN_PROMPT)

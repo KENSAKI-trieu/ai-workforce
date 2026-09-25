@@ -4,10 +4,10 @@ from __future__ import annotations
 
 from app.plugins.manifest import parse_manifest
 from app.plugins.resolver import build_skill_restriction, effective_tools
-from app.services.agents.hr_prompts import default_prompt
+from app.agents.hr.prompts import default_prompt
 
 KNOWN_TOOLS = frozenset({
-    "hybrid_rag_search",
+    "rag_search",
     "query_leave_balance",
     "export_hr_directory",
 })
@@ -192,7 +192,7 @@ display_name: "Thử mở rộng quyền"
 target_role: HR
 skills:
   tools_access:
-    - hybrid_rag_search
+    - rag_search
     - export_hr_directory
 """
     try:
@@ -205,14 +205,14 @@ skills:
                 "name": "probe-package",
                 "version": "1.0.0",
                 "target_role": "HR",
-                "skills": {"tools_access": ["hybrid_rag_search", "export_hr_directory"]},
+                "skills": {"tools_access": ["rag_search", "export_hr_directory"]},
             },
             known_tools=KNOWN_TOOLS,
             known_roles=KNOWN_ROLES,
         )
         restriction = build_skill_restriction([parsed])
-        assert effective_tools({"hybrid_rag_search"}, restriction) == frozenset(
-            {"hybrid_rag_search"}
+        assert effective_tools({"rag_search"}, restriction) == frozenset(
+            {"rag_search"}
         )
     finally:
         _cleanup(client, ceo_token_headers)

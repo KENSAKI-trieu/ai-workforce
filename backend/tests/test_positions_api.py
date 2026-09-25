@@ -10,7 +10,8 @@ import uuid
 
 import pytest
 
-from app.models.models import DocumentChunk, Position, User
+from app.domains.platform.position_service import ensure_tenant_positions
+from app.models.models import DocumentChunk, Position, Tenant, User
 
 
 def _login(client, email: str, password: str = "Password123!") -> dict:
@@ -352,9 +353,12 @@ def test_a_position_of_another_tenant_is_invisible(
     client, ceo_headers, transactional_db_session
 ):
     db = transactional_db_session
-    actor = db.query(User).filter(User.email == "admin@company.com").one()
-    foreign = db.query(Position).filter(Position.tenant_id != actor.tenant_id).first()
-    assert foreign is not None, "cần ít nhất hai tenant có cây chức vụ"
+    # A tenant of its own rather than whatever else the database holds: CI seeds a single
+    # tenant, so a lookup for "some other tenant's position" found nothing there.
+    other = Tenant(id=uuid.uuid4(), name="Công ty khác", domain=f"{uuid.uuid4().hex[:10]}.test")
+    db.add(other)
+    db.flush()
+    foreign = ensure_tenant_positions(db, other.id)["employee"]
 
     read = client.get(f"/api/v1/positions/{foreign.id}/holders", headers=ceo_headers)
     assert read.status_code == 404

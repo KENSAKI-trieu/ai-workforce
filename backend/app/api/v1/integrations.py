@@ -18,8 +18,8 @@ from app.models.models import (
     IntegrationUsageLog,
     User,
 )
-from app.services.audit_events import add_audit_event
-from app.services.notification_service import create_notification
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.platform.notification_service import create_notification
 
 router = APIRouter(prefix="/integrations", tags=["Enterprise Integrations"])
 ADMIN_ROLES = {"Owner", "Admin", "CEO"}

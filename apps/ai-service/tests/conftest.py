@@ -1,6 +1,6 @@
 import pytest
 
-from app.config import settings
+from app.core.config import settings
 from app.main import app, require_internal_token
 
 
@@ -22,6 +22,19 @@ def bedrock_enabled(request: pytest.FixtureRequest):
         yield
     finally:
         settings.BEDROCK_ENABLED = original
+
+
+@pytest.fixture(autouse=True)
+def no_backend_tool_contracts(request: pytest.FixtureRequest, monkeypatch: pytest.MonkeyPatch):
+    """Answer the graph's contract lookup with an empty toolset instead of a live backend.
+
+    Every orchestration run asks the backend which tools it may use. Tests that drive the
+    endpoints are about the graph, not that lookup; the ones marked `tool_contracts`
+    exercise the lookup itself.
+    """
+    if not request.node.get_closest_marker("tool_contracts"):
+        monkeypatch.setattr("app.tools.gateway.ToolGatewayClient.list_tools", lambda self: [])
+    yield
 
 
 @pytest.fixture(autouse=True)

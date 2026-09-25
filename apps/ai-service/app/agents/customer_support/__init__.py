@@ -1,3 +1,5 @@
-from app.agents.customer_support.agent import agent
+"""Customer support (IT and Sales) agent -- under development.
 
-__all__ = ["agent"]
+The backend answers this role with its under-development reply and never routes it
+here; the policy is kept so the agent can be built out.
+"""

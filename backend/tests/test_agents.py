@@ -92,8 +92,8 @@ def test_owner_admin_and_ceo_can_configure_agent(
         "/api/v1/agents/HR",
         headers=admin_headers,
         json={
-            "tools_access": ["get_employee_full_profile", "hybrid_rag_search"],
-            "allowed_actions": ["get_employee_full_profile", "hybrid_rag_search"],
+            "tools_access": ["get_employee_full_profile", "rag_search"],
+            "allowed_actions": ["get_employee_full_profile", "rag_search"],
             "disallowed_actions": [],
             "knowledge_access": [document_selector],
         },

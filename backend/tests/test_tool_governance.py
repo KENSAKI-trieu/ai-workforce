@@ -27,9 +27,9 @@ from app.core.gateway_tools import (
 )
 from app.core.security import create_internal_tool_token
 from app.models.models import AIAgent, AuditLog, Task, User, WorkflowApproval
-from app.services.agents.langgraph_engine import LangGraphEngine
-from app.services.auth_service import DEFAULT_AGENT_TOOLS
-from app.services.langgraph_approvals import GRAPH_APPROVAL_KIND
+from app.agents.langgraph.engine import LangGraphEngine
+from app.domains.platform.auth_service import DEFAULT_AGENT_TOOLS
+from app.agents.langgraph.approvals import GRAPH_APPROVAL_KIND
 from app.tools.executors import search_rag
 from app.tools.registry import ToolContext, tool_registry
 from app.tools.schemas import RAGSearchInput
@@ -51,49 +51,44 @@ def _mutating_audit() -> dict[str, str]:
 # ---------------------------------------------------------------------------
 
 
-def _parse_ai_service_tools(source: str) -> dict[str, dict[str, object]]:
-    """Read the AI service's hand-written mirror of this registry.
+AI_SERVICE_APP = Path(__file__).resolve().parents[2] / "apps" / "ai-service" / "app"
 
-    The two services cannot import one another: both packages are named `app`, and the
-    backend registry imports `app.services` at module scope. Parity is therefore checked
-    against the source text, so drift fails here instead of becoming a 403 that only appears
-    once a role is routed through the graph.
+
+def _agent_tool_ceilings() -> dict[str, set[str]]:
+    """Read each AI-service agent's tool ceiling (agents/<role>/tools.py) from source.
+
+    The two services cannot import one another -- both packages are named `app` -- so the
+    ceilings are read as text.
     """
-    parsed: dict[str, dict[str, object]] = {}
-    for node in ast.walk(ast.parse(source)):
-        if not (isinstance(node, ast.Call) and getattr(node.func, "id", "") == "_tool"):
-            continue
-        args = node.args
-        parsed[ast.literal_eval(args[0])] = {
-            "action": args[3].attr,
-            "roles": set(ast.literal_eval(args[4])),
-            "departments": set(ast.literal_eval(args[5])),
-            "timeout": float(ast.literal_eval(args[6])),
-            "audit_action": ast.literal_eval(args[7]),
-            "acl_match": ast.literal_eval(args[8]) if len(args) > 8 else "ROLE_AND_DEPARTMENT",
-        }
-    return parsed
+    ceilings: dict[str, set[str]] = {}
+    for path in sorted((AI_SERVICE_APP / "agents").glob("*/tools.py")):
+        for node in ast.walk(ast.parse(path.read_text(encoding="utf-8"))):
+            target = getattr(node, "target", None)
+            if isinstance(node, ast.AnnAssign) and getattr(target, "id", "") == "TOOLS":
+                ceilings[path.parent.name] = set(ast.literal_eval(node.value))
+    return ceilings
 
 
-def test_ai_service_registry_mirrors_backend_contracts() -> None:
-    source_path = (
-        Path(__file__).resolve().parents[2]
-        / "apps" / "ai-service" / "app" / "tools" / "registry.py"
-    )
-    if not source_path.exists():
+def test_the_ai_service_keeps_no_copy_of_the_tool_contracts() -> None:
+    """It builds its tools from GET /internal/tools; a second copy is what used to drift."""
+    if not AI_SERVICE_APP.exists():
         pytest.skip("AI service source is not present in this checkout")
-    expected = {
-        item.name: {
-            "action": item.action.value,
-            "roles": set(item.acl.allowed_roles),
-            "departments": set(item.acl.allowed_departments),
-            "timeout": float(item.timeout_seconds),
-            "audit_action": item.audit_action,
-            "acl_match": item.acl.match,
-        }
-        for item in tool_registry.all()
-    }
-    assert _parse_ai_service_tools(source_path.read_text(encoding="utf-8")) == expected
+    assert not (AI_SERVICE_APP / "tools" / "schemas.py").exists()
+    registry_source = (AI_SERVICE_APP / "tools" / "registry.py").read_text(encoding="utf-8")
+    assert "list_tools" in registry_source or "build_langchain_tools" in registry_source
+    for item in tool_registry.all():
+        assert f'"{item.name}"' not in registry_source, item.name
+
+
+def test_every_agent_tool_ceiling_names_a_backend_tool() -> None:
+    """A ceiling naming a tool the backend does not have would silently never be offered."""
+    if not AI_SERVICE_APP.exists():
+        pytest.skip("AI service source is not present in this checkout")
+    ceilings = _agent_tool_ceilings()
+    assert {"legal", "hr", "knowledge"} <= set(ceilings)
+    registry_names = {item.name for item in tool_registry.all()}
+    for agent, tools in ceilings.items():
+        assert tools <= registry_names, (agent, tools - registry_names)
 
 
 def test_gateway_grant_names_exist_in_registry() -> None:
@@ -101,12 +96,11 @@ def test_gateway_grant_names_exist_in_registry() -> None:
     assert GATEWAY_TOOLS == registry_names
     for role_code, grants in GATEWAY_TOOL_GRANTS.items():
         assert set(grants) <= registry_names, role_code
+        # Without retrieval no domain can ground a single answer.
+        assert "rag_search" in grants, role_code
         if role_code == "HR":
-            # Routed to the deterministic executor, never through the graph.
-            assert grants == ()
-        else:
-            # Without retrieval the domain policies cannot ground a single answer.
-            assert "rag_search" in grants, role_code
+            # Search only: its other capabilities are HR names checked by its executor.
+            assert grants == ("rag_search",)
 
 
 def test_default_agent_tools_carry_the_gateway_grants() -> None:
@@ -527,6 +521,7 @@ def test_gateway_and_graph_payload_agree_on_the_grant(transactional_db_session) 
         agent.disallowed_actions = []
         transactional_db_session.flush()
         payload = LangGraphEngine._payload(
+            db=transactional_db_session,
             user=transactional_db_session.query(User).filter(
                 User.email == "admin@company.com"
             ).one(),

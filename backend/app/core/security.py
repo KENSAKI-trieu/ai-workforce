@@ -263,7 +263,7 @@ class PermissionRequired:
         current_user=Depends(get_current_active_user),
         db: Session = Depends(get_db),
     ):
-        from app.services.position_service import user_permissions
+        from app.domains.platform.position_service import user_permissions
 
         granted = user_permissions(db, current_user)
         if not any(code in granted for code in self.codes):

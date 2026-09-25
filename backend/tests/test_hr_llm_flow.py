@@ -7,8 +7,10 @@ from types import SimpleNamespace
 
 import pytest
 
-from app.services.agents import agent_executor
-from app.services.agents.hr_llm_flow import (
+from app.agents.chat import execute_agent_chat
+from app.agents.hr.intent import _classify_hr_intent
+from tests.chat_patching import patch_chat
+from app.agents.hr.llm_flow import (
     HRRequestClassification,
     classify_hr_request,
     HR_INTENT_LABELS,
@@ -36,7 +38,7 @@ def no_plugin_overlay(monkeypatch):
     the lookup is stubbed to the "nothing installed" answer; the overlay itself is
     covered in test_plugins.py.
     """
-    monkeypatch.setattr(agent_executor, "resolve_prompt_overlay", lambda *_a, **_k: None)
+    patch_chat(monkeypatch, "resolve_prompt_overlay", lambda *_a, **_k: None)
 
 
 class FakeAIClient:
@@ -169,7 +171,7 @@ def test_question_answer_is_generated_from_governed_evidence_and_keeps_citation(
             "content": "Nhân viên có 12 ngày phép mỗi năm.",
             "citation_tag": citation,
         }],
-        "tools_executed": [{"tool_name": "hybrid_rag_search", "result_count": 1}],
+        "tools_executed": [{"tool_name": "rag_search", "result_count": 1}],
         "hr_card": None,
     }
 
@@ -187,15 +189,11 @@ def test_question_answer_is_generated_from_governed_evidence_and_keeps_citation(
 
 def test_llm_question_classification_cannot_execute_an_action(monkeypatch):
     captured = {}
-    monkeypatch.setattr(
-        agent_executor,
-        "_classify_hr_intent",
+    patch_chat(monkeypatch, "_classify_hr_intent",
         lambda _message: "ACTION_LEAVE_REQUEST",
     )
-    monkeypatch.setattr(agent_executor, "_load_leave_draft", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "_load_leave_draft", lambda *_args: None)
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification("QUESTION", "llm"),
     )
 
@@ -203,14 +201,12 @@ def test_llm_question_classification_cannot_execute_an_action(monkeypatch):
         captured["intent"] = kwargs["hr_intent_override"]
         return {"reply": "retrieved", "citations": [], "tools_executed": [], "hr_card": None}
 
-    monkeypatch.setattr(agent_executor, "_execute_agent_chat_core", fake_core)
-    monkeypatch.setattr(
-        agent_executor,
-        "generate_grounded_hr_answer",
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
+    patch_chat(monkeypatch, "generate_grounded_hr_answer",
         lambda _message, response, **_kwargs: {**response, "generated": True},
     )
 
-    result = agent_executor.execute_agent_chat(
+    result = execute_agent_chat(
         SimpleNamespace(),
         SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
@@ -252,10 +248,9 @@ def test_classifier_drops_an_intent_label_outside_the_closed_set():
 
 
 def test_every_executor_branch_label_is_offered_to_the_router():
-    from app.services.agents import agent_executor
 
     produced = {
-        agent_executor._classify_hr_intent(message)
+        _classify_hr_intent(message)
         for message in (
             "còn bao nhiêu ngày phép",
             "xuất danh sách nhân viên excel",
@@ -281,11 +276,9 @@ def test_every_executor_branch_label_is_offered_to_the_router():
 
 def test_router_intent_replaces_the_keyword_label_for_a_paraphrased_question(monkeypatch):
     captured = {}
-    monkeypatch.setattr(agent_executor, "_classify_hr_intent", lambda _message: "UNKNOWN")
-    monkeypatch.setattr(agent_executor, "_load_leave_draft", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "UNKNOWN")
+    patch_chat(monkeypatch, "_load_leave_draft", lambda *_args: None)
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification(
             "QUESTION", "llm", "EMPLOYEE_DIRECTORY"
         ),
@@ -295,14 +288,12 @@ def test_router_intent_replaces_the_keyword_label_for_a_paraphrased_question(mon
         captured["intent"] = kwargs["hr_intent_override"]
         return {"reply": "", "citations": [], "tools_executed": [], "hr_card": None}
 
-    monkeypatch.setattr(agent_executor, "_execute_agent_chat_core", fake_core)
-    monkeypatch.setattr(
-        agent_executor,
-        "generate_grounded_hr_answer",
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
+    patch_chat(monkeypatch, "generate_grounded_hr_answer",
         lambda _message, response, **_kwargs: response,
     )
 
-    agent_executor.execute_agent_chat(
+    execute_agent_chat(
         SimpleNamespace(),
         SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
@@ -314,11 +305,9 @@ def test_router_intent_replaces_the_keyword_label_for_a_paraphrased_question(mon
 
 def test_router_action_with_a_read_only_intent_fails_closed(monkeypatch):
     captured = {}
-    monkeypatch.setattr(agent_executor, "_classify_hr_intent", lambda _message: "UNKNOWN")
-    monkeypatch.setattr(agent_executor, "_load_leave_draft", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "UNKNOWN")
+    patch_chat(monkeypatch, "_load_leave_draft", lambda *_args: None)
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification(
             "ACTION", "llm", "EMPLOYEE_DIRECTORY"
         ),
@@ -328,9 +317,9 @@ def test_router_action_with_a_read_only_intent_fails_closed(monkeypatch):
         captured["intent"] = kwargs["hr_intent_override"]
         return {"reply": "", "citations": [], "tools_executed": [], "hr_card": None}
 
-    monkeypatch.setattr(agent_executor, "_execute_agent_chat_core", fake_core)
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
 
-    agent_executor.execute_agent_chat(
+    execute_agent_chat(
         SimpleNamespace(),
         SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
@@ -342,13 +331,10 @@ def test_router_action_with_a_read_only_intent_fails_closed(monkeypatch):
 
 def test_keyword_label_survives_when_the_router_falls_back(monkeypatch):
     captured = {}
-    monkeypatch.setattr(
-        agent_executor, "_classify_hr_intent", lambda _message: "QUERY_LEAVE_BALANCE"
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "QUERY_LEAVE_BALANCE"
     )
-    monkeypatch.setattr(agent_executor, "_load_leave_draft", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "_load_leave_draft", lambda *_args: None)
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification("QUESTION", "fallback"),
     )
 
@@ -356,14 +342,12 @@ def test_keyword_label_survives_when_the_router_falls_back(monkeypatch):
         captured["intent"] = kwargs["hr_intent_override"]
         return {"reply": "", "citations": [], "tools_executed": [], "hr_card": None}
 
-    monkeypatch.setattr(agent_executor, "_execute_agent_chat_core", fake_core)
-    monkeypatch.setattr(
-        agent_executor,
-        "generate_grounded_hr_answer",
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
+    patch_chat(monkeypatch, "generate_grounded_hr_answer",
         lambda _message, response, **_kwargs: response,
     )
 
-    agent_executor.execute_agent_chat(
+    execute_agent_chat(
         SimpleNamespace(),
         SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
@@ -376,15 +360,11 @@ def test_keyword_label_survives_when_the_router_falls_back(monkeypatch):
 def test_a_question_during_an_open_leave_draft_is_routed_by_the_router(monkeypatch):
     """H1: an open draft must not force every following turn to be an action."""
     captured = {}
-    monkeypatch.setattr(agent_executor, "_classify_hr_intent", lambda _message: "POLICY_QUERY")
-    monkeypatch.setattr(
-        agent_executor,
-        "_load_leave_draft",
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "POLICY_QUERY")
+    patch_chat(monkeypatch, "_load_leave_draft",
         lambda *_args: {"type": "LEAVE_REQUEST_DRAFT", "missing_fields": ["reason"]},
     )
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification("QUESTION", "llm", "POLICY_QUERY"),
     )
 
@@ -393,14 +373,12 @@ def test_a_question_during_an_open_leave_draft_is_routed_by_the_router(monkeypat
         captured["cancel"] = kwargs["leave_cancel_request"]
         return {"reply": "", "citations": [], "tools_executed": [], "hr_card": None}
 
-    monkeypatch.setattr(agent_executor, "_execute_agent_chat_core", fake_core)
-    monkeypatch.setattr(
-        agent_executor,
-        "generate_grounded_hr_answer",
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
+    patch_chat(monkeypatch, "generate_grounded_hr_answer",
         lambda _message, response, **_kwargs: response,
     )
 
-    agent_executor.execute_agent_chat(
+    execute_agent_chat(
         SimpleNamespace(),
         SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
@@ -414,15 +392,11 @@ def test_a_question_during_an_open_leave_draft_is_routed_by_the_router(monkeypat
 def test_cancelling_a_draft_is_never_reinterpreted_as_a_question(monkeypatch):
     """Cancellation is unambiguous, so the router does not get to override it."""
     captured = {}
-    monkeypatch.setattr(agent_executor, "_classify_hr_intent", lambda _message: "UNKNOWN")
-    monkeypatch.setattr(
-        agent_executor,
-        "_load_leave_draft",
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "UNKNOWN")
+    patch_chat(monkeypatch, "_load_leave_draft",
         lambda *_args: {"type": "LEAVE_REQUEST_DRAFT", "missing_fields": ["reason"]},
     )
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification("QUESTION", "llm", "POLICY_QUERY"),
     )
 
@@ -431,9 +405,9 @@ def test_cancelling_a_draft_is_never_reinterpreted_as_a_question(monkeypatch):
         captured["cancel"] = kwargs["leave_cancel_request"]
         return {"reply": "", "citations": [], "tools_executed": [], "hr_card": None}
 
-    monkeypatch.setattr(agent_executor, "_execute_agent_chat_core", fake_core)
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
 
-    agent_executor.execute_agent_chat(
+    execute_agent_chat(
         SimpleNamespace(),
         SimpleNamespace(tenant_id=_TEST_TENANT_ID),
         "HR",
@@ -447,16 +421,12 @@ def test_cancelling_a_draft_is_never_reinterpreted_as_a_question(monkeypatch):
 def test_personal_data_answers_are_never_sent_to_the_answer_model(monkeypatch):
     """H6: salary, contact details and deep profiles stay on the governed path."""
     calls = []
-    monkeypatch.setattr(agent_executor, "_classify_hr_intent", lambda _message: "SELF_COMPENSATION")
-    monkeypatch.setattr(agent_executor, "_load_leave_draft", lambda *_args: None)
-    monkeypatch.setattr(
-        agent_executor,
-        "classify_hr_request",
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "SELF_COMPENSATION")
+    patch_chat(monkeypatch, "_load_leave_draft", lambda *_args: None)
+    patch_chat(monkeypatch, "classify_hr_request",
         lambda *_args, **_kwargs: HRRequestClassification("QUESTION", "llm", "SELF_COMPENSATION"),
     )
-    monkeypatch.setattr(
-        agent_executor,
-        "_execute_agent_chat_core",
+    patch_chat(monkeypatch, "_execute_agent_chat_core",
         lambda *_args, **_kwargs: {
             "reply": "Lương tháng: 42.000.000 VND",
             "citations": [],
@@ -464,13 +434,11 @@ def test_personal_data_answers_are_never_sent_to_the_answer_model(monkeypatch):
             "hr_card": {"type": "EMPLOYEE_PROFILE", "compensation": {"monthly_salary": 42000000}},
         },
     )
-    monkeypatch.setattr(
-        agent_executor,
-        "generate_grounded_hr_answer",
+    patch_chat(monkeypatch, "generate_grounded_hr_answer",
         lambda message, response: calls.append(message) or response,
     )
 
-    result = agent_executor.execute_agent_chat(
+    result = execute_agent_chat(
         SimpleNamespace(), SimpleNamespace(tenant_id=_TEST_TENANT_ID), "HR", "lương của tôi là bao nhiêu"
     )
 

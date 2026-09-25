@@ -103,6 +103,26 @@ class ToolGatewayClient:
                     await asyncio.sleep(backoff_seconds * (2 ** (attempt - 1)))
         raise ToolGatewayError(f"Tool gateway failed '{name}'") from last_error
 
+    def list_tools(self) -> list[dict[str, Any]]:
+        """The backend's contracts for the tools this caller may invoke.
+
+        The backend filters by the actor's ACL, the AI Employee's grants and the tenant's
+        plugins, so what comes back is exactly what the graph may offer the model.
+        """
+        try:
+            response = httpx.get(
+                f"{self.base_url}/api/v1/internal/tools",
+                headers=self.headers,
+                timeout=10.0,
+            )
+            response.raise_for_status()
+            contracts = response.json()
+        except (httpx.HTTPError, ValueError) as exc:
+            raise ToolGatewayError("Tool contracts could not be loaded from the backend") from exc
+        if not isinstance(contracts, list):
+            raise ToolGatewayError("Tool contracts response is not a list")
+        return contracts
+
     def record_model_usage(self, payload: dict[str, Any]) -> dict[str, Any]:
         try:
             response = httpx.post(

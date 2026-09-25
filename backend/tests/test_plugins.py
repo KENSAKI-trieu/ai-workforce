@@ -21,8 +21,8 @@ from app.plugins.resolver import (
     build_skill_restriction,
     effective_tools,
 )
-from app.services.agents import agent_executor
-from app.services.agents.hr_prompts import (
+from app.agents.access import _attach_plugin_restriction, _can_use_tool, _require_tool
+from app.agents.hr.prompts import (
     DEFAULT_HR_PROMPTS,
     HR_PROMPT_SLOTS,
     default_prompt,
@@ -30,7 +30,7 @@ from app.services.agents.hr_prompts import (
 )
 
 KNOWN_TOOLS = frozenset({
-    "hybrid_rag_search",
+    "rag_search",
     "query_leave_balance",
     "export_hr_directory",
     "request_leave",
@@ -94,8 +94,8 @@ def test_a_tool_cannot_be_granted_and_denied_by_the_same_package():
     with pytest.raises(PluginManifestError):
         make_manifest(
             skills={
-                "tools_access": ["hybrid_rag_search"],
-                "disallowed_actions": ["hybrid_rag_search"],
+                "tools_access": ["rag_search"],
+                "disallowed_actions": ["rag_search"],
             }
         )
 
@@ -151,26 +151,26 @@ def test_only_the_declared_slots_are_overridden():
 
 def test_a_package_cannot_grant_a_tool_the_agent_does_not_have():
     """The whole security property of the plugin system, stated directly."""
-    agent_tools = {"hybrid_rag_search"}
+    agent_tools = {"rag_search"}
     manifest = make_manifest(
-        skills={"tools_access": ["hybrid_rag_search", "export_hr_directory"]}
+        skills={"tools_access": ["rag_search", "export_hr_directory"]}
     )
     restriction = build_skill_restriction([manifest])
-    assert effective_tools(agent_tools, restriction) == frozenset({"hybrid_rag_search"})
+    assert effective_tools(agent_tools, restriction) == frozenset({"rag_search"})
     assert "export_hr_directory" not in effective_tools(agent_tools, restriction)
 
 
 def test_a_package_can_withdraw_a_tool_the_agent_has():
-    agent_tools = {"hybrid_rag_search", "export_hr_directory"}
+    agent_tools = {"rag_search", "export_hr_directory"}
     manifest = make_manifest(skills={"disallowed_actions": ["export_hr_directory"]})
     restriction = build_skill_restriction([manifest])
-    assert effective_tools(agent_tools, restriction) == frozenset({"hybrid_rag_search"})
+    assert effective_tools(agent_tools, restriction) == frozenset({"rag_search"})
 
 
 def test_two_restricting_packages_intersect_rather_than_union():
-    agent_tools = {"hybrid_rag_search", "query_leave_balance", "request_leave"}
+    agent_tools = {"rag_search", "query_leave_balance", "request_leave"}
     first = make_manifest(
-        name="first", skills={"tools_access": ["hybrid_rag_search", "query_leave_balance"]}
+        name="first", skills={"tools_access": ["rag_search", "query_leave_balance"]}
     )
     second = make_manifest(
         name="second", skills={"tools_access": ["query_leave_balance", "request_leave"]}
@@ -180,21 +180,21 @@ def test_two_restricting_packages_intersect_rather_than_union():
 
 
 def test_a_denial_beats_another_packages_grant():
-    agent_tools = {"hybrid_rag_search", "export_hr_directory"}
+    agent_tools = {"rag_search", "export_hr_directory"}
     granting = make_manifest(
         name="granting",
-        skills={"tools_access": ["hybrid_rag_search", "export_hr_directory"]},
+        skills={"tools_access": ["rag_search", "export_hr_directory"]},
     )
     denying = make_manifest(
         name="denying", skills={"disallowed_actions": ["export_hr_directory"]}
     )
     restriction = build_skill_restriction([granting, denying])
-    assert effective_tools(agent_tools, restriction) == frozenset({"hybrid_rag_search"})
+    assert effective_tools(agent_tools, restriction) == frozenset({"rag_search"})
 
 
 def test_no_restriction_is_not_the_same_as_an_empty_one():
     """An absent tools_access must leave everything alone, not withdraw everything."""
-    agent_tools = {"hybrid_rag_search", "query_leave_balance"}
+    agent_tools = {"rag_search", "query_leave_balance"}
     unrestricted = build_skill_restriction([make_manifest()])
     assert unrestricted.allowed is None
     assert effective_tools(agent_tools, unrestricted) == frozenset(agent_tools)
@@ -213,8 +213,8 @@ def _hr_agent_double() -> AIAgent:
         name="HR Agent",
         role_code="HR",
         system_prompt="x",
-        tools_access=["hybrid_rag_search", "export_hr_directory"],
-        allowed_actions=["hybrid_rag_search", "export_hr_directory"],
+        tools_access=["rag_search", "export_hr_directory"],
+        allowed_actions=["rag_search", "export_hr_directory"],
         disallowed_actions=[],
         configuration_version=99,
     )
@@ -223,35 +223,35 @@ def _hr_agent_double() -> AIAgent:
 
 def test_require_tool_rejects_what_an_installed_package_withdrew():
     agent = _hr_agent_double()
-    assert agent_executor._can_use_tool(agent, "export_hr_directory") is True
+    assert _can_use_tool(agent, "export_hr_directory") is True
 
-    agent_executor._attach_plugin_restriction(
+    _attach_plugin_restriction(
         agent, SkillRestriction(denied=frozenset({"export_hr_directory"}))
     )
 
-    assert agent_executor._can_use_tool(agent, "export_hr_directory") is False
+    assert _can_use_tool(agent, "export_hr_directory") is False
     with pytest.raises(Exception) as excinfo:
-        agent_executor._require_tool(agent, "export_hr_directory")
+        _require_tool(agent, "export_hr_directory")
     assert "plugin" in str(excinfo.value).lower()
 
 
 def test_a_restriction_never_turns_a_denied_tool_back_on():
     agent = _hr_agent_double()
     agent.disallowed_actions = ["export_hr_directory"]
-    agent_executor._attach_plugin_restriction(
+    _attach_plugin_restriction(
         agent, SkillRestriction(allowed=frozenset({"export_hr_directory"}))
     )
-    assert agent_executor._can_use_tool(agent, "export_hr_directory") is False
+    assert _can_use_tool(agent, "export_hr_directory") is False
 
 
 def test_narrowing_is_not_written_back_to_the_agent_row():
     """Uninstalling must restore access, so the narrowing stays out of the columns."""
     agent = _hr_agent_double()
     original_tools = list(agent.tools_access)
-    agent_executor._attach_plugin_restriction(
-        agent, SkillRestriction(allowed=frozenset({"hybrid_rag_search"}))
+    _attach_plugin_restriction(
+        agent, SkillRestriction(allowed=frozenset({"rag_search"}))
     )
-    agent_executor._can_use_tool(agent, "export_hr_directory")
+    _can_use_tool(agent, "export_hr_directory")
     assert agent.tools_access == original_tools
     assert agent.disallowed_actions == []
 
@@ -490,8 +490,8 @@ def test_legal_slots_are_registered_and_previewable(client, ceo_token_headers):
     A role absent from the registry silently drops any prompt a package declares for it,
     so registration and preview are checked together.
     """
-    from app.services.agents.legal_prompts import LEGAL_PROMPT_SLOTS
-    from app.services.agents.prompt_registry import (
+    from app.agents.legal.prompts import LEGAL_PROMPT_SLOTS
+    from app.agents.prompt_registry import (
         default_prompt as registry_default_prompt,
         prompt_slots_for_role,
     )

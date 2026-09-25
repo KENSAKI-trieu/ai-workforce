@@ -9,6 +9,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import JSONResponse
 
+from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
 from app.api.v1.router import api_router
 
@@ -44,20 +45,18 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Database connectivity check failed: {e}")
         raise
-    if settings.LANGGRAPH_ENABLED:
-        # Turning this flag on routes every non-HR agent through LangGraph, which makes
-        # the whole deterministic LEGAL branch unreachable. The gateway's LEGAL policy
-        # grants only the three tools named below -- none of them reviews contract risk --
-        # so contract review, the represented-party question and redline generation all
-        # disappear from chat with no error anywhere. The tool names are hardcoded on
-        # purpose: the backend talks to apps/ai-service over HTTP and must not import it.
-        logger.warning(
-            "⚠️ LANGGRAPH_ENABLED=true routes every non-HR agent through LangGraph. "
-            "The LEGAL domain policy exposes only rag_search, generate_legal_document "
-            "and submit_approval_request -- there is no contract risk-review tool -- so "
-            "contract review, the represented-party question and redline generation are "
-            "UNREACHABLE in chat until a review tool is added to DOMAIN_POLICIES['LEGAL']."
-        )
+    graph_roles = sorted(role for role in ("HR", "LEGAL", "KNOWLEDGE", "IT", "FINANCE", "SALES", "CEO") if uses_langgraph(role))
+    if graph_roles:
+        # A role on LangGraph skips its deterministic flow. For LEGAL that means the intent
+        # router, the "review or question?" prompt and grounded answers are replaced by the
+        # graph's own model loop; contract review stays reachable through the
+        # `audit_contract_risk` gateway tool, which records and escalates like the chat.
+        logger.warning("⚠️ Agents running through LangGraph: %s", ", ".join(graph_roles))
+        if "LEGAL" in graph_roles:
+            logger.warning(
+                "⚠️ LEGAL reviews contracts through the audit_contract_risk gateway tool; its "
+                "deterministic chat routing and grounded answers are not used on this path."
+            )
     yield
     logger.info("🛑 AI Workforce backend shutting down...")
 
@@ -128,7 +127,7 @@ async def readiness_check():
     from sqlalchemy import text
 
     from app.core.database import sync_engine
-    from app.services.work_queue import queue_stats
+    from app.domains.platform.work_queue import queue_stats
 
     dependencies = {"database": False, "redis": False, "worker": False}
     try:

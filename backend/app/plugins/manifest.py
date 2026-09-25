@@ -26,8 +26,8 @@ PROMPT_MODES = frozenset({"append", "replace"})
 def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:
     """Slot names a role accepts overrides for, or None when it accepts none.
 
-    The import is deferred because `app.services.agents` eagerly loads the agent
-    executor, which loads the plugin resolver, which loads this module. Reaching for
+    The import is deferred because the chat flows in `app.agents` load the plugin
+    resolver, which loads this module. Reaching for
     the slot names only when a manifest is actually parsed keeps this module a leaf and
     that cycle unformed.
 
@@ -35,7 +35,7 @@ def prompt_slots_for_role(role_code: str) -> tuple[str, ...] | None:
     deliberate: only a flow that reads a resolved overlay can honour one, so accepting
     prompts for another role would store text nothing ever applies.
     """
-    from app.services.agents.prompt_registry import prompt_slots_for_role as slots
+    from app.agents.prompt_registry import prompt_slots_for_role as slots
 
     return slots(role_code)
 
@@ -160,13 +160,22 @@ def _parse_skills(raw: Any, known_tools: frozenset[str]) -> tuple[tuple[str, ...
             f"Unknown key(s) in skills: {', '.join(sorted(unknown))}"
         )
 
+    # Imported here: app.core is a leaf, but keeping the parser's import surface small
+    # matters to the CLI that loads it.
+    from app.core.tool_permissions import canonical_tool_names
+
     tools: tuple[str, ...] | None = None
     if "tools_access" in skills:
-        tools = _string_list(skills["tools_access"], "skills.tools_access")
-    denied = _string_list(skills.get("disallowed_actions", []), "skills.disallowed_actions")
+        # Old names are accepted and stored in their current spelling, so a package
+        # written before the rename still installs and still narrows the right tool.
+        tools = tuple(canonical_tool_names(_string_list(skills["tools_access"], "skills.tools_access")))
+    denied = tuple(canonical_tool_names(
+        _string_list(skills.get("disallowed_actions", []), "skills.disallowed_actions")
+    ))
 
+    known = set(canonical_tool_names(known_tools))
     for name in tuple(tools or ()) + denied:
-        if name not in known_tools:
+        if name not in known:
             raise PluginManifestError(f"Unknown tool name: {name}")
 
     overlap = set(tools or ()) & set(denied)

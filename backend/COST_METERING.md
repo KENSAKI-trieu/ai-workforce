@@ -28,7 +28,7 @@ log_llm_cost(
 
 Do not estimate token usage from string length. Unknown model IDs intentionally
 raise an error until a reviewed price is added to
-`app/services/cost_calculator.py`.
+`app/domains/platform/cost_calculator.py`.
 
 ## Reporting period and legacy data
 

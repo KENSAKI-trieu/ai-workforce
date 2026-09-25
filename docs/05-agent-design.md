@@ -10,7 +10,7 @@
 | **IT Agent** | 💻 | Technical Support, Ticket Lifecycle, Access Provisioning | `search_it_kb`, `create_jira_ticket`, `reset_vpn_credentials` | Status Report & Jira Ticket Card |
 | **Finance Agent** | 💰 | Invoice OCR Processing, DB Reconciliation, Expense Approval | `ocr_invoice_extract`, `reconcile_po_db`, `alert_cfo_anomaly` | Financial Discrepancy Alert & Invoice Card |
 | **Sales Agent** | 📈 | Lead Qualification, Catalog Lookup, Quote Generation | `search_inventory`, `create_crm_lead`, `generate_quotation_pdf` | PDF Quotation & CRM Entry Summary |
-| **Knowledge Agent** | 📚 | Enterprise Knowledge Retrieval, Document Citation, SOP Guidance | `hybrid_rag_search`, `format_citations` | Answer Text + Inline Citation Tags |
+| **Knowledge Agent** | 📚 | Enterprise Knowledge Retrieval, Document Citation, SOP Guidance | `rag_search`, `format_citations` | Answer Text + Inline Citation Tags |
 
 ---
 

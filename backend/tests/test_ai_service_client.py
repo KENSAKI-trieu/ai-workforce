@@ -2,7 +2,7 @@ import httpx
 import pytest
 
 from app.core.config import settings
-from app.services.ai_service_client import AIServiceClient, AIServiceError
+from app.clients.ai_service_client import AIServiceClient, AIServiceError
 
 
 class _Response:
@@ -196,3 +196,21 @@ def test_chunk_client_forwards_each_ai_progress_response(monkeypatch) -> None:
     assert chunks == [{"content": "one"}, {"content": "two"}]
     assert [update["remaining_segments"] for update in updates] == [1, 0]
     assert captured["json"]["progress_stream_id"] == "browser-stream-contract"
+
+
+def test_llm_generate_accepts_a_per_call_timeout(monkeypatch) -> None:
+    timeouts = []
+
+    def fake_post(url, *, json, headers, timeout):
+        timeouts.append(timeout)
+        return _Response({"content": "ok", "provider": "local"})
+
+    monkeypatch.setattr(httpx, "post", fake_post)
+    monkeypatch.setattr(settings, "AI_SERVICE_TIMEOUT_SECONDS", 120.0)
+    client = _client(monkeypatch)
+
+    client.generate_text([{"role": "user", "content": "hi"}], timeout=7.5)
+    client.generate_text([{"role": "user", "content": "hi"}])
+
+    # A router's short budget must not leak into ordinary generation calls.
+    assert timeouts == [7.5, 120.0]

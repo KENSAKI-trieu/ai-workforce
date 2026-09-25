@@ -17,30 +17,70 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.security import get_current_active_user
-from app.models.models import AgentWorkflow, ContractReview, User, WorkflowApproval
-from app.services.audit_service import log_audit_action
-from app.services import contract_review_store
-from app.services.document_parser import DocumentParseError, extract_file_text
-from app.services.legal_service import (
+from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
+from app.core.tool_permissions import grant_decision
+from app.plugins.resolver import resolve_skill_restriction
+from app.domains.platform.audit_service import log_audit_action
+from app.domains.legal import contract_review_store
+from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
+from app.domains.legal.legal_service import (
     audit_contract_text,
     check_software_licenses,
     compare_contract_texts,
     detect_sensitive_data,
 )
-from app.services.contract_review import detect_contract_type, review_contract
-from app.services.contract_redline import build_redline_docx
+from app.domains.legal.contract_review import detect_contract_type, review_contract
+from app.domains.legal.contract_redline import build_redline_docx
 # Shared with the chat path so both entry points escalate identically.
-from app.services.legal_approval_service import create_legal_approval as _create_legal_approval
-from app.services.legal_document_generator import generate_legal_document
-from app.services.legal_draft_storage import read_legal_artifact, save_legal_artifact
-from app.services.legal_documents import list_document_schemas, validate_document_fields
-from app.services.notification_service import create_notification
-from app.services.rag_service import hybrid_search_documents
-from app.services.it_service import handle_it_request
-from app.services.finance_service import audit_invoice_and_reconcile
-from app.services.sales_service import handle_sales_request
+from app.domains.legal.legal_approval_service import create_legal_approval as _create_legal_approval
+from app.domains.legal.legal_document_generator import generate_legal_document
+from app.domains.legal.legal_draft_storage import read_legal_artifact, save_legal_artifact
+from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
+from app.domains.platform.notification_service import create_notification
+from app.domains.knowledge.rag_service import hybrid_search_documents
+from app.core.agent_status import refuse_under_development
+from app.domains.incubating.finance_service import audit_invoice_and_reconcile
+from app.domains.incubating.it_service import handle_it_request
+from app.domains.incubating.sales_service import handle_sales_request
 
 router = APIRouter(tags=["Specialized Domain APIs"])
+
+
+def _legal_tool_required(tool_name: str):
+    """Refuse a Legal action whose tool is switched off for the tenant's Legal agent.
+
+    These endpoints used to run whatever the configuration page said: switching a Legal
+    tool off there changed nothing, so an operator who revoked it had no way to know it
+    was still in use.
+    """
+
+    def dependency(
+        db: Session = Depends(get_db),
+        current_user: User = Depends(get_current_active_user),
+    ) -> None:
+        agent = db.query(AIAgent).filter(
+            AIAgent.tenant_id == current_user.tenant_id,
+            AIAgent.role_code == "LEGAL",
+        ).first()
+        # Plugin narrowing counts here too: these endpoints used to check the agent's
+        # own grants only, so a tenant package withdrawing a Legal tool left its page
+        # working.
+        if agent is None or grant_decision(
+            tool_name,
+            tools_access=agent.tools_access,
+            allowed_actions=agent.allowed_actions,
+            disallowed_actions=agent.disallowed_actions,
+            restriction=resolve_skill_restriction(db, current_user.tenant_id, "LEGAL"),
+        ) is not None:
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    f"Công cụ `{tool_name}` chưa được bật cho Legal Counsel AI. "
+                    "Admin hoặc Owner có thể bật trong phần Cấu hình AI Employees."
+                ),
+            )
+
+    return Depends(dependency)
 MAX_LEGAL_FILE_BYTES = 10 * 1024 * 1024
 LEGAL_DOCUMENT_APPROVERS = {"Owner", "Admin", "CEO"}
 
@@ -300,7 +340,11 @@ def validate_legal_document_endpoint(
         raise HTTPException(status_code=422, detail=str(exc)) from exc
 
 
-@router.post("/legal/audit-contract", summary="Audit contract text for high-risk clauses")
+@router.post(
+    "/legal/audit-contract",
+    summary="Audit contract text for high-risk clauses",
+    dependencies=[_legal_tool_required("audit_contract_risk")],
+)
 def audit_contract_endpoint(
     req: ContractAuditRequest,
     db: Session = Depends(get_db),
@@ -327,7 +371,11 @@ def audit_contract_endpoint(
     return result
 
 
-@router.post("/legal/review-document", summary="Extract and review a legal document")
+@router.post(
+    "/legal/review-document",
+    summary="Extract and review a legal document",
+    dependencies=[_legal_tool_required("audit_contract_risk")],
+)
 async def review_legal_document(
     file: UploadFile = File(...),
     represented_party: str = Form(...),
@@ -498,7 +546,11 @@ def delete_contract_review_decision(
     return payload
 
 
-@router.post("/legal/compare-documents", summary="Compare two contract versions")
+@router.post(
+    "/legal/compare-documents",
+    summary="Compare two contract versions",
+    dependencies=[_legal_tool_required("compare_contract_versions")],
+)
 async def compare_legal_documents(
     old_file: UploadFile = File(...),
     new_file: UploadFile = File(...),
@@ -510,7 +562,11 @@ async def compare_legal_documents(
     return {"old_document": old_name, "new_document": new_name, **result}
 
 
-@router.post("/legal/privacy-check", summary="Detect personal and restricted data")
+@router.post(
+    "/legal/privacy-check",
+    summary="Detect personal and restricted data",
+    dependencies=[_legal_tool_required("check_sensitive_data")],
+)
 async def privacy_check_document(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -525,7 +581,11 @@ async def privacy_check_document(
     return result
 
 
-@router.post("/legal/license-check", summary="Inspect a software dependency manifest")
+@router.post(
+    "/legal/license-check",
+    summary="Inspect a software dependency manifest",
+    dependencies=[_legal_tool_required("check_software_licenses")],
+)
 async def license_check_manifest(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
@@ -555,6 +615,7 @@ def generate_legal_document_endpoint(
     "/legal/document-drafts",
     status_code=201,
     summary="Generate and submit a legal document for approval",
+    dependencies=[_legal_tool_required("generate_legal_document")],
 )
 def submit_legal_document_draft(
     req: LegalDocumentGenerateRequest,
@@ -812,6 +873,8 @@ def create_jira_ticket_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    # The IT agent is under development: this issued a Jira key no Jira ever saw.
+    refuse_under_development("IT")
     return handle_it_request(db, current_user, f"{req.summary} - {req.description or ''}")
 
 
@@ -821,6 +884,8 @@ def audit_invoice_endpoint(
     req: AuditInvoiceRequest,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    # The Finance agent is under development: every invoice was checked against one fixed PO.
+    refuse_under_development("FINANCE")
     return audit_invoice_and_reconcile(req.invoice_text)
 
 
@@ -830,9 +895,12 @@ def generate_quotation_endpoint(
     req: SalesQuotationRequest,
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    # The Sales agent is under development: every request was quoted the same camera.
+    refuse_under_development("SALES")
     return handle_sales_request(req.item_query, customer_name=req.customer_name)
 
 
 @router.get("/sales/download-quote/{file_id}", response_class=PlainTextResponse, summary="Download sales PDF quotation file")
 def download_quote(file_id: str):
+    refuse_under_development("SALES")
     return f"SIMULATED PDF QUOTATION FILE FOR {file_id}\nOfficial AI Workforce Quotation Document."

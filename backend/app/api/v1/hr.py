@@ -22,8 +22,8 @@ from app.models.models import (
     User,
     UserProfile,
 )
-from app.services.audit_events import add_audit_event
-from app.services.hr_service import (
+from app.domains.platform.audit_events import add_audit_event
+from app.domains.hr.hr_service import (
     can_manage_hr,
     can_view_employee,
     create_leave_request,
@@ -35,8 +35,8 @@ from app.services.hr_service import (
     serialize_leave_request,
     serialize_onboarding,
 )
-from app.services.notification_service import create_notification
-from app.services.hr_export_service import create_hr_directory_export
+from app.domains.platform.notification_service import create_notification
+from app.domains.hr.hr_export_service import create_hr_directory_export
 
 router = APIRouter(prefix="/hr", tags=["AI HR Operations"])
 

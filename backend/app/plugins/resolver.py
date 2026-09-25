@@ -109,7 +109,7 @@ def build_prompt_overlay(manifests: Iterable[PluginManifest]) -> dict[str, str]:
     """Fold prompt overrides onto the shipped defaults, in the order given."""
     # Deferred for the same reason as in manifest.py: importing the agents package at
     # module level would close an import cycle back into this module.
-    from app.services.agents.prompt_registry import default_prompt
+    from app.agents.prompt_registry import default_prompt
 
     overlay: dict[str, str] = {}
     for manifest in manifests:
@@ -160,21 +160,52 @@ def resolve_prompt_overlay(
 
     Two sources are layered, packages first and the administrator's own text last, so a
     person editing the text box can see their wording win over what a package said. The
-    text box only ever reaches the `answer` slot; see the column's comment for why.
+    text box only ever reaches the slot that writes this role's replies; see the column's
+    comment for why. It used to be HR's `answer` slot whatever the role, so text entered
+    for the Legal agent landed in a slot the Legal flow never reads and changed nothing.
 
     Returning None rather than an empty mapping keeps the default path free of any
     string work for the overwhelming majority of tenants, which customise nothing.
     """
-    from app.services.agents.prompt_registry import default_prompt
+    from app.agents.prompt_registry import answer_slot_for_role, default_prompt
 
     overlay = build_prompt_overlay(installed_manifests(db, tenant_id, role_code))
 
     own_text = tenant_answer_overlay(db, tenant_id, role_code)
-    if own_text:
-        base = overlay.get("answer") or default_prompt("answer")
-        overlay["answer"] = f"{base}\n\n{own_text}"
+    answer_slot = answer_slot_for_role(role_code)
+    if own_text and answer_slot:
+        base = overlay.get(answer_slot) or default_prompt(answer_slot)
+        overlay[answer_slot] = f"{base}\n\n{own_text}"
 
     return overlay or None
+
+
+def tenant_graph_instructions(db: Session, tenant_id: uuid.UUID, role_code: str) -> str:
+    """A tenant's conventions for an agent that runs through LangGraph.
+
+    The graph has its own prompts, so the shipped text of a slot means nothing there;
+    what carries over is what the tenant *added*: every package's `append` text for the
+    role's answer slot, then the administrator's own text, in the order the deterministic
+    flow layers them. A `replace` override is left out -- it rewrites a prompt written for
+    the deterministic flow, output format included, which the graph does not use.
+    The graph places this after its own rules, so it can change tone and terminology but
+    not what the agent is allowed to do.
+    """
+    from app.agents.prompt_registry import answer_slot_for_role
+
+    answer_slot = answer_slot_for_role(role_code)
+    parts: list[str] = []
+    if answer_slot:
+        parts = [
+            override.text.strip()
+            for manifest in installed_manifests(db, tenant_id, role_code)
+            for override in manifest.prompts
+            if override.slot == answer_slot and override.mode == "append" and override.text.strip()
+        ]
+    own_text = tenant_answer_overlay(db, tenant_id, role_code)
+    if own_text:
+        parts.append(own_text)
+    return "\n\n".join(parts)
 
 
 def resolve_skill_restriction(

@@ -1,158 +1,60 @@
-"""Canonical LangChain tool definitions backed by the internal gateway."""
+"""LangChain tools built from the backend's tool contracts.
+
+The backend is the single source of every tool's name, description, input schema, action
+class, retry policy and terminal flag, and it runs the tool. The AI service used to keep
+its own copy of all of that, which drifted; now it asks the backend each turn
+(``ToolGatewayClient.list_tools``) and builds a tool that calls straight back through the
+gateway. The backend validates every input against the authoritative schema.
+"""
 
 from __future__ import annotations
 
-from dataclasses import dataclass
-from enum import StrEnum
 from typing import Any
 
 from langchain_core.tools import BaseTool, StructuredTool
-from pydantic import BaseModel
 
 from app.tools.gateway import ToolGatewayClient
-from app.tools.schemas import (
-    CreateTaskInput,
-    EmployeeLookupInput,
-    ExpenseLookupInput,
-    GenerateLegalDocumentInput,
-    LeaveLookupInput,
-    RAGSearchInput,
-    SubmitApprovalInput,
+
+_METADATA_KEYS = (
+    "action",
+    "allowed_roles",
+    "allowed_departments",
+    "acl_match",
+    "timeout_seconds",
+    "retry_policy",
+    "audit_action",
+    "terminal",
 )
 
 
-class ToolAction(StrEnum):
-    READ_ONLY = "READ_ONLY"
-    WRITE = "WRITE"
-    EXTERNAL_ACTION = "EXTERNAL_ACTION"
+def tool_from_contract(contract: dict[str, Any], gateway: ToolGatewayClient) -> BaseTool:
+    name = str(contract["name"])
+    retry = contract.get("retry_policy") or {}
+    policy = {
+        "timeout_seconds": float(contract.get("timeout_seconds") or 30),
+        "max_attempts": int(retry.get("max_attempts") or 1),
+        "backoff_seconds": float(retry.get("backoff_seconds") or 0.25),
+        "retryable_status_codes": tuple(retry.get("retryable_status_codes") or (429, 502, 503, 504)),
+    }
 
+    def invoke_gateway(**kwargs: Any) -> Any:
+        return gateway.invoke(name, kwargs, **policy)
 
-@dataclass(frozen=True)
-class RetryPolicy:
-    max_attempts: int
-    backoff_seconds: float = 0.25
-    retryable_status_codes: tuple[int, ...] = (429, 502, 503, 504)
+    async def ainvoke_gateway(**kwargs: Any) -> Any:
+        return await gateway.ainvoke(name, kwargs, **policy)
 
-
-@dataclass(frozen=True)
-class ToolDescriptor:
-    name: str
-    description: str
-    input_schema: type[BaseModel]
-    action: ToolAction
-    allowed_roles: frozenset[str]
-    allowed_departments: frozenset[str]
-    timeout_seconds: float
-    retry: RetryPolicy
-    audit_action: str
-    acl_match: str = "ROLE_AND_DEPARTMENT"
-
-    @property
-    def metadata(self) -> dict[str, Any]:
-        return {
-            "action": self.action.value,
-            "allowed_roles": sorted(self.allowed_roles),
-            "allowed_departments": sorted(self.allowed_departments),
-            "acl_match": self.acl_match,
-            "timeout_seconds": self.timeout_seconds,
-            "retry_policy": {
-                "max_attempts": self.retry.max_attempts,
-                "backoff_seconds": self.retry.backoff_seconds,
-                "retryable_status_codes": list(self.retry.retryable_status_codes),
-            },
-            "audit_action": self.audit_action,
-            "gateway_only": True,
-        }
-
-    def as_langchain_tool(self, gateway: ToolGatewayClient) -> BaseTool:
-        def invoke_gateway(**kwargs: Any) -> Any:
-            payload = self.input_schema.model_validate(kwargs).model_dump(mode="json")
-            return gateway.invoke(
-                self.name,
-                payload,
-                timeout_seconds=self.timeout_seconds,
-                max_attempts=self.retry.max_attempts,
-                backoff_seconds=self.retry.backoff_seconds,
-                retryable_status_codes=self.retry.retryable_status_codes,
-            )
-
-        async def ainvoke_gateway(**kwargs: Any) -> Any:
-            payload = self.input_schema.model_validate(kwargs).model_dump(mode="json")
-            return await gateway.ainvoke(
-                self.name,
-                payload,
-                timeout_seconds=self.timeout_seconds,
-                max_attempts=self.retry.max_attempts,
-                backoff_seconds=self.retry.backoff_seconds,
-                retryable_status_codes=self.retry.retryable_status_codes,
-            )
-
-        return StructuredTool.from_function(
-            func=invoke_gateway,
-            coroutine=ainvoke_gateway,
-            name=self.name,
-            description=self.description,
-            args_schema=self.input_schema,
-            metadata=self.metadata,
-        )
-
-
-class ToolRegistry:
-    def __init__(self, tools: tuple[ToolDescriptor, ...] = ()) -> None:
-        self._tools: dict[str, ToolDescriptor] = {}
-        for descriptor in tools:
-            self.register(descriptor)
-
-    def register(self, tool: ToolDescriptor) -> None:
-        if tool.name in self._tools:
-            raise ValueError(f"Duplicate tool: {tool.name}")
-        self._tools[tool.name] = tool
-
-    def get(self, name: str) -> ToolDescriptor:
-        return self._tools[name]
-
-    def all(self) -> tuple[ToolDescriptor, ...]:
-        return tuple(self._tools.values())
-
-    def langchain_tools(self, gateway: ToolGatewayClient) -> list[BaseTool]:
-        return [descriptor.as_langchain_tool(gateway) for descriptor in self.all()]
-
-
-def _tool(
-    name: str,
-    description: str,
-    schema: type[BaseModel],
-    action: ToolAction,
-    roles: set[str],
-    departments: set[str],
-    timeout: float,
-    audit_action: str,
-    acl_match: str = "ROLE_AND_DEPARTMENT",
-) -> ToolDescriptor:
-    return ToolDescriptor(
+    metadata = {key: contract.get(key) for key in _METADATA_KEYS}
+    metadata["terminal"] = bool(contract.get("terminal"))
+    metadata["gateway_only"] = True
+    return StructuredTool.from_function(
+        func=invoke_gateway,
+        coroutine=ainvoke_gateway,
         name=name,
-        description=description,
-        input_schema=schema,
-        action=action,
-        allowed_roles=frozenset(roles),
-        allowed_departments=frozenset(departments),
-        timeout_seconds=timeout,
-        retry=RetryPolicy(max_attempts=3 if action == ToolAction.READ_ONLY else 1),
-        audit_action=audit_action,
-        acl_match=acl_match,
+        description=str(contract.get("description") or name),
+        args_schema=contract.get("input_schema") or {"type": "object", "properties": {}},
+        metadata=metadata,
     )
 
 
-tool_registry = ToolRegistry((
-    _tool("rag_search", "Search governed tenant knowledge through the backend.", RAGSearchInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20, "tool.rag.search"),
-    _tool("employee_lookup", "Read an ACL-filtered employee profile through the backend.", EmployeeLookupInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10, "tool.employee.read"),
-    _tool("leave_lookup", "Read an ACL-filtered leave balance through the backend.", LeaveLookupInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10, "tool.leave.read"),
-    _tool("create_task", "Create a tenant task through the backend.", CreateTaskInput, ToolAction.WRITE, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.task.create"),
-    _tool("expense_lookup", "Read AI spend and usage costs through the backend.", ExpenseLookupInput, ToolAction.READ_ONLY, {"Owner", "Admin", "CEO", "Manager"}, {"FINANCE"}, 20, "tool.expense.read", "ROLE_OR_DEPARTMENT"),
-    _tool("generate_legal_document", "Generate a legal draft for human approval through the backend.", GenerateLegalDocumentInput, ToolAction.WRITE, {"Owner", "Admin", "CEO"}, {"LEGAL"}, 45, "tool.legal.generate", "ROLE_OR_DEPARTMENT"),
-    _tool("submit_approval_request", "Create a human approval gate through the backend.", SubmitApprovalInput, ToolAction.EXTERNAL_ACTION, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.approval.submit"),
-))
-
-
 def build_langchain_tools(gateway: ToolGatewayClient) -> list[BaseTool]:
-    return tool_registry.langchain_tools(gateway)
+    return [tool_from_contract(contract, gateway) for contract in gateway.list_tools()]

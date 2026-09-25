@@ -1,13 +1,13 @@
 from types import SimpleNamespace
 
 from app.api.v1 import specialized
-from app.services.contract_review import (
+from app.domains.legal.contract_review import (
     detect_contract_type,
     review_contract,
     split_contract_clauses,
 )
-from app.services.document_parser import extract_file_text
-from app.services.legal_document_generator import generate_legal_document
+from app.domains.knowledge.document_parser import extract_file_text
+from app.domains.legal.legal_document_generator import generate_legal_document
 
 
 SOFTWARE_CONTRACT = """

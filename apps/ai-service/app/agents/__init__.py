@@ -1,3 +1,1 @@
-from app.agents.base.registry import agent_registry
-
-__all__ = ["agent_registry"]
+"""One LangGraph graph per agent, built on the shared nodes in agents/base."""

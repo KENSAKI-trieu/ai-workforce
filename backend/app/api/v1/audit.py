@@ -11,8 +11,8 @@ from app.core.database import get_db
 from app.core.security import get_current_active_user, RoleRequired
 from app.models.models import User
 from app.schemas.costs import CostSummaryResponse
-from app.services.audit_service import get_audit_logs, get_llm_cost_summary
-from app.services.audit_events import query_audit_events
+from app.domains.platform.audit_service import get_audit_logs, get_llm_cost_summary
+from app.domains.platform.audit_events import query_audit_events
 
 router = APIRouter(prefix="/audit", tags=["Audit & Billing"])
 

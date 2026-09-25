@@ -19,8 +19,8 @@ from app.models.models import (
     User,
     WorkflowStepExecution,
 )
-from app.services.support_workflow import initialize_steps
-from app.services.work_queue import enqueue_job, queue_stats
+from app.domains.support.support_workflow import initialize_steps
+from app.domains.platform.work_queue import enqueue_job, queue_stats
 
 router = APIRouter(prefix="/customer-support", tags=["Customer Support Operations"])
 ADMIN_ROLES = {"Owner", "Admin", "CEO"}

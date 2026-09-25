@@ -12,6 +12,8 @@ __pycache__/
 .pytest_cache/
 backend/venv/
 backend/.venv/
+apps/ai-service/.venv/
+apps/ai-service/venv/
 backend/data/
 apps/ai-service/.cache/
 apps/ai-service/models/

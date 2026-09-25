@@ -1,3 +1,5 @@
-from app.agents.finance.agent import agent
+"""Finance agent -- under development.
 
-__all__ = ["agent"]
+The backend answers this role with its under-development reply and never routes it
+here; the policy is kept so the agent can be built out.
+"""

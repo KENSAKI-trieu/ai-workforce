@@ -47,6 +47,8 @@ interface Agent {
   knowledge_access: string[];
   avatar_emoji?: string;
   description?: string;
+  // Listed but not open for chat yet; the backend refuses its turns as well.
+  under_development?: boolean;
 }
 
 interface Citation {
@@ -149,6 +151,7 @@ export default function AgentPage() {
   const router = useRouter();
   const { isAuthenticated, hasHydrated, user } = useAuthStore();
   const [agent, setAgent] = useState<Agent | null>(null);
+  const underDevelopment = Boolean(agent?.under_development);
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -405,6 +408,11 @@ export default function AgentPage() {
         `/api/v1/agents/${role}/configuration-options`,
       );
       setConfigurationOptions(data);
+      // Tools the role never uses are not offered, so they are dropped from what Save
+      // sends rather than kept as grants nobody can see.
+      const offered = new Set(data.tools.map((tool) => tool.name));
+      setTools((current) => current.filter((tool) => offered.has(tool)));
+      setDeniedTools((current) => current.filter((tool) => offered.has(tool)));
     } catch (reason) {
       setError(messageFrom(reason));
       setShowSettings(false);
@@ -693,6 +701,12 @@ export default function AgentPage() {
                   </button>
                 </div>
               )}
+              {underDevelopment && (
+                <div className="ai-chat-error" role="status" style={{ background: "#FFFBEB", color: "#92400E", borderColor: "#FDE68A" }}>
+                  <strong>Under development.</strong>&nbsp;{agent?.name || role} đang được phát triển nên chưa nhận tin nhắn.
+                  Bạn có thể dùng Trợ lý Nhân sự, Pháp lý hoặc Tri thức.
+                </div>
+              )}
               <form className="ai-chat-composer" onSubmit={sendMessage}>
                 <textarea
                   ref={composerRef}
@@ -700,13 +714,17 @@ export default function AgentPage() {
                   value={message}
                   onChange={(event) => setMessage(event.target.value)}
                   onKeyDown={handleComposerKeyDown}
-                  placeholder={isReadOnly ? "Hội thoại này đang ở chế độ chỉ đọc" : `Nhắn tin cho ${agent?.name || role}…`}
-                  disabled={busy || !agent?.is_active || isReadOnly}
+                  placeholder={
+                    underDevelopment
+                      ? "Agent này đang được phát triển (Under development)"
+                      : isReadOnly ? "Hội thoại này đang ở chế độ chỉ đọc" : `Nhắn tin cho ${agent?.name || role}…`
+                  }
+                  disabled={busy || !agent?.is_active || isReadOnly || underDevelopment}
                   aria-label="Nội dung tin nhắn"
                 />
                 <button
                   type="submit"
-                  disabled={busy || !message.trim() || !agent?.is_active || isReadOnly}
+                  disabled={busy || !message.trim() || !agent?.is_active || isReadOnly || underDevelopment}
                   aria-label="Gửi tin nhắn"
                   title="Gửi"
                 >

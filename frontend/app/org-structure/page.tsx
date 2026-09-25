@@ -150,35 +150,42 @@ export default function OrgStructurePage() {
     }
   }, []);
 
+  // Deferred a tick, matching the other admin pages: the lint rule forbids calling
+  // setState synchronously inside an effect body, which `loadTree` does first thing.
   useEffect(() => {
     if (!hasHydrated) return;
     if (!isAuthenticated) {
       router.replace("/login");
       return;
     }
-    void loadTree();
+    const timer = window.setTimeout(() => void loadTree(), 0);
+    return () => window.clearTimeout(timer);
   }, [hasHydrated, isAuthenticated, loadTree, router]);
 
-  // Reset the edit form whenever a different position is opened.
+  // Reset the edit form whenever a different position is opened. Deferred for the same
+  // reason; the cleanup also drops a holders reply for a position no longer open.
   useEffect(() => {
     if (!selected) return;
-    setDraftName(selected.name);
-    setDraftParent(selected.parent_id ?? "");
-    setDraftPermissions(new Set(selected.permissions));
-    setHolders([]);
     let cancelled = false;
-    void (async () => {
-      try {
-        const { data } = await api.get<{ holders: Holder[] }>(
-          `/api/v1/positions/${selected.id}/holders`,
-        );
-        if (!cancelled) setHolders(data.holders);
-      } catch {
-        if (!cancelled) setHolders([]);
-      }
-    })();
+    const timer = window.setTimeout(() => {
+      setDraftName(selected.name);
+      setDraftParent(selected.parent_id ?? "");
+      setDraftPermissions(new Set(selected.permissions));
+      setHolders([]);
+      void (async () => {
+        try {
+          const { data } = await api.get<{ holders: Holder[] }>(
+            `/api/v1/positions/${selected.id}/holders`,
+          );
+          if (!cancelled) setHolders(data.holders);
+        } catch {
+          if (!cancelled) setHolders([]);
+        }
+      })();
+    }, 0);
     return () => {
       cancelled = true;
+      window.clearTimeout(timer);
     };
   }, [selected]);
 

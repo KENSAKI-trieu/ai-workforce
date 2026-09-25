@@ -14,8 +14,8 @@ answers with no retrieval and no error. Keeping the gateway grants here, and com
 into every default map, is what stops that from happening per-role by accident.
 
 This module is deliberately import-free data. ``app.tools.registry`` executes
-``build_tool_registry()`` at import time, which imports ``app.services.*``; importing it
-from ``app.services.auth_service`` would close a cycle through ``app/services/__init__.py``.
+``build_tool_registry()`` at import time, which imports the domain services and the chat
+flows; importing it from ``app.domains.platform.auth_service`` would close a cycle.
 ``tests/test_tool_gateway.py::test_gateway_grant_names_exist_in_registry`` asserts these
 names against the registry instead, so drift fails a test rather than a production request.
 """
@@ -33,9 +33,27 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "expense_lookup": "Đọc chi phí và mức sử dụng AI qua gateway.",
     "generate_legal_document": "Tạo bản nháp văn bản pháp lý DOCX/PDF chờ người duyệt.",
     "submit_approval_request": "Tạo cổng phê duyệt cho hành động cần con người xác nhận.",
+    # Shares its name with the Legal capability on purpose: one grant switches contract
+    # review on or off in the deterministic chat and through LangGraph alike.
+    "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
 }
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
+
+# What a user is told a tool is when the graph refuses a request because the organisation
+# turned it off. Short, because it is read inside a sentence; the descriptions above are
+# written for administrators choosing grants.
+GATEWAY_TOOL_LABELS: dict[str, str] = {
+    "rag_search": "tra cứu kho tri thức",
+    "employee_lookup": "tra cứu hồ sơ nhân viên",
+    "leave_lookup": "tra cứu quỹ phép",
+    "create_task": "tạo task",
+    "expense_lookup": "tra cứu chi phí",
+    "generate_legal_document": "soạn văn bản pháp lý",
+    "submit_approval_request": "gửi yêu cầu phê duyệt",
+    "audit_contract_risk": "rà soát rủi ro hợp đồng",
+}
+assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
 
 # Default gateway grants per agent role, kept at least privilege: a tool absent here can
 # still be enabled per tenant through the configuration API, and the gateway's own
@@ -46,9 +64,10 @@ GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
 # sections HR policy will release, and on this path the argument is chosen by the model.
 # Granting them is an explicit tenant decision, not a default.
 #
-# HR is empty on purpose: the backend routes that role to its own deterministic executor
-# and never through the graph, so gateway grants would only widen the configuration UI.
-# See the note in apps/ai-service/app/orchestration/subgraphs.py before changing this.
+# HR gets knowledge search only. Its other capabilities are HR-specific names checked by
+# its own deterministic executor; search became the same `rag_search` everywhere when the
+# tool names were unified. See apps/ai-service/app/agents/hr/tools.py before granting HR
+# any other gateway tool.
 GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
     "CEO": (
         "rag_search",
@@ -57,8 +76,13 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
         "generate_legal_document",
         "submit_approval_request",
     ),
-    "HR": (),
-    "LEGAL": ("rag_search", "generate_legal_document", "submit_approval_request"),
+    "HR": ("rag_search",),
+    "LEGAL": (
+        "rag_search",
+        "audit_contract_risk",
+        "generate_legal_document",
+        "submit_approval_request",
+    ),
     "IT": ("rag_search", "create_task", "submit_approval_request"),
     "FINANCE": ("rag_search", "expense_lookup", "create_task", "submit_approval_request"),
     "SALES": ("rag_search", "create_task", "submit_approval_request"),
@@ -69,6 +93,25 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
 def gateway_grants(role_code: str) -> tuple[str, ...]:
     """Gateway tool names granted to a role by default."""
     return GATEWAY_TOOL_GRANTS.get(role_code.upper(), ())
+
+
+def disabled_gateway_tools(
+    role_code: str, tools_access: list[str] | None, allowed: list[str]
+) -> list[dict[str, str]]:
+    """Gateway tools this agent would have but its organisation turned off.
+
+    "Would have" is the role's default grants plus whatever `tools_access` lists, so a tool
+    dropped from `tools_access` altogether still counts as switched off rather than as a
+    capability the agent never had. `allowed` is the effective grant after every narrowing:
+    `allowed_actions`, `disallowed_actions` and the tenant's plugins.
+    """
+    from app.core.tool_permissions import canonical_tool_names
+
+    candidates = set(gateway_grants(role_code)) | set(canonical_tool_names(tools_access))
+    return [
+        {"name": name, "label": GATEWAY_TOOL_LABELS[name]}
+        for name in sorted((candidates & GATEWAY_TOOLS) - set(allowed))
+    ]
 
 
 def with_gateway_grants(role_code: str, capability_names: list[str]) -> list[str]:
@@ -89,8 +132,10 @@ def effective_tool_grants(
     which then spent a turn choosing a call the gateway answered with 403. Both sides now
     compute the grant the same way, from the authoritative side.
     """
-    granted = set(tools_access or [])
-    permitted = set(allowed_actions or [])
+    from app.core.tool_permissions import canonical_tool_names
+
+    granted = set(canonical_tool_names(tools_access))
+    permitted = set(canonical_tool_names(allowed_actions))
     if permitted:
         granted &= permitted
-    return sorted(granted - set(disallowed_actions or []))
+    return sorted(granted - set(canonical_tool_names(disallowed_actions)))

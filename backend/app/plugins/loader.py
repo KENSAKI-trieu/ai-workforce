@@ -36,7 +36,7 @@ def _known_tools_and_roles() -> tuple[frozenset[str], frozenset[str]]:
     # pure cost.
     from app.core.gateway_tools import GATEWAY_TOOLS
     from app.core.hr_capabilities import HR_CORE_TOOLS
-    from app.services.auth_service import DEFAULT_AGENT_TOOLS
+    from app.domains.platform.auth_service import DEFAULT_AGENT_TOOLS
 
     tools: set[str] = set(GATEWAY_TOOLS) | set(HR_CORE_TOOLS)
     for granted in DEFAULT_AGENT_TOOLS.values():

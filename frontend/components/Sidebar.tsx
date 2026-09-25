@@ -125,6 +125,29 @@ function NewBadge({ locale }: { locale: AppLocale }) {
   );
 }
 
+// Listed so the product shows where it is heading; the backend refuses its chat.
+function UnderDevelopmentBadge() {
+  return (
+    <span
+      title="Under development"
+      style={{
+        fontSize: "0.58rem",
+        fontWeight: 700,
+        padding: "2px 6px",
+        borderRadius: "999px",
+        background: "#FEF3C7",
+        color: "#92400E",
+        letterSpacing: "0.02em",
+        lineHeight: 1,
+        flexShrink: 0,
+        whiteSpace: "nowrap",
+      }}
+    >
+      Under development
+    </span>
+  );
+}
+
 // ─── Status dot ─────────────────────────────────────────────────────────────
 function OnlineDot({ online }: { online: boolean }) {
   return (
@@ -242,6 +265,23 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
     void loadUnread();
     const interval = window.setInterval(() => void loadUnread(), 60_000);
     return () => { active = false; window.clearInterval(interval); };
+  }, [user]);
+
+  // Which agents are still being built comes from the backend, not from this list.
+  const [underDevelopment, setUnderDevelopment] = useState<Set<string>>(new Set());
+  useEffect(() => {
+    if (!user) return;
+    let active = true;
+    api.get<Array<{ role_code: string; under_development?: boolean }>>("/api/v1/agents/")
+      .then(({ data }) => {
+        if (active) {
+          setUnderDevelopment(new Set(data.filter((agent) => agent.under_development).map((agent) => agent.role_code)));
+        }
+      })
+      .catch(() => {
+        // Without the list the sidebar still works; the chat page shows the state too.
+      });
+    return () => { active = false; };
   }, [user]);
 
   const isAgentsGroupActive = AGENTS.some((a) => pathname === a.path);
@@ -561,6 +601,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
 
                       {/* NEW badge */}
                       {agent.isNew && <NewBadge locale={locale} />}
+                      {underDevelopment.has(agent.role) && <UnderDevelopmentBadge />}
 
                       {/* Online dot */}
                       <OnlineDot online={isOnline} />

@@ -25,12 +25,12 @@ import time
 import pytest
 
 from app.core.config import settings
-from app.services.agents.hr_llm_flow import classify_hr_request, classify_leave_draft_turn
-from app.services.agents.legal_llm_flow import (
+from app.agents.hr.llm_flow import classify_hr_request, classify_leave_draft_turn
+from app.agents.legal.llm_flow import (
     classify_legal_request,
     extract_represented_party,
 )
-from app.services.ai_service_client import AIServiceClient, get_ai_service_client
+from app.clients.ai_service_client import AIServiceClient, get_ai_service_client
 
 LIVE_URL = os.environ.get("LIVE_AI_SERVICE_URL", "").strip()
 LIVE_TOKEN = os.environ.get("LIVE_AI_SERVICE_TOKEN", "").strip()
@@ -124,14 +124,14 @@ def test_legal_intent_is_read_from_meaning_not_keywords(live_client, message, ac
     assert result.intent in accepted
 
 
-_REFUSAL = {"DECLINE_REVIEW", "CANCEL"}
+# A CANCEL from the model is folded into DECLINE_REVIEW before it reaches the caller.
+_REFUSAL = {"DECLINE_REVIEW"}
 
 
 @pytest.mark.parametrize(
     "message,accepted",
     [
-        # Refusing and calling off are the same outcome for the caller, so either label
-        # is correct here; what matters is that neither reads as a yes.
+        # What matters is that a refusal never reads as a yes.
         ("Đừng rà soát, tôi chỉ hỏi thôi", _REFUSAL),
         ("thôi khỏi, để tôi hỏi phòng pháp chế", _REFUSAL),
         ("ừ rà soát giúp mình đi", {"CONFIRM_REVIEW"}),

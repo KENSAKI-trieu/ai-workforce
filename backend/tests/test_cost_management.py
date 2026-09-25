@@ -7,7 +7,7 @@ import pytest
 
 from app.core.security import get_password_hash
 from app.models.models import Tenant, User
-from app.services.audit_service import log_llm_cost, resolve_model_for_task
+from app.domains.platform.audit_service import log_llm_cost, resolve_model_for_task
 
 
 @pytest.fixture(scope="module")

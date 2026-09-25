@@ -13,8 +13,10 @@ def _audit() -> dict[str, str]:
 
 def test_registry_exposes_governance_metadata() -> None:
     definitions = {item.name: item for item in tool_registry.all()}
-    assert len(definitions) == 7
+    assert len(definitions) == 8
     assert definitions["rag_search"].action == ToolAction.READ_ONLY
+    # Runs without a prior human approval, like a review in the deterministic chat.
+    assert definitions["audit_contract_risk"].action == ToolAction.READ_ONLY
     assert definitions["create_task"].action == ToolAction.WRITE
     assert definitions["submit_approval_request"].action == ToolAction.EXTERNAL_ACTION
     assert definitions["rag_search"].retry.max_attempts == 3

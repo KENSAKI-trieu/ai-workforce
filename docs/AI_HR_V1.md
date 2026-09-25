@@ -107,7 +107,7 @@ Các endpoint đều nằm dưới `/api/v1/hr`:
 
 ## AI HR tools
 
-- `hybrid_rag_search`
+- `rag_search`
 - `get_employee_basic_profile`
 - `get_employee_private_profile`
 - `get_employee_contract_summary`

@@ -24,7 +24,7 @@ from app.schemas.costs import (
     TokenStatisticsResponse,
     WorkflowCostResponse,
 )
-from app.services.audit_service import (
+from app.domains.platform.audit_service import (
     get_llm_cost_summary,
     get_cost_by_agent,
     get_cost_by_employee,

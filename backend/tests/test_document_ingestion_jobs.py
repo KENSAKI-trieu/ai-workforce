@@ -9,9 +9,9 @@ import pytest
 
 from app.api.v1 import documents
 from app.models.models import DocumentChunk, KnowledgeDocument
-from app.services import document_ingestion
-from app.services.document_processing_events import clear_subscriber, mark_subscriber
-from app.services.embedding_service import get_embedding_service
+from app.domains.knowledge import document_ingestion
+from app.domains.knowledge.document_processing_events import clear_subscriber, mark_subscriber
+from app.domains.knowledge.embedding_service import get_embedding_service
 
 
 def _upload(client, headers, document_id: str):

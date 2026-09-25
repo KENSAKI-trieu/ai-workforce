@@ -10,7 +10,8 @@ from __future__ import annotations
 import pytest
 
 from app.models.models import LLMCostLog, User
-from app.services.agents import agent_executor, hr_llm_flow
+from tests.chat_patching import patch_chat
+from app.agents.hr import llm_flow as hr_llm_flow
 
 
 class FakeAIClient:
@@ -211,7 +212,7 @@ def test_metering_failure_never_costs_the_user_their_answer(
 
         return record
 
-    monkeypatch.setattr(agent_executor, "_hr_llm_usage_recorder", exploding_recorder)
+    patch_chat(monkeypatch, "_hr_llm_usage_recorder", exploding_recorder)
 
     answer = ask(client, employee_token_headers)
 
@@ -228,10 +229,12 @@ def test_metering_failure_never_costs_the_user_their_answer(
         ("gpt-4o", 12.50),
         # Provisional, carried over from gemini-2.5-flash until the real price is known.
         ("gemini-3.6-flash", 2.80),
+        # Provisional, carried over from gemini-2.5-flash-lite until the real price is known.
+        ("gemini-3.5-flash-lite", 0.50),
     ],
 )
 def test_the_default_chat_model_is_priced_as_itself(model, expected_cost_usd):
-    from app.services.cost_calculator import calculate_llm_cost
+    from app.domains.platform.cost_calculator import calculate_llm_cost
 
     cost = calculate_llm_cost(model, 1_000_000, 1_000_000)
 

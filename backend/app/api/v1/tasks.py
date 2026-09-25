@@ -21,7 +21,7 @@ from app.models.models import (
     TaskComment,
     User,
 )
-from app.services.notification_service import notify_users
+from app.domains.platform.notification_service import notify_users
 
 router = APIRouter(prefix="/tasks", tags=["Task Management"])
 

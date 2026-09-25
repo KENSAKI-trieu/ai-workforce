@@ -8,8 +8,8 @@ from app.models.models import (
     WorkflowApproval,
     WorkflowStepExecution,
 )
-from app.services.support_workflow import execute_support_case
-from app.services.work_queue import reserve_job
+from app.domains.support.support_workflow import execute_support_case
+from app.domains.platform.work_queue import reserve_job
 
 
 def test_idle_queue_timeout_is_not_a_worker_failure(monkeypatch):
@@ -17,7 +17,7 @@ def test_idle_queue_timeout_is_not_a_worker_failure(monkeypatch):
         def brpoplpush(self, *args, **kwargs):
             raise redis.exceptions.TimeoutError("idle blocking pop")
 
-    monkeypatch.setattr("app.services.work_queue._client", lambda: IdleQueue())
+    monkeypatch.setattr("app.domains.platform.work_queue._client", lambda: IdleQueue())
     assert reserve_job(timeout=1) is None
 
 

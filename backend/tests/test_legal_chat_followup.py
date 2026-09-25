@@ -42,7 +42,7 @@ def test_a_question_after_a_review_is_answered_not_re_asked(client, employee_tok
     assert "Bên A" not in follow_up["reply"]
     assert "audit_contract_risk" not in _tool_names(follow_up)
     # The turn reached the normal question path instead of the slot-filling loop.
-    assert _tool_names(follow_up)[0] == "hybrid_rag_search"
+    assert _tool_names(follow_up)[0] == "rag_search"
 
 
 def test_naming_a_party_after_a_review_does_not_re_audit_the_old_contract(

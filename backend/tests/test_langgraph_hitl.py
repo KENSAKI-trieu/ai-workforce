@@ -39,6 +39,14 @@ def _register(client, db):
         AIAgent.tenant_id == user.tenant_id,
         AIAgent.role_code == "HR",
     ).one()
+    # Granted here rather than assumed: HR's default grants are knowledge search only, so
+    # this passed only on a database whose HR row predated that and still held the tool.
+    # The module's outer transaction rolls the grant back.
+    for column in ("tools_access", "allowed_actions"):
+        granted = list(getattr(agent, column) or [])
+        if granted and "create_task" not in granted:
+            setattr(agent, column, [*granted, "create_task"])
+    db.flush()
     conversation_id = uuid.uuid4()
     workflow = _create_workflow(db, user, agent, conversation_id)
     interrupt_id = f"{conversation_id}:1:create_task"

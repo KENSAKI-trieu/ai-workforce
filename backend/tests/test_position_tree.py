@@ -132,6 +132,32 @@ def test_backfill_places_every_user_and_repeats_cleanly(transactional_db_session
     assert positions[owner.position_id].slug == "owner"
 
 
+def test_backfill_gives_a_department_job_its_own_position(transactional_db_session):
+    """A Manager in HR is the HR manager, not a generic manager.
+
+    The specialised positions used to be created only by a migration, which on a fresh
+    database runs before any user exists; the seeded HR manager then got `manager`, with
+    no HR permission, and nobody on a new install could start onboarding.
+    """
+    db = transactional_db_session
+    tenant = _tenant(db)
+    hr_manager = _user(db, tenant, role="Manager")
+    hr_manager.department = "HR"
+    it_manager = _user(db, tenant, role="Manager")
+    it_manager.department = "IT"
+    db.flush()
+
+    assert backfill_tenant_user_positions(db, tenant.id) == 2
+    positions = {p.id: p for p in db.query(Position).filter(Position.tenant_id == tenant.id)}
+    assert positions[hr_manager.position_id].slug == "hr-manager"
+    assert "hr.employee.manage" in positions[hr_manager.position_id].permissions
+    assert positions[hr_manager.position_id].parent_id is not None
+    assert positions[it_manager.position_id].slug == "manager"
+    # Only the job somebody holds is created.
+    assert not any(p.slug in {"hr-admin", "finance-admin", "finance-manager"} for p in positions.values())
+    assert backfill_tenant_user_positions(db, tenant.id) == 0
+
+
 def test_the_root_grants_every_permission_including_ones_added_later(
     transactional_db_session,
 ):

@@ -17,6 +17,7 @@ from sqlalchemy.orm import Session, object_session
 from app.core.permissions import (
     DEFAULT_POSITIONS,
     LEGACY_ROLE_TO_SLUG,
+    SPECIALISED_POSITIONS,
     PERMISSION_CODES,
     ROOT_POSITION_SLUG,
     SELF_LOCKOUT_GUARD_PERMISSIONS,
@@ -179,8 +180,50 @@ def ensure_tenant_positions(db: Session, tenant_id: uuid.UUID) -> dict[str, Posi
     return existing
 
 
+def _ensure_specialised_position(
+    db: Session, tenant_id: uuid.UUID, positions: dict[str, Position], role: str, department: str
+) -> Position | None:
+    """The department-specific position for a legacy role and department, created on first use.
+
+    Created only when somebody needs it, like migration p19c4e6a8d32 does for existing
+    tenants, so a company without an HR Admin does not gain an empty node. That migration
+    runs before any user exists on a fresh database, so without this the seeded HR manager
+    landed on the generic `manager` position -- which holds no HR permission -- and a new
+    install had nobody able to run HR operations.
+    """
+    spec = next(
+        (
+            item for item in SPECIALISED_POSITIONS
+            if item.legacy_role == role and item.legacy_department == department
+        ),
+        None,
+    )
+    if spec is None:
+        return None
+    position = positions.get(spec.slug)
+    if position is None:
+        parent = positions.get(spec.parent_slug)
+        position = Position(
+            id=uuid.uuid4(),
+            tenant_id=tenant_id,
+            parent_id=parent.id if parent else None,
+            name=spec.name,
+            slug=spec.slug,
+            permissions=normalize_permissions(spec.permissions),
+            grants_all=False,
+            sort_order=100 + SPECIALISED_POSITIONS.index(spec),
+        )
+        db.add(position)
+        db.flush()
+        positions[spec.slug] = position
+    return position
+
+
 def backfill_tenant_user_positions(db: Session, tenant_id: uuid.UUID) -> int:
     """Give every position-less user of a tenant the position matching their legacy role.
+
+    A role and department pair the old policy treated as its own job (a Manager in HR)
+    gets that job's position; everyone else gets the one for their role alone.
 
     Idempotent: users that already have a position are left alone, so running this twice
     produces the same result as running it once.
@@ -193,8 +236,12 @@ def backfill_tenant_user_positions(db: Session, tenant_id: uuid.UUID) -> int:
     ).all()
     assigned = 0
     for user in users:
+        position = _ensure_specialised_position(
+            db, tenant_id, positions, user.role, user.department
+        )
         slug = LEGACY_ROLE_TO_SLUG.get(user.role)
-        position = positions.get(slug) if slug else None
+        if position is None:
+            position = positions.get(slug) if slug else None
         if position is None:
             position = fallback
         if position is None:

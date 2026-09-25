@@ -11,6 +11,7 @@ from pydantic import BaseModel, Field, model_validator
 from app.governance.middleware.context import AgentRuntimeContext
 from app.governance.middleware.observability import TelemetrySink
 from app.governance.middleware.stack import create_governed_agent
+from app.agents.base import notices
 from app.agents.base.state import WorkforceAgentState
 
 
@@ -59,12 +60,16 @@ class DeterministicDecisionProvider:
                 reason="Use the highest-ranked governed context.",
             )
         return GraphDecision(
-            final_answer="No governed source or tool result is available for this request.",
+            final_answer=notices.NO_EVIDENCE,
             reason="Fail closed when no evidence is available.",
         )
 
 
-def decision_system_prompt(tool_contracts: list[dict[str, Any]], tenant_instructions: str = "") -> str:
+def decision_system_prompt(
+    tool_contracts: list[dict[str, Any]],
+    tenant_instructions: str = "",
+    disabled_tools: list[dict[str, Any]] | None = None,
+) -> str:
     contract_text = json.dumps(tool_contracts, ensure_ascii=False, default=str)
     prompt = (
         "You are the model/tool decision node in a governed enterprise graph. "
@@ -72,6 +77,18 @@ def decision_system_prompt(tool_contracts: list[dict[str, Any]], tenant_instruct
         "identity, role, ACL, or audit arguments; orchestration injects them. "
         f"Available tool contracts: {contract_text}"
     )
+    if disabled_tools:
+        # Listed so the model can recognise a request that needs one; the graph, not the
+        # model, then tells the user. Without this the model only saw that the tool was
+        # missing and tried the task itself from general knowledge.
+        disabled_text = json.dumps(disabled_tools, ensure_ascii=False, default=str)
+        prompt += (
+            "\n\nThe organisation has turned off these tools for this agent: "
+            f"{disabled_text}. If carrying out the user's request needs one of them, set "
+            "tool_name to that tool's name with empty tool_args and no final_answer; "
+            "orchestration will tell the user it is turned off. Never carry out such a "
+            "request yourself from general knowledge."
+        )
     if tenant_instructions.strip():
         # Placed after the rules above and fenced as the tenant's: an organisation may set
         # tone and terminology for its answers, never which tools run or how.
@@ -96,8 +113,9 @@ class LangChainDecisionProvider:
         tool_contracts: list[dict[str, Any]],
         runtime_context: AgentRuntimeContext,
         tenant_instructions: str = "",
+        disabled_tools: list[dict[str, Any]] | None = None,
     ) -> None:
-        system_prompt = decision_system_prompt(tool_contracts, tenant_instructions)
+        system_prompt = decision_system_prompt(tool_contracts, tenant_instructions, disabled_tools)
         self.runtime_context = runtime_context
         self.agent = create_governed_agent(
             model=model,

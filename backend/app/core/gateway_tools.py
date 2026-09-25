@@ -40,6 +40,21 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
 
+# What a user is told a tool is when the graph refuses a request because the organisation
+# turned it off. Short, because it is read inside a sentence; the descriptions above are
+# written for administrators choosing grants.
+GATEWAY_TOOL_LABELS: dict[str, str] = {
+    "rag_search": "tra cứu kho tri thức",
+    "employee_lookup": "tra cứu hồ sơ nhân viên",
+    "leave_lookup": "tra cứu quỹ phép",
+    "create_task": "tạo task",
+    "expense_lookup": "tra cứu chi phí",
+    "generate_legal_document": "soạn văn bản pháp lý",
+    "submit_approval_request": "gửi yêu cầu phê duyệt",
+    "audit_contract_risk": "rà soát rủi ro hợp đồng",
+}
+assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
+
 # Default gateway grants per agent role, kept at least privilege: a tool absent here can
 # still be enabled per tenant through the configuration API, and the gateway's own
 # role/department ACL applies on top of whatever is granted.
@@ -78,6 +93,25 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
 def gateway_grants(role_code: str) -> tuple[str, ...]:
     """Gateway tool names granted to a role by default."""
     return GATEWAY_TOOL_GRANTS.get(role_code.upper(), ())
+
+
+def disabled_gateway_tools(
+    role_code: str, tools_access: list[str] | None, allowed: list[str]
+) -> list[dict[str, str]]:
+    """Gateway tools this agent would have but its organisation turned off.
+
+    "Would have" is the role's default grants plus whatever `tools_access` lists, so a tool
+    dropped from `tools_access` altogether still counts as switched off rather than as a
+    capability the agent never had. `allowed` is the effective grant after every narrowing:
+    `allowed_actions`, `disallowed_actions` and the tenant's plugins.
+    """
+    from app.core.tool_permissions import canonical_tool_names
+
+    candidates = set(gateway_grants(role_code)) | set(canonical_tool_names(tools_access))
+    return [
+        {"name": name, "label": GATEWAY_TOOL_LABELS[name]}
+        for name in sorted((candidates & GATEWAY_TOOLS) - set(allowed))
+    ]
 
 
 def with_gateway_grants(role_code: str, capability_names: list[str]) -> list[str]:

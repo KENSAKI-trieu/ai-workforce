@@ -144,6 +144,43 @@ def test_tenant_conventions_follow_the_rules_and_are_fenced() -> None:
     assert "never override the rules" in prompt
 
 
+def test_disabled_tools_are_named_to_the_model_with_what_to_do() -> None:
+    from app.agents.base.decision import decision_system_prompt
+
+    assert "turned off" not in decision_system_prompt([RAG_CONTRACT], disabled_tools=[])
+    prompt = decision_system_prompt(
+        [RAG_CONTRACT],
+        disabled_tools=[{"name": "audit_contract_risk", "label": "Rà soát rủi ro hợp đồng"}],
+    )
+    assert '"name": "audit_contract_risk"' in prompt
+    assert "set tool_name to that tool's name" in prompt
+    assert "Never carry out such a request yourself" in prompt
+
+
+def test_a_bound_tool_is_never_reported_as_disabled(monkeypatch) -> None:
+    from types import SimpleNamespace
+
+    from app.agents.base.runtime import build_runtime_context
+
+    def contract(name: str) -> SimpleNamespace:
+        return SimpleNamespace(name=name, description=f"{name} tool", metadata={"action": "READ_ONLY"}, args_schema=None)
+
+    monkeypatch.setattr(
+        "app.agents.base.runtime.build_langchain_tools",
+        lambda gateway: [contract("rag_search"), contract("audit_contract_risk")],
+    )
+    monkeypatch.setattr("app.agents.base.runtime.configured_chat_models", lambda **_: [])
+    context = build_runtime_context(
+        tenant_id=str(uuid.uuid4()), user_id=str(uuid.uuid4()), role="Employee", department="ALL",
+        conversation_id=str(uuid.uuid4()), workflow_id=str(uuid.uuid4()), agent_role="LEGAL",
+        allowed_tools=["rag_search"], denied_tools=[], tool_jwt="tool-jwt",
+        # A stale caller also lists a tool the agent is granted; the grant wins.
+        disabled_tools={"audit_contract_risk": "Rà soát rủi ro hợp đồng", "rag_search": "Tra cứu"},
+    )
+    assert set(context.tools) == {"rag_search"}
+    assert context.disabled_tools == {"audit_contract_risk": "Rà soát rủi ro hợp đồng"}
+
+
 @pytest.mark.tool_contracts
 def test_a_turn_without_tool_contracts_is_refused_with_503(monkeypatch) -> None:
     from fastapi.testclient import TestClient

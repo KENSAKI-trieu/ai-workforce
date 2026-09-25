@@ -75,7 +75,7 @@ class Settings(BaseSettings):
     GOOGLE_AI_API_KEY_2: Optional[str] = None
     LLM_DEFAULT_PROVIDER: Literal["auto", "openai", "gemini", "bedrock", "local"] = "auto"
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
-    GEMINI_CHAT_MODEL: str = "gemini-3.6-flash"
+    GEMINI_CHAT_MODEL: str = "gemini-3.5-flash-lite"
 
     # Bedrock authenticates through the standard boto3 credential chain (instance
     # profile, environment, or a mounted AWS config), so there is no API key to

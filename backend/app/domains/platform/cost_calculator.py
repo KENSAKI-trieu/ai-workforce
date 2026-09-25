@@ -39,13 +39,19 @@ MODEL_PRICING: dict[str, ModelPricing] = {
     "gemini-2.5-flash": ModelPricing(
         Decimal("0.30"), Decimal("2.50"), Decimal("0.30")
     ),
-    # The AI service's default Gemini chat model. Priced provisionally at the 2.5-flash
-    # rate so its usage reaches the dashboard at all; this is an approximation carried
-    # over from the previous generation, not a published figure, and has to be replaced
-    # once the real price is known. Rows already written keep `pricing_version`, so a
-    # correction can be told apart from what was billed under this estimate.
+    # The AI service's previous default Gemini chat model. Priced provisionally at the
+    # 2.5-flash rate so its usage reaches the dashboard at all; this is an approximation
+    # carried over from the previous generation, not a published figure, and has to be
+    # replaced once the real price is known. Rows already written keep `pricing_version`,
+    # so a correction can be told apart from what was billed under this estimate.
     "gemini-3.6-flash": ModelPricing(
         Decimal("0.30"), Decimal("2.50"), Decimal("0.30")
+    ),
+    # The AI service's default Gemini chat model. Provisional in the same way as the row
+    # above: the gemini-2.5-flash-lite rate, until the published price is known. Without a
+    # row at all, every usage report for the default model is refused as unpriceable.
+    "gemini-3.5-flash-lite": ModelPricing(
+        Decimal("0.10"), Decimal("0.40"), Decimal("0.025")
     ),
     "claude-sonnet-4": ModelPricing(
         Decimal("3.00"), Decimal("15.00"), Decimal("0.30")
@@ -71,6 +77,7 @@ MODEL_PREFIX_ALIASES: tuple[tuple[str, str], ...] = (
     ("gpt-3.5-turbo-", "gpt-3.5-turbo"),
     ("gemini-2.5-flash-", "gemini-2.5-flash"),
     ("gemini-3.6-flash-", "gemini-3.6-flash"),
+    ("gemini-3.5-flash-lite-", "gemini-3.5-flash-lite"),
     ("claude-sonnet-4-", "claude-sonnet-4"),
     ("claude-3-5-sonnet-", "claude-3-5-sonnet"),
 )

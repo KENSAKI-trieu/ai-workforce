@@ -24,6 +24,7 @@ import {
   ShieldOff,
   Trash,
   Trash2,
+  Workflow,
 } from "lucide-react";
 
 interface PluginManifest {
@@ -60,6 +61,20 @@ interface PromptPreview {
   resolved_prompt: string;
   contributing_plugins: string[];
   has_tenant_text: boolean;
+  engine: "langgraph" | "deterministic";
+  // Set when the role runs through LangGraph: what the graph takes from this slot.
+  graph: {
+    slot_applies: boolean;
+    instructions: string;
+    ignored_plugins: string[];
+  } | null;
+}
+
+// A delete waiting for confirmation. `installed` switches the dialog to "remove it from
+// the workspace first", since a package still applied to the agent cannot be deleted.
+interface PendingDelete {
+  name: string;
+  installed: boolean;
 }
 
 const SLOT_LABELS: Record<string, string> = {
@@ -69,7 +84,22 @@ const SLOT_LABELS: Record<string, string> = {
   leave_draft: "Đọc lượt trả lời đơn nghỉ",
   legal_classifier: "Định tuyến ý định (Legal)",
   legal_perspective: "Đọc góc nhìn bên A/B",
+  legal_answer: "Sinh câu trả lời (Legal)",
 };
+
+// Each slot belongs to one agent, and the preview must resolve that agent's packages:
+// asking for a Legal slot under HR showed it as never customised.
+const SLOT_ROLES: Record<string, "HR" | "LEGAL"> = {
+  classifier: "HR",
+  answer: "HR",
+  leave_slot: "HR",
+  leave_draft: "HR",
+  legal_classifier: "LEGAL",
+  legal_perspective: "LEGAL",
+  legal_answer: "LEGAL",
+};
+
+const ROLE_LABELS: Record<string, string> = { HR: "HR Agent", LEGAL: "Legal Agent" };
 
 const SLOT_WARNINGS: Record<string, string> = {
   classifier:
@@ -95,7 +125,7 @@ export default function PluginsPage() {
   // null = editor closed, "" = writing a new package, a name = editing that one.
   const [editing, setEditing] = useState<string | null>(null);
   // The package whose delete is waiting to be confirmed.
-  const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
+  const [confirmDelete, setConfirmDelete] = useState<PendingDelete | null>(null);
 
   const installedNames = new Set(installed.map((row) => row.plugin_name));
 
@@ -117,7 +147,9 @@ export default function PluginsPage() {
 
   const loadPreview = useCallback(async (slot: string) => {
     try {
-      const res = await api.get<PromptPreview>(`/api/v1/plugins/preview/HR/${slot}`);
+      const res = await api.get<PromptPreview>(
+        `/api/v1/plugins/preview/${SLOT_ROLES[slot]}/${slot}`,
+      );
       setPreview(res.data);
     } catch {
       setPreview(null);
@@ -149,19 +181,42 @@ export default function PluginsPage() {
     }
   };
 
-  const removePackage = async (name: string) => {
+  // With `uninstallFirst`, the package is taken off the workspace and then deleted, in
+  // that order: the backend refuses (409) to delete a package that is still installed.
+  const removePackage = async (name: string, uninstallFirst: boolean) => {
     setBusy(name);
     setError(null);
+    let uninstalled = false;
     try {
+      if (uninstallFirst) {
+        await api.delete(`/api/v1/plugins/${name}`);
+        uninstalled = true;
+      }
       await api.delete(`/api/v1/plugins/authored/${name}`);
+      setConfirmDelete(null);
       await load();
     } catch (reason) {
-      const detail = (reason as { response?: { data?: { detail?: string } } })?.response
-        ?.data?.detail;
-      setError(typeof detail === "string" ? detail : `Không xoá được gói ${name}.`);
+      const response = (reason as { response?: { status?: number; data?: { detail?: string } } })
+        ?.response;
+      if (response?.status === 409 && !uninstallFirst) {
+        // Installed since the page loaded, e.g. from another tab: ask to remove it first
+        // instead of failing with the raw conflict.
+        setConfirmDelete({ name, installed: true });
+        await load();
+        return;
+      }
+      setConfirmDelete(null);
+      const detail = response?.data?.detail;
+      setError(
+        uninstalled
+          ? `Đã gỡ gói ${name} khỏi workspace nhưng chưa xoá được gói. Hãy thử xoá lại.`
+          : typeof detail === "string"
+            ? detail
+            : `Không xoá được gói ${name}.`,
+      );
+      if (uninstalled) await load();
     } finally {
       setBusy(null);
-      setConfirmDelete(null);
     }
   };
 
@@ -304,13 +359,11 @@ export default function PluginsPage() {
                               </button>
                               <button
                                 type="button"
-                                onClick={() => setConfirmDelete(manifest.name)}
-                                disabled={busy === manifest.name || isInstalled}
-                                title={
-                                  isInstalled
-                                    ? "Gỡ khỏi workspace trước khi xoá"
-                                    : "Xoá gói"
+                                onClick={() =>
+                                  setConfirmDelete({ name: manifest.name, installed: isInstalled })
                                 }
+                                disabled={busy === manifest.name}
+                                title="Xoá gói"
                                 aria-label={`Xoá gói ${manifest.name}`}
                                 className="rounded-lg border border-slate-200 bg-white p-2 text-slate-600 transition hover:bg-slate-50 disabled:opacity-40"
                               >
@@ -422,19 +475,30 @@ export default function PluginsPage() {
                 </h2>
 
                 <div className="ta-card overflow-hidden xl:sticky xl:top-6">
-                  <div className="flex flex-wrap gap-2 border-b border-slate-100 p-4 sm:p-5">
-                    {Object.keys(SLOT_LABELS).map((slot) => (
-                      <button
-                        key={slot}
-                        onClick={() => setPreviewSlot(slot)}
-                        className={`rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
-                          previewSlot === slot
-                            ? "bg-[var(--primary)] text-white"
-                            : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
-                        }`}
-                      >
-                        {SLOT_LABELS[slot]}
-                      </button>
+                  <div className="space-y-3 border-b border-slate-100 p-4 sm:p-5">
+                    {Object.keys(ROLE_LABELS).map((role) => (
+                      <div key={role}>
+                        <p className="mb-1.5 text-[11px] font-semibold uppercase tracking-wide text-slate-400">
+                          {ROLE_LABELS[role]}
+                        </p>
+                        <div className="flex flex-wrap gap-2">
+                          {Object.keys(SLOT_LABELS)
+                            .filter((slot) => SLOT_ROLES[slot] === role)
+                            .map((slot) => (
+                              <button
+                                key={slot}
+                                onClick={() => setPreviewSlot(slot)}
+                                className={`rounded-lg px-3.5 py-2 text-xs font-semibold transition ${
+                                  previewSlot === slot
+                                    ? "bg-[var(--primary)] text-white"
+                                    : "border border-slate-200 bg-white text-slate-600 hover:bg-slate-50"
+                                }`}
+                              >
+                                {SLOT_LABELS[slot]}
+                              </button>
+                            ))}
+                        </div>
+                      </div>
                     ))}
                   </div>
 
@@ -445,8 +509,57 @@ export default function PluginsPage() {
                     </p>
                   )}
 
+                  {preview?.graph && (
+                    <div className="border-b border-slate-100 bg-indigo-50/60 px-4 py-3 sm:px-5 text-xs leading-relaxed text-indigo-900">
+                      <p className="flex items-start gap-1.5">
+                        <Workflow size={13} className="mt-px shrink-0" />
+                        <span>
+                          {ROLE_LABELS[preview.role_code] ?? preview.role_code} đang chạy bằng
+                          LangGraph. Graph có prompt riêng và chỉ nhận phần{" "}
+                          <strong>append</strong> của slot trả lời cùng quy ước riêng của
+                          công ty, đặt sau luật hệ thống.{" "}
+                          {preview.graph.slot_applies
+                            ? "Prompt đầy đủ bên dưới chỉ dùng khi graph không gọi được model và lượt chat rơi về luồng thường."
+                            : "Slot này không có tác dụng trong graph; nó chỉ dùng khi lượt chat rơi về luồng thường."}
+                        </span>
+                      </p>
+                      {preview.graph.ignored_plugins.length > 0 && (
+                        <p className="mt-2 flex items-start gap-1.5 text-amber-800">
+                          <AlertTriangle size={13} className="mt-px shrink-0" />
+                          <span>
+                            Graph bỏ qua phần tuỳ biến slot này của:{" "}
+                            {preview.graph.ignored_plugins.join(", ")}
+                            {preview.graph.slot_applies ? " (chế độ replace)." : "."}
+                          </span>
+                        </p>
+                      )}
+                    </div>
+                  )}
+
+                  {preview?.graph?.slot_applies && (
+                    <div className="border-b border-slate-100">
+                      <p className="px-4 pt-3 sm:px-5 text-xs font-semibold text-slate-600">
+                        Phần công ty bổ sung vào prompt của graph
+                      </p>
+                      {preview.graph.instructions ? (
+                        <pre className="max-h-64 overflow-auto whitespace-pre-wrap break-words p-4 sm:px-5 font-mono text-xs leading-relaxed text-slate-800">
+                          {preview.graph.instructions}
+                        </pre>
+                      ) : (
+                        <p className="px-4 pb-3 pt-1 sm:px-5 text-xs text-slate-500">
+                          Chưa có gì: graph đang chạy với prompt gốc của nó.
+                        </p>
+                      )}
+                    </div>
+                  )}
+
                   {preview ? (
                     <>
+                      {preview.graph && (
+                        <p className="px-4 pt-3 sm:px-5 text-xs font-semibold text-slate-600">
+                          Prompt của luồng thường (dự phòng)
+                        </p>
+                      )}
                       <div className="flex flex-wrap items-center justify-between gap-3 border-b border-slate-100 px-4 py-3 sm:px-5 text-xs">
                         <span
                           className={
@@ -491,29 +604,53 @@ export default function PluginsPage() {
               >
                 <h2
                   id="confirm-delete-title"
-                  className="text-base font-semibold text-slate-900"
+                  className="flex items-center gap-2 text-base font-semibold text-slate-900"
                 >
-                  Xoá gói {confirmDelete}?
+                  {confirmDelete.installed && (
+                    <AlertTriangle size={18} className="shrink-0 text-amber-500" />
+                  )}
+                  {confirmDelete.installed
+                    ? `Gói ${confirmDelete.name} đang được áp dụng`
+                    : `Xoá gói ${confirmDelete.name}?`}
                 </h2>
-                <p className="mt-2 text-sm leading-relaxed text-slate-600">
-                  Nội dung gói sẽ mất hẳn và không khôi phục được. Nếu cần dùng lại, hãy
-                  sao chép manifest ra chỗ khác trước khi xoá.
-                </p>
+                {confirmDelete.installed ? (
+                  <div className="mt-2 space-y-2 text-sm leading-relaxed text-slate-600">
+                    <p>
+                      Gói này đang được cài cho workspace, nên AI Employee vẫn đang dùng
+                      prompt và giới hạn công cụ của nó. Phải gỡ gói khỏi workspace trước
+                      thì mới xoá được.
+                    </p>
+                    <p>
+                      Sau khi gỡ, agent quay về prompt mặc định (cộng các gói khác còn
+                      cài). Nội dung gói sẽ mất hẳn và không khôi phục được.
+                    </p>
+                  </div>
+                ) : (
+                  <p className="mt-2 text-sm leading-relaxed text-slate-600">
+                    Nội dung gói sẽ mất hẳn và không khôi phục được. Nếu cần dùng lại, hãy
+                    sao chép manifest ra chỗ khác trước khi xoá.
+                  </p>
+                )}
                 <div className="mt-5 flex justify-end gap-2">
                   <button
                     type="button"
                     onClick={() => setConfirmDelete(null)}
-                    className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50"
+                    disabled={busy === confirmDelete.name}
+                    className="rounded-lg border border-slate-200 bg-white px-3.5 py-2 text-xs font-semibold text-slate-700 transition hover:bg-slate-50 disabled:opacity-50"
                   >
                     Huỷ
                   </button>
                   <button
                     type="button"
-                    onClick={() => removePackage(confirmDelete)}
-                    disabled={busy === confirmDelete}
+                    onClick={() => removePackage(confirmDelete.name, confirmDelete.installed)}
+                    disabled={busy === confirmDelete.name}
                     className="rounded-lg bg-red-600 px-3.5 py-2 text-xs font-semibold text-white transition hover:bg-red-700 disabled:opacity-50"
                   >
-                    Xoá
+                    {busy === confirmDelete.name
+                      ? "Đang xử lý…"
+                      : confirmDelete.installed
+                        ? "Gỡ rồi xoá"
+                        : "Xoá"}
                   </button>
                 </div>
               </div>

@@ -60,6 +60,7 @@ def build_runtime_context(
     denied_tools: list[str],
     tool_jwt: str,
     tenant_instructions: str = "",
+    disabled_tools: dict[str, str] | None = None,
 ) -> OrchestrationRuntimeContext:
     gateway = ToolGatewayClient(settings.BACKEND_TOOL_GATEWAY_URL, tool_jwt)
     try:
@@ -74,6 +75,12 @@ def build_runtime_context(
         for tool in contract_tools
         if is_tool_allowed(tool.name, allowed_tools, denied_tools)
     }
+    # A tool that is bound cannot also be off; the grant wins so a stale list from the
+    # caller can never hide a tool the agent is allowed to use.
+    disabled = {
+        name: label for name, label in (disabled_tools or {}).items() if name not in tools
+    }
+    descriptions = {tool.name: tool.description for tool in contract_tools}
     security = AgentRuntimeContext(
         tenant_id=tenant_id,
         user_id=user_id,
@@ -104,6 +111,10 @@ def build_runtime_context(
             tool_contracts=contracts,
             runtime_context=security,
             tenant_instructions=tenant_instructions,
+            disabled_tools=[
+                {"name": name, "label": label, "description": descriptions.get(name, "")}
+                for name, label in sorted(disabled.items())
+            ],
         )
     else:
         decision_provider = DeterministicDecisionProvider()
@@ -112,6 +123,7 @@ def build_runtime_context(
         decision_provider=decision_provider,
         tools=tools,
         approval_registrar=gateway.create_graph_approval,
+        disabled_tools=disabled,
     )
 
 

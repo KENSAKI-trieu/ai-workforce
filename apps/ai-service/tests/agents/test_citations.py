@@ -13,6 +13,7 @@ import pytest
 
 from app.governance.guardrails import validate_grounded_output
 from app.governance.middleware.context import AgentRuntimeContext
+from app.agents.base import notices
 from app.agents.base.decision import GraphDecision
 from app.agents.base.nodes import OrchestrationRuntimeContext
 from app.agents.registry import LangGraphEngine
@@ -87,7 +88,7 @@ def test_a_citation_invented_without_context_is_withheld() -> None:
         final_answer="Nhân viên được nghỉ 12 ngày. [Citation: Chính sách nghỉ phép 2025]",
         reason="Answer from parametric memory while retrieval returned nothing.",
     ))
-    assert "withheld" in result["final_answer"]
+    assert result["final_answer"] == notices.CITATION_UNVERIFIED
     assert result["citations"] == []
     assert any(item.get("error") == "CITATION_WITHOUT_CONTEXT" for item in result["errors"])
 
@@ -98,7 +99,7 @@ def test_a_structured_citation_invented_without_context_is_withheld() -> None:
         citations=[{"source": "Sổ tay nhân sự", "chunk_id": "khong-co-that"}],
         reason="Structured citation with nothing behind it.",
     ))
-    assert "withheld" in result["final_answer"]
+    assert result["final_answer"] == notices.CITATION_UNVERIFIED
     assert any(item.get("error") == "CITATION_WITHOUT_CONTEXT" for item in result["errors"])
 
 
@@ -163,7 +164,7 @@ def test_a_failed_model_call_is_reported_as_such_not_as_a_citation_problem() -> 
     # citation -- used to be withheld as UNVERIFIED_CITATION, hiding the outage.
     result = _run_with_context(FailingDecision())
     assert result["retrieved_context"]
-    assert result["final_answer"] == "The decision model could not produce a validated result."
+    assert result["final_answer"] == notices.DECISION_FAILED
     assert [item["error"] for item in result["errors"]] == ["RuntimeError"]
     trace = {item["node"]: item["status"] for item in result["execution_trace"]}
     assert trace["citation_verification"] == "SKIPPED"
@@ -210,5 +211,50 @@ def test_a_tag_shaped_citation_to_something_not_retrieved_is_withheld(citation: 
         final_answer=f"12 ngày mỗi năm. [Citation: {citation}]",
         reason="Cite a source outside the retrieved context.",
     )))
-    assert "withheld" in result["final_answer"]
+    assert result["final_answer"] == notices.CITATION_UNVERIFIED
     assert any(item.get("error") == "UNVERIFIED_CITATION" for item in result["errors"])
+
+
+def _run_with_disabled_review(decision: GraphDecision) -> dict:
+    security = _security().model_copy(update={"allowed_tools": frozenset({"rag_search"})})
+    rag = type("Rag", (), {
+        "name": "rag_search",
+        "metadata": {"action": "READ_ONLY", "allowed_roles": ["*"], "allowed_departments": ["*"]},
+        "invoke": lambda self, payload: RETRIEVED,
+    })()
+    return LangGraphEngine().invoke(
+        _state(security, "Rà soát rủi ro hợp đồng này giúp tôi"),
+        context=OrchestrationRuntimeContext(
+            security=security,
+            decision_provider=SingleDecision(decision),
+            tools={"rag_search": rag},
+            disabled_tools={"audit_contract_risk": "Rà soát rủi ro hợp đồng"},
+        ),
+        thread_id=f"guard-{uuid.uuid4()}",
+    )
+
+
+def test_a_request_for_a_tool_the_organisation_turned_off_says_so() -> None:
+    # Context was retrieved, and the notice carries no citation. Before, the model answered
+    # the review itself and the user read "citations could not be verified" in English.
+    result = _run_with_disabled_review(GraphDecision(
+        tool_name="audit_contract_risk", reason="The request is a contract review."
+    ))
+    assert result["retrieved_context"]
+    assert result["final_answer"] == notices.tool_disabled("Rà soát rủi ro hợp đồng")
+    assert result["tool_calls"] == []
+    # Not filed under model_decision: the backend reads that as an outage and would rerun
+    # the turn through its deterministic flow.
+    assert [(item["node"], item["error"]) for item in result["errors"]] == [
+        ("tool_policy", "TOOL_DISABLED_BY_TENANT")
+    ]
+    trace = {item["node"]: item["status"] for item in result["execution_trace"]}
+    assert trace["citation_verification"] == "SKIPPED"
+
+
+def test_a_tool_that_is_neither_bound_nor_disabled_is_still_refused_generically() -> None:
+    result = _run_with_disabled_review(GraphDecision(
+        tool_name="create_jira_ticket", reason="Invented tool."
+    ))
+    assert result["final_answer"] == notices.TOOL_NOT_AVAILABLE
+    assert result["errors"][-1]["error"] == "TOOL_NOT_ALLOWED"

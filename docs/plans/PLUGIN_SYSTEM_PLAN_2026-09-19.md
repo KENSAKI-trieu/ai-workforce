@@ -294,6 +294,29 @@ Nghĩa là đây không phải plugin thiếu hỗ trợ các role đó, mà cá
 
 - Các role ngoài HR chưa có luồng prompt LLM nào. Nếu muốn bán tuỳ biến prompt cho Legal hay Sales thì phải xây luồng đó trước, xem mục c ở trên.
 - Prompt vẫn không đổi được luồng nghiệp vụ, xem mục 8.1. Giới hạn này không thay đổi.
+- Trường `knowledge` trong manifest được đọc và kiểm tra, nhưng chưa có nơi nào áp dụng.
+
+### 9.9 Plugin khi agent chạy bằng LangGraph
+
+Cập nhật 2026-09-25. Đã kiểm tra live với Knowledge và Legal chạy qua graph.
+
+**Những gì đi vào graph:**
+- Chỉ phần `append` của slot trả lời, cùng ô "Quy ước riêng của công ty", gửi sang dưới tên `tenant_instructions`.
+- Text `replace` và các slot định tuyến bị graph bỏ qua. Chúng vẫn có tác dụng khi lượt chat rơi về luồng thường, lúc model của graph lỗi.
+- Công cụ bị thu hẹp được loại khỏi `allowed_tools`, và gateway trả 403 nếu bị gọi thẳng.
+
+**Ba chỗ đã sửa:**
+1. **Khung xem trước.**
+   - API trả thêm `engine` và khối `graph`: slot này có tác dụng trong graph không, text graph nhận thật sự, và gói nào bị graph bỏ qua.
+   - Giao diện chia slot theo từng agent. Trước đây mọi slot đều xem dưới HR, nên slot Legal luôn hiện là "chưa tuỳ biến"; nay endpoint trả 404 cho slot không thuộc role.
+2. **`has_tenant_text`** so với slot trả lời của đúng role. Trước đây nó so với `answer` của HR, nên với Legal luôn sai.
+3. **Công cụ bị tắt.**
+   - Backend gửi `disabled_tools`, gồm tên và nhãn tiếng Việt. Đó là các công cụ role lẽ ra có nhưng công ty đã tắt.
+   - Model chỉ cần nhận ra yêu cầu cần công cụ đó. Graph tự trả câu tiếng Việt "tính năng … đã bị tắt theo cấu hình của công ty" và bỏ qua bước kiểm tra trích dẫn.
+   - Trước đây model tự làm thay, rồi người dùng nhận câu tiếng Anh "answer was withheld".
+   - Các câu báo lỗi khác của graph cũng đã chuyển sang tiếng Việt, gom ở `apps/ai-service/app/agents/base/notices.py`.
+
+**Xoá gói đang cài:** nút xoá không còn bị khoá. Nếu gói đang được áp dụng, hộp thoại báo và cho chọn "Gỡ rồi xoá".
 
 ---
 

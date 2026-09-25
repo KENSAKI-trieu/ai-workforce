@@ -229,6 +229,8 @@ def test_metering_failure_never_costs_the_user_their_answer(
         ("gpt-4o", 12.50),
         # Provisional, carried over from gemini-2.5-flash until the real price is known.
         ("gemini-3.6-flash", 2.80),
+        # Provisional, carried over from gemini-2.5-flash-lite until the real price is known.
+        ("gemini-3.5-flash-lite", 0.50),
     ],
 )
 def test_the_default_chat_model_is_priced_as_itself(model, expected_cost_usd):

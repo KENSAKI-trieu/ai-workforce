@@ -60,7 +60,7 @@ Embedding は AI Service から Gemini API に送信されます。`GOOGLE_AI_AP
 チャット LLM はローカルへのインストールが不要です。必要に応じて API キーを設定します。
 
 - OpenAI: 既定値 `gpt-4o-mini`
-- Google Gemini: 既定値 `gemini-3.6-flash`
+- Google Gemini: 既定値 `gemini-3.5-flash-lite`
 - API キーを設定しない場合: 開発・テスト用の `local-deterministic` provider
 
 `local-deterministic` は疎通確認用であり、本番向けの生成 AI モデルではありません。
@@ -113,7 +113,7 @@ JINA_API_KEY=Jina の API キー
 OPENAI_API_KEY=
 GOOGLE_AI_API_KEY=Gemini の API キー
 OPENAI_CHAT_MODEL=gpt-4o-mini
-GEMINI_CHAT_MODEL=gemini-3.6-flash
+GEMINI_CHAT_MODEL=gemini-3.5-flash-lite
 ```
 
 `.env`、API キー、パスワード、token は Git にコミットしないでください。

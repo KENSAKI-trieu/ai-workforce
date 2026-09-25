@@ -9,6 +9,7 @@ from fastapi.testclient import TestClient
 
 from app.main import app
 from app.governance.middleware.context import AgentRuntimeContext
+from app.agents.base import notices
 from app.agents.base.decision import DeterministicDecisionProvider, GraphDecision
 from app.agents.base.nodes import OrchestrationRuntimeContext
 from app.agents.registry import LangGraphEngine
@@ -305,7 +306,7 @@ def test_action_rejection_does_not_execute_tool() -> None:
     final = engine.resume(False, context=context, thread_id="reject-thread")
     assert task.calls == []
     assert final["tool_calls"][0]["status"] == "REJECTED"
-    assert "rejected" in final["final_answer"].lower()
+    assert final["final_answer"] == notices.ACTION_REJECTED
 
 
 def test_graph_rejects_state_identity_not_bound_to_runtime() -> None:

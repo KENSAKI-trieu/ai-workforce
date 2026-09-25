@@ -8,7 +8,7 @@ from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
-from app.core.gateway_tools import effective_tool_grants
+from app.core.gateway_tools import disabled_gateway_tools, effective_tool_grants
 from app.core.security import create_internal_tool_token
 from app.models.models import (
     AIAgent,
@@ -90,6 +90,16 @@ class LangGraphEngine:
         message: str | None = None,
     ) -> dict[str, Any]:
         restriction = resolve_skill_restriction(db, user.tenant_id, agent.role_code)
+        # The effective grant, not the raw column: `allowed_actions` narrows
+        # `tools_access`, and a tenant's plugins can narrow it further. The gateway
+        # refuses anything outside it, so offering the model more only costs a turn.
+        allowed_tools = [
+            tool
+            for tool in effective_tool_grants(
+                agent.tools_access, agent.allowed_actions, agent.disallowed_actions
+            )
+            if restriction.permits(tool)
+        ]
         payload = {
             "tenant_id": str(user.tenant_id),
             "user_id": str(user.id),
@@ -98,17 +108,14 @@ class LangGraphEngine:
             "conversation_id": conversation_id,
             "workflow_id": workflow_id,
             "agent_role": agent.role_code,
-            # The effective grant, not the raw column: `allowed_actions` narrows
-            # `tools_access`, and a tenant's plugins can narrow it further. The gateway
-            # refuses anything outside it, so offering the model more only costs a turn.
-            "allowed_tools": [
-                tool
-                for tool in effective_tool_grants(
-                    agent.tools_access, agent.allowed_actions, agent.disallowed_actions
-                )
-                if restriction.permits(tool)
-            ],
+            "allowed_tools": allowed_tools,
             "denied_tools": list(agent.disallowed_actions or []),
+            # Named to the model so a request needing one is told the feature is off; a
+            # model that only saw the tool missing answered the task itself, and the user
+            # got "citations could not be verified" instead.
+            "disabled_tools": disabled_gateway_tools(
+                agent.role_code, agent.tools_access, allowed_tools
+            ),
             # What the tenant added to this agent's reply prompt -- plugin appends and the
             # administrator's own text. The graph puts it after its own rules.
             "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),

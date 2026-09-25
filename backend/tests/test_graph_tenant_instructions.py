@@ -110,6 +110,14 @@ def test_the_graph_payload_carries_instructions_and_drops_withdrawn_tools(
     assert payload["tenant_instructions"] == "Trích dẫn số điều khoản."
     assert "generate_legal_document" not in payload["allowed_tools"]
     assert {"rag_search", "audit_contract_risk"} <= set(payload["allowed_tools"])
+    # Withdrawn tools are named with a label, so the graph can say the feature is off.
+    # `submit_approval_request` is a default Legal grant this row dropped from
+    # `tools_access` altogether: still switched off, not a capability Legal never had.
+    assert payload["disabled_tools"] == [
+        {"name": "generate_legal_document", "label": "soạn văn bản pháp lý"},
+        {"name": "submit_approval_request", "label": "gửi yêu cầu phê duyệt"},
+    ]
+    assert not set(item["name"] for item in payload["disabled_tools"]) & set(payload["allowed_tools"])
 
 
 def test_the_tool_contract_says_which_tools_end_the_turn():
@@ -142,3 +150,84 @@ def test_tool_inputs_bind_tenant_and_audit_and_keep_the_contract_out_of_the_mode
     assert ContractRiskReviewInput.model_validate(base).from_user_message == 0
     with pytest.raises(ValidationError):
         ContractRiskReviewInput.model_validate({**base, "from_user_message": 9})
+
+
+# --------------------------------------------------------------------------
+# The preview panel shows what the engine the role runs on actually receives
+# --------------------------------------------------------------------------
+
+@pytest.fixture
+def acme_legal_agent(transactional_db_session):
+    user = transactional_db_session.query(User).filter(User.email == "admin@company.com").one()
+    agent = transactional_db_session.query(AIAgent).filter(
+        AIAgent.tenant_id == user.tenant_id, AIAgent.role_code == "LEGAL"
+    ).one()
+    original = agent.prompt_overlay
+    yield agent
+    agent.prompt_overlay = original
+    transactional_db_session.flush()
+
+
+def _install(monkeypatch, *manifests):
+    # The endpoint lists contributors itself and resolves text through the resolver;
+    # both have to see the same packages.
+    monkeypatch.setattr("app.plugins.resolver.installed_manifests", lambda *args: manifests)
+    monkeypatch.setattr("app.api.v1.plugins.installed_manifests", lambda *args: manifests)
+
+
+def test_preview_flags_the_text_box_on_the_legal_reply_slot(
+    client, ceo_token_headers, transactional_db_session, acme_legal_agent, monkeypatch
+):
+    # It compared the slot against HR's "answer", so Legal never showed the text box.
+    _install(monkeypatch)
+    acme_legal_agent.prompt_overlay = "Luôn xưng hô anh/chị."
+    transactional_db_session.flush()
+
+    body = client.get("/api/v1/plugins/preview/LEGAL/legal_answer", headers=ceo_token_headers).json()
+    assert body["has_tenant_text"] is True
+    assert body["resolved_prompt"].endswith("Luôn xưng hô anh/chị.")
+
+
+def test_preview_refuses_a_slot_of_another_role(client, ceo_token_headers):
+    # `/preview/HR/legal_answer` resolved HR's overlay and showed Legal's slot as untouched.
+    res = client.get("/api/v1/plugins/preview/HR/legal_answer", headers=ceo_token_headers)
+    assert res.status_code == 404
+
+
+def test_preview_of_a_langgraph_role_shows_what_the_graph_receives(
+    client, ceo_token_headers, transactional_db_session, acme_legal_agent, monkeypatch
+):
+    monkeypatch.setattr("app.core.agent_engines.settings.AGENT_ENGINES", "LEGAL=langgraph")
+    _install(
+        monkeypatch,
+        _legal_manifest("tone", {"legal_answer": {"mode": "append", "text": "Gọi hợp đồng là 'khế ước'."}}),
+        _legal_manifest("rewrite", {"legal_answer": {"mode": "replace", "text": "Trả JSON khác hẳn."}}),
+        _legal_manifest("routing", {"legal_classifier": {"mode": "append", "text": "Gợi ý định tuyến."}}),
+    )
+    acme_legal_agent.prompt_overlay = "Luôn xưng hô anh/chị."
+    transactional_db_session.flush()
+
+    answer = client.get("/api/v1/plugins/preview/LEGAL/legal_answer", headers=ceo_token_headers).json()
+    assert answer["engine"] == "langgraph"
+    assert answer["graph"] == {
+        "slot_applies": True,
+        # Byte for byte what the engine sends as `tenant_instructions`.
+        "instructions": tenant_graph_instructions(
+            transactional_db_session, acme_legal_agent.tenant_id, "LEGAL"
+        ),
+        "ignored_plugins": ["rewrite"],
+    }
+    assert answer["graph"]["instructions"] == "Gọi hợp đồng là 'khế ước'.\n\nLuôn xưng hô anh/chị."
+    # The deterministic prompt is still returned: a turn falls back to it on a model outage.
+    assert answer["resolved_prompt"].startswith("Trả JSON khác hẳn.")
+
+    router = client.get("/api/v1/plugins/preview/LEGAL/legal_classifier", headers=ceo_token_headers).json()
+    assert router["graph"] == {"slot_applies": False, "instructions": "", "ignored_plugins": ["routing"]}
+
+
+def test_preview_of_a_deterministic_role_has_no_graph_block(client, ceo_token_headers, monkeypatch):
+    # HR never runs through the graph, whatever AGENT_ENGINES says.
+    monkeypatch.setattr("app.core.agent_engines.settings.AGENT_ENGINES", "HR=langgraph")
+    body = client.get("/api/v1/plugins/preview/HR/answer", headers=ceo_token_headers).json()
+    assert body["engine"] == "deterministic"
+    assert body["graph"] is None

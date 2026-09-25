@@ -10,13 +10,14 @@ from __future__ import annotations
 import json
 import re
 import uuid
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Callable
 
 from langchain_core.tools import BaseTool
 from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
+from app.agents.base import notices
 from app.agents.base.decision import DecisionProvider
 from app.agents.base.state import WorkforceAgentState
 from app.governance.guardrails import is_tool_allowed, validate_grounded_output, validate_input
@@ -34,6 +35,9 @@ class OrchestrationRuntimeContext:
     tools: dict[str, BaseTool]
     approval_registrar: Callable[[dict[str, Any]], dict[str, Any]] | None = None
     max_model_iterations: int = 4
+    # Tools the agent's role has but the organisation turned off, name -> label. Never
+    # bound or run; the model may only name one so the graph can say it is off.
+    disabled_tools: dict[str, str] = field(default_factory=dict)
 
 
 def _latest_user_text(state: WorkforceAgentState) -> str:
@@ -127,7 +131,7 @@ def model_decision(
     if iteration > runtime.context.max_model_iterations:
         return {
             "pending_tool_call": None,
-            "final_answer": "The orchestration limit was reached before a safe answer was produced.",
+            "final_answer": notices.ITERATION_LIMIT,
             "errors": [*(state.get("errors") or []), {"node": "model_decision", "error": "MODEL_ITERATION_LIMIT"}],
             "model_iterations": iteration,
             "execution_trace": _trace(state, "model_decision", "LIMITED"),
@@ -137,7 +141,7 @@ def model_decision(
     except Exception as exc:
         return {
             "pending_tool_call": None,
-            "final_answer": "The decision model could not produce a validated result.",
+            "final_answer": notices.DECISION_FAILED,
             "errors": [*(state.get("errors") or []), {"node": "model_decision", "error": type(exc).__name__}],
             "model_iterations": iteration,
             "execution_trace": _trace(state, "model_decision", "FAILED"),
@@ -145,10 +149,23 @@ def model_decision(
     pending = None
     if decision.tool_name:
         name = decision.tool_name
+        disabled_label = runtime.context.disabled_tools.get(name)
+        if disabled_label is not None and name not in runtime.context.tools:
+            # Recorded under its own node, not model_decision: the model did its job, so
+            # the backend must not treat this as an outage and rerun the turn through the
+            # deterministic flow, which would refuse again in its own words.
+            return {
+                "pending_tool_call": None,
+                "final_answer": notices.tool_disabled(disabled_label),
+                "citations": [],
+                "errors": [*(state.get("errors") or []), {"node": "tool_policy", "error": "TOOL_DISABLED_BY_TENANT", "tool": name}],
+                "model_iterations": iteration,
+                "execution_trace": _trace(state, "model_decision", "DENIED"),
+            }
         if name not in set(state.get("available_tools") or []) or name not in runtime.context.tools:
             return {
                 "pending_tool_call": None,
-                "final_answer": "The requested tool is not available in this governed context.",
+                "final_answer": notices.TOOL_NOT_AVAILABLE,
                 "errors": [*(state.get("errors") or []), {"node": "model_decision", "error": "TOOL_NOT_ALLOWED", "tool": name}],
                 "model_iterations": iteration,
                 "execution_trace": _trace(state, "model_decision", "DENIED"),
@@ -194,7 +211,7 @@ def _execute_tool(
     if not approved:
         return {
             "pending_tool_call": None,
-            "final_answer": "The requested action was rejected by the human approver.",
+            "final_answer": notices.ACTION_REJECTED,
             "tool_calls": [
                 *(state.get("tool_calls") or []),
                 {**pending, "status": "REJECTED", "result": None},
@@ -206,7 +223,7 @@ def _execute_tool(
     if not permitted or name not in runtime.tools:
         return {
             "pending_tool_call": None,
-            "final_answer": "The action was not executed because its authorization is no longer valid.",
+            "final_answer": notices.AUTHORIZATION_EXPIRED,
             "tool_calls": [
                 *(state.get("tool_calls") or []),
                 {**pending, "status": "DENIED", "result": None},
@@ -236,7 +253,7 @@ def _execute_tool(
     except Exception as exc:
         return {
             "pending_tool_call": None,
-            "final_answer": "The governed tool failed and no action result was accepted.",
+            "final_answer": notices.TOOL_FAILED,
             "tool_calls": [
                 *(state.get("tool_calls") or []),
                 {**pending, "args": payload, "status": "FAILED", "result": None},
@@ -313,7 +330,7 @@ def output_validation(state: WorkforceAgentState) -> dict[str, Any]:
         return {"final_answer": answer, "execution_trace": _trace(state, "output_validation")}
     except ValueError as exc:
         return {
-            "final_answer": "A validated answer could not be produced.",
+            "final_answer": notices.OUTPUT_INVALID,
             "errors": [*(state.get("errors") or []), {"node": "output_validation", "error": str(exc)}],
             "execution_trace": _trace(state, "output_validation", "FAILED"),
         }
@@ -374,7 +391,7 @@ def _citation_is_verified(citation: str, context: list[dict[str, Any]]) -> bool:
 
 def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
     return {
-        "final_answer": "The answer was withheld because its citations could not be verified.",
+        "final_answer": notices.CITATION_UNVERIFIED,
         "citations": [],
         "errors": [*(state.get("errors") or []), {"node": "citation_verification", "error": error}],
         "execution_trace": _trace(state, "citation_verification", "FAILED"),
@@ -384,10 +401,10 @@ def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
 def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     if state.get("tool_calls") or not state.get("citation_required"):
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
-    if any(item.get("node") == "model_decision" for item in state.get("errors") or []):
-        # The answer is the engine's own failure notice, not model output, so there is
-        # nothing to verify. Checking it anyway replaced the real cause -- a provider
-        # outage, a denied tool -- with "citations could not be verified".
+    if any(item.get("node") in {"model_decision", "tool_policy"} for item in state.get("errors") or []):
+        # The answer is the engine's own notice, not model output, so there is nothing to
+        # verify. Checking it anyway replaced the real cause -- a provider outage, a denied
+        # or disabled tool -- with "citations could not be verified".
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
     context = state.get("retrieved_context") or []
     supplied = _supplied_citations(state)

@@ -27,6 +27,7 @@ from app.plugins.resolver import (
     installed_manifests,
     resolve_prompt_overlay,
     tenant_answer_overlay,
+    tenant_graph_instructions,
 )
 from app.plugins.service import (
     PluginInstallError,
@@ -34,7 +35,8 @@ from app.plugins.service import (
     list_installs,
     uninstall_plugin,
 )
-from app.agents.prompt_registry import default_prompt
+from app.agents.prompt_registry import answer_slot_for_role, default_prompt, prompt_slots_for_role
+from app.core.agent_engines import uses_langgraph
 from app.domains.platform.audit_service import log_audit_action
 
 router = APIRouter(prefix="/plugins", tags=["Plugins"])
@@ -257,33 +259,69 @@ def preview_prompt(
 
     Reviewing a package by reading its YAML is not the same as seeing the result: an
     `append` override is only meaningful next to the prompt it is appended to.
+
+    A role that runs through LangGraph does not read these slots on a normal turn -- the
+    graph has its own prompts and takes only what the tenant *added* to the reply slot.
+    The slots still matter there, because a turn falls back to the deterministic flow
+    when the graph's model is unavailable, so both are returned and `graph` says which
+    one a normal turn uses. Showing the deterministic prompt alone, as this did, told an
+    operator a `replace` override was live when the graph was ignoring it.
     """
-    try:
-        base = default_prompt(slot)
-    except KeyError as exc:
-        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    role = role_code.strip().upper()
+    if slot not in (prompt_slots_for_role(role) or ()):
+        # Checked against the role, not just the slot name: `/preview/HR/legal_answer`
+        # used to resolve HR's overlay and show Legal's slot as never customised.
+        raise HTTPException(status_code=404, detail=f"Unknown prompt slot for {role}: {slot}")
+    base = default_prompt(slot)
 
     # Resolved through exactly the path the chat turn uses, packages and the tenant's
     # own text together. Rebuilding only the package half here would make this panel
     # disagree with what the model is actually sent, which is the failure it exists to
     # prevent.
-    overlay = resolve_prompt_overlay(db, current_user.tenant_id, role_code) or {}
+    overlay = resolve_prompt_overlay(db, current_user.tenant_id, role) or {}
     resolved = overlay.get(slot) or base
-    manifests = installed_manifests(db, current_user.tenant_id, role_code)
+    manifests = installed_manifests(db, current_user.tenant_id, role)
+    contributing = [
+        manifest for manifest in manifests
+        if any(override.slot == slot for override in manifest.prompts)
+    ]
+    answer_slot = answer_slot_for_role(role)
+    is_answer_slot = slot == answer_slot
+
+    graph: dict[str, Any] | None = None
+    if uses_langgraph(role):
+        graph = {
+            # Only the reply slot reaches the graph, and only through its appends.
+            "slot_applies": is_answer_slot,
+            "instructions": (
+                tenant_graph_instructions(db, current_user.tenant_id, role)
+                if is_answer_slot else ""
+            ),
+            # Packages customising this slot whose text the graph never sees.
+            "ignored_plugins": [
+                manifest.name
+                for manifest in contributing
+                if not is_answer_slot or any(
+                    override.slot == slot and override.mode != "append"
+                    for override in manifest.prompts
+                )
+            ],
+        }
+
     return {
-        "role_code": role_code.upper(),
+        "role_code": role,
         "slot": slot,
+        "engine": "langgraph" if graph is not None else "deterministic",
         "is_overridden": resolved != base,
         "default_prompt": base,
         "resolved_prompt": resolved,
-        "contributing_plugins": [
-            manifest.name
-            for manifest in manifests
-            if any(override.slot == slot for override in manifest.prompts)
-        ],
+        "contributing_plugins": [manifest.name for manifest in contributing],
+        # The administrator's text box lands on the role's reply slot, whose name differs
+        # per role; this compared against HR's "answer" and was always false for Legal.
         "has_tenant_text": bool(
-            slot == "answer" and tenant_answer_overlay(db, current_user.tenant_id, role_code)
+            is_answer_slot and tenant_answer_overlay(db, current_user.tenant_id, role)
         ),
+        "graph": graph,
     }
 
 

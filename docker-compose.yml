@@ -52,6 +52,7 @@ services:
       EMBEDDING_CACHE_FOLDER: /models/huggingface/hub
       EMBEDDING_LOCAL_FILES_ONLY: ${AI_EMBEDDING_LOCAL_FILES_ONLY:-false}
       EMBEDDING_PRELOAD: ${AI_EMBEDDING_PRELOAD:-false}
+      TOKEN_COUNT_MAX_TEXTS: ${AI_TOKEN_COUNT_BATCH_SIZE:-128}
       RERANK_BACKEND: ${AI_RERANK_BACKEND:-bge}
       RERANK_MODEL_NAME: ${AI_RERANK_MODEL_NAME:-BAAI/bge-reranker-v2-m3}
       RERANK_MODEL_PATH: ${AI_RERANK_MODEL_PATH:-}
@@ -141,6 +142,7 @@ services:
       EMBEDDING_MODEL_NAME: ${AI_EMBEDDING_MODEL_NAME:-gemini-embedding-001}
       EMBEDDING_VERSION: ${AI_EMBEDDING_VERSION:-gemini-embedding-001-v1}
       EMBEDDING_DIMENSION: ${AI_EMBEDDING_DIMENSION:-768}
+      TOKEN_COUNT_BATCH_SIZE: ${AI_TOKEN_COUNT_BATCH_SIZE:-128}
     depends_on:
       postgres:
         condition: service_healthy
@@ -176,6 +178,7 @@ services:
       EMBEDDING_MODEL_NAME: ${AI_EMBEDDING_MODEL_NAME:-gemini-embedding-001}
       EMBEDDING_VERSION: ${AI_EMBEDDING_VERSION:-gemini-embedding-001-v1}
       EMBEDDING_DIMENSION: ${AI_EMBEDDING_DIMENSION:-768}
+      TOKEN_COUNT_BATCH_SIZE: ${AI_TOKEN_COUNT_BATCH_SIZE:-128}
     depends_on:
       postgres:
         condition: service_healthy

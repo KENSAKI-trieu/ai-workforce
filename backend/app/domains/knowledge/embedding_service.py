@@ -12,14 +12,9 @@ from collections.abc import Callable
 from typing import Any
 
 from app.core.config import settings
-from app.clients.ai_service_client import get_ai_service_client
+from app.clients.ai_service_client import AIServiceError, get_ai_service_client
 
 _TOKEN_PATTERN = re.compile(r"\S+")
-# Token counting only runs the tokenizer, so it must not inherit the embedding
-# batch size: at EMBEDDING_BATCH_SIZE=1 a large document made one HTTP call per
-# chunk and sat for minutes between chunking and embedding with no progress.
-# Matches the ai-service /v1/token-count request limit.
-TOKEN_COUNT_BATCH_SIZE = 128
 logger = logging.getLogger(__name__)
 
 
@@ -78,6 +73,10 @@ class EmbeddingService:
         self.configured_model_name = settings.EMBEDDING_MODEL_NAME
         self.dimension = settings.EMBEDDING_DIMENSION
         self.batch_size = settings.EMBEDDING_BATCH_SIZE
+        # Token counting only runs the tokenizer, so it must not inherit the
+        # embedding batch size: at EMBEDDING_BATCH_SIZE=1 a large document made
+        # one HTTP call per chunk and sat for minutes with no progress.
+        self.token_count_batch_size = settings.TOKEN_COUNT_BATCH_SIZE
         self.max_retries = settings.EMBEDDING_MAX_RETRIES
         self.configured_version = settings.EMBEDDING_VERSION
         self.device = normalize_embedding_device(settings.EMBEDDING_DEVICE)
@@ -202,14 +201,32 @@ class EmbeddingService:
         ai_client = get_ai_service_client()
         if ai_client.enabled:
             counts: list[int] = []
-            for start in range(0, len(texts), TOKEN_COUNT_BATCH_SIZE):
-                batch = texts[start:start + TOKEN_COUNT_BATCH_SIZE]
-                result = ai_client.count_tokens(batch)
+            start = 0
+            while start < len(texts):
+                batch = texts[start:start + self.token_count_batch_size]
+                try:
+                    result = ai_client.count_tokens(batch)
+                except AIServiceError as exc:
+                    # 422 means the batch exceeds the ai-service TOKEN_COUNT_MAX_TEXTS.
+                    # Halve and retry so a mismatched pair of settings slows
+                    # ingestion down instead of failing every document.
+                    if exc.status_code != 422 or len(batch) == 1:
+                        raise
+                    self.token_count_batch_size = max(1, len(batch) // 2)
+                    logger.warning(
+                        "AI service rejected %d texts per token-count request; "
+                        "retrying with %d. Keep TOKEN_COUNT_BATCH_SIZE <= the "
+                        "ai-service TOKEN_COUNT_MAX_TEXTS.",
+                        len(batch),
+                        self.token_count_batch_size,
+                    )
+                    continue
                 self._remote_max_input_tokens = int(result["max_input_tokens"])
                 batch_counts = [int(count) for count in result["token_counts"]]
                 if len(batch_counts) != len(batch):
                     raise RuntimeError("AI service token count does not match input count")
                 counts.extend(batch_counts)
+                start += len(batch)
             return counts
         tokenizer = self._load_tokenizer()
         if tokenizer is None:

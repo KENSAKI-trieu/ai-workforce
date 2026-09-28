@@ -2,7 +2,7 @@ from functools import lru_cache
 from typing import Optional
 from urllib.parse import quote_plus
 
-from pydantic import model_validator
+from pydantic import Field, model_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -104,6 +104,9 @@ class Settings(BaseSettings):
     EMBEDDING_CACHE_FOLDER: Optional[str] = None
     EMBEDDING_LOCAL_FILES_ONLY: bool = False
     EMBEDDING_MAX_RETRIES: int = 3
+    # Texts per /v1/token-count call. Independent of EMBEDDING_BATCH_SIZE because
+    # counting only runs the tokenizer; keep it <= the ai-service TOKEN_COUNT_MAX_TEXTS.
+    TOKEN_COUNT_BATCH_SIZE: int = Field(default=128, ge=1)
     EMBEDDING_ALLOW_DETERMINISTIC_FALLBACK: bool = True
     RAG_CHUNK_MIN_TOKENS: int = 100
     RAG_CHUNK_TARGET_TOKENS: int = 450

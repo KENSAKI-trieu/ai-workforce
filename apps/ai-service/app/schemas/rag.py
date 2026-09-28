@@ -4,6 +4,8 @@ from typing import Any, Literal
 
 from pydantic import BaseModel, Field
 
+from app.core.config import settings
+
 
 class ChunkRequest(BaseModel):
     content: str = Field(min_length=1)
@@ -41,7 +43,7 @@ class EmbeddingResponse(BaseModel):
 
 
 class TokenCountRequest(BaseModel):
-    texts: list[str] = Field(min_length=1, max_length=128)
+    texts: list[str] = Field(min_length=1, max_length=settings.TOKEN_COUNT_MAX_TEXTS)
 
 
 class TokenCountResponse(BaseModel):

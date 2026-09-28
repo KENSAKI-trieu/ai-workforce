@@ -30,7 +30,7 @@ from app.models.models import AIAgent, AuditLog, Task, User, WorkflowApproval
 from app.agents.langgraph.engine import LangGraphEngine
 from app.domains.platform.auth_service import DEFAULT_AGENT_TOOLS
 from app.agents.langgraph.approvals import GRAPH_APPROVAL_KIND
-from app.tools.executors import search_rag
+from app.tools.executors.knowledge import search_rag
 from app.tools.registry import ToolContext, tool_registry
 from app.tools.schemas import RAGSearchInput
 
@@ -293,7 +293,7 @@ def test_search_rag_applies_the_agent_knowledge_scope(
         captured.update(kwargs)
         return []
 
-    monkeypatch.setattr("app.tools.executors.hybrid_search_documents", fake_search)
+    monkeypatch.setattr("app.tools.executors.knowledge.hybrid_search_documents", fake_search)
     request = RAGSearchInput.model_validate(
         {"tenant_id": str(actor.tenant_id), "audit": _audit(), "query": "chinh sach"}
     )

@@ -160,16 +160,12 @@ def _definition(
 
 
 def build_tool_registry() -> ToolRegistry:
-    from app.tools.executors import (
-        create_task,
-        generate_legal_document_draft,
-        lookup_employee,
-        lookup_expenses,
-        lookup_leave,
-        review_contract_risk,
-        search_rag,
-        submit_approval_request,
-    )
+    from app.tools.executors.approvals import submit_approval_request
+    from app.tools.executors.finance import lookup_expenses
+    from app.tools.executors.hr import lookup_employee, lookup_leave
+    from app.tools.executors.knowledge import search_rag
+    from app.tools.executors.legal import generate_legal_document_draft, review_contract_risk
+    from app.tools.executors.tasks import create_task
 
     registry = ToolRegistry()
     definitions = (

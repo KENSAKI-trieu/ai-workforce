@@ -28,6 +28,10 @@ CITATION_UNVERIFIED = (
     "trong tài liệu của công ty."
 )
 NO_EVIDENCE = "Không có tài liệu hay kết quả công cụ nào để trả lời yêu cầu này."
+NOT_IN_DOCUMENTS = (
+    "Tài liệu của công ty mà tôi được phép tra cứu chưa đề cập nội dung này, nên tôi "
+    "không tự suy diễn. Bạn có thể bổ sung tài liệu hoặc hỏi bộ phận phụ trách."
+)
 
 
 def tool_disabled(label: str) -> str:
@@ -41,4 +45,17 @@ def tool_disabled(label: str) -> str:
         f"Yêu cầu này cần tính năng “{label}”, nhưng tính năng này đã bị tắt theo cấu hình "
         "của công ty cho trợ lý này, nên tôi không thực hiện được. Nếu cần dùng, bạn hãy "
         "liên hệ quản trị viên (Owner/Admin) để bật lại."
+    )
+
+
+def tool_restricted(label: str) -> str:
+    """The reply when a request needs a tool the agent has but this user's role may not use.
+
+    Without it the model never saw the tool at all, and explained the gap itself: asked for
+    an NDA, it cited the company's legal rules for a drafting approval they never mention.
+    """
+    return (
+        f"Yêu cầu này cần tính năng “{label}”, nhưng vai trò của bạn không được phép dùng "
+        "tính năng này, nên tôi không thực hiện được. Bạn hãy nhờ người có thẩm quyền "
+        "thực hiện, hoặc liên hệ quản trị viên (Owner/Admin) nếu cần được cấp quyền."
     )

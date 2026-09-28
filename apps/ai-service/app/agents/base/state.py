@@ -27,5 +27,9 @@ class WorkforceAgentState(TypedDict):
     citation_required: NotRequired[bool]
     pending_tool_call: NotRequired[dict[str, Any] | None]
     model_iterations: NotRequired[int]
+    # Set for the last decision a turn may make: no tool can run after it.
+    final_step: NotRequired[bool]
+    # The model found nothing that answers the request; the reply is the graph's notice.
+    unanswered: NotRequired[bool]
     execution_trace: NotRequired[list[dict[str, Any]]]
     is_complete: NotRequired[bool]

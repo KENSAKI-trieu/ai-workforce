@@ -11,7 +11,7 @@ class HistoryMessage(BaseModel):
 
 
 class DisabledTool(BaseModel):
-    """A tool the agent's role has but the organisation turned off."""
+    """A tool the agent has but may not use here: turned off, or not for this user's role."""
 
     name: str = Field(min_length=1, max_length=100)
     # What the user is told the feature is, in the product's language.
@@ -36,6 +36,9 @@ class OrchestrationRequest(BaseModel):
     # Never bound or run; named to the model only so a request needing one is answered
     # with "this feature is turned off" instead of an attempt from general knowledge.
     disabled_tools: list[DisabledTool] = Field(default_factory=list, max_length=100)
+    # Granted to the agent but outside this user's role ACL, so the gateway never lists
+    # them. Named to the model for the same reason as disabled_tools.
+    restricted_tools: list[DisabledTool] = Field(default_factory=list, max_length=100)
     # What the tenant added to this agent's reply prompt; resolved by the backend's
     # plugin resolver. Tone and terminology only -- the graph places it after its rules.
     tenant_instructions: str = Field(default="", max_length=8000)
@@ -52,6 +55,7 @@ class OrchestrationResumeRequest(BaseModel):
     allowed_tools: list[str] = Field(default_factory=list, max_length=100)
     denied_tools: list[str] = Field(default_factory=list, max_length=100)
     disabled_tools: list[DisabledTool] = Field(default_factory=list, max_length=100)
+    restricted_tools: list[DisabledTool] = Field(default_factory=list, max_length=100)
     tenant_instructions: str = Field(default="", max_length=8000)
     resume: Any
 

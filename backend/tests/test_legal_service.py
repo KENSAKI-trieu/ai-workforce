@@ -194,7 +194,10 @@ def test_contract_review_upload_endpoint(client, employee_token_headers):
         files={
             "file": (
                 "msa.txt",
-                b"Customer owns all intellectual property. Supplier accepts unlimited liability.",
+                # Vietnamese: an English contract is translated by a model first, and this
+                # suite runs without one. tests/test_contract_translation.py covers that path.
+                "Khách hàng sở hữu toàn bộ quyền sở hữu trí tuệ. Nhà cung cấp chịu trách "
+                "nhiệm không giới hạn.".encode(),
                 "text/plain",
             )
         },

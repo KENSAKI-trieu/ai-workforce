@@ -188,13 +188,15 @@ def build_tool_registry() -> ToolRegistry:
         # Terminal: the backend already knows what to tell the user -- the side question,
         # or the review summary behind its card. Handing the result back to the model
         # instead made it re-call the tool and open approvals of its own.
+        # 90s: a contract not in Vietnamese is translated first, in parallel blocks of up to
+        # 50s each, and the backend waits at most 120s for the whole graph turn.
         _definition(
             "audit_contract_risk",
             "Review contract or clause text the user sent in this conversation for legal "
             "risk. The backend reads the text, and the side the user represents, from the "
             "user's own messages; do not paste the contract into the call. Its result is the "
             "answer to the user, so call it at most once per turn.",
-            ContractRiskReviewInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 60, "tool.legal.review",
+            ContractRiskReviewInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 90, "tool.legal.review",
             review_contract_risk, terminal=True,
         ),
     )

@@ -26,11 +26,8 @@ from app.agents.legal.intent import _parse_represented_party
 from app.agents.legal.replies import LEGAL_PERSPECTIVE_QUESTION
 from app.agents.usage import _llm_usage_recorder
 from app.agents.legal.llm_flow import extract_represented_party
-from app.domains.legal.chat_contract_review import (
-    document_scope_from_structure,
-    review_reply,
-    run_chat_contract_review,
-)
+from app.domains.legal.chat_contract_review import review_reply, run_chat_contract_review
+from app.domains.legal.contract_translation import ContractNotReviewable
 from app.domains.platform.audit_service import (
     get_cost_by_agent,
     get_cost_by_department,
@@ -401,14 +398,19 @@ def review_contract_risk(
             "reviewed": False,
             "reply": LEGAL_PERSPECTIVE_QUESTION,
         }
-    scope = request.document_scope or document_scope_from_structure(text)
-    result, review = run_chat_contract_review(
-        context.db,
-        context.actor,
-        text,
-        represented_party=party,
-        document_scope=scope,
-    )
+    try:
+        # With no scope from the model, it is read from the text the analyzer sees -- the
+        # translation, for a contract that needed one.
+        result, review = run_chat_contract_review(
+            context.db,
+            context.actor,
+            text,
+            represented_party=party,
+            document_scope=request.document_scope,
+            on_usage=_llm_usage_recorder(context.db, context.actor, "LEGAL"),
+        )
+    except ContractNotReviewable as exc:
+        return {"status": "NOT_REVIEWABLE", "reviewed": False, "reply": exc.reply}
     return {
         "status": "REVIEWED",
         "reviewed": True,

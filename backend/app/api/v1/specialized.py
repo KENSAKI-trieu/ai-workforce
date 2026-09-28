@@ -31,6 +31,12 @@ from app.domains.legal.legal_service import (
 )
 from app.domains.legal.contract_review import detect_contract_type, review_contract
 from app.domains.legal.contract_redline import build_redline_docx
+from app.domains.legal.contract_translation import (
+    ContractNotReviewable,
+    mark_translated,
+    text_for_review,
+)
+from app.agents.usage import _llm_usage_recorder
 # Shared with the chat path so both entry points escalate identically.
 from app.domains.legal.legal_approval_service import create_legal_approval as _create_legal_approval
 from app.domains.legal.legal_document_generator import generate_legal_document
@@ -351,10 +357,15 @@ def audit_contract_endpoint(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     try:
-        result = review_contract(
-            req.contract_text,
-            req.document_name,
-            req.represented_party,
+        review_text = text_for_review(
+            req.contract_text, on_usage=_llm_usage_recorder(db, current_user, "LEGAL")
+        )
+    except ContractNotReviewable as exc:
+        raise HTTPException(status_code=422, detail=exc.reply) from exc
+    try:
+        result = mark_translated(
+            review_contract(review_text.text, req.document_name, req.represented_party),
+            review_text,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
@@ -383,12 +394,23 @@ async def review_legal_document(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     filename, text, _ = await _read_legal_file(file)
-    detection = detect_contract_type(text)
+    # Translated before anything reads it: the contract type, the references and the
+    # findings all come from Vietnamese rules.
+    try:
+        review_text = text_for_review(
+            text, on_usage=_llm_usage_recorder(db, current_user, "LEGAL")
+        )
+    except ContractNotReviewable as exc:
+        raise HTTPException(status_code=422, detail=exc.reply) from exc
+    detection = detect_contract_type(review_text.text)
     references = _retrieve_contract_review_references(
         db, current_user, detection["contract_type_label"]
     )
     try:
-        result = review_contract(text, filename, represented_party, references)
+        result = mark_translated(
+            review_contract(review_text.text, filename, represented_party, references),
+            review_text,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
     # Saved here rather than by a follow-up call from the browser: a second call

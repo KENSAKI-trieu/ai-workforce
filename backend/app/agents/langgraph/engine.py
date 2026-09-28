@@ -8,7 +8,11 @@ from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
-from app.core.gateway_tools import disabled_gateway_tools, effective_tool_grants
+from app.core.gateway_tools import (
+    GATEWAY_TOOL_LABELS,
+    disabled_gateway_tools,
+    effective_tool_grants,
+)
 from app.core.security import create_internal_tool_token
 from app.models.models import (
     AIAgent,
@@ -53,6 +57,19 @@ class GraphModelUnavailable(AIServiceError):
 
     def __init__(self) -> None:
         super().__init__("The graph's decision model is unavailable", status_code=503)
+
+
+def role_restricted_tools(user: User, allowed_tools: list[str]) -> list[dict[str, str]]:
+    """The agent's granted gateway tools whose role/department ACL refuses this user."""
+    # Imported here: the registry builds itself at import time and pulls in the chat flows.
+    from app.tools.registry import tool_registry
+
+    definitions = {definition.name: definition for definition in tool_registry.all()}
+    return [
+        {"name": name, "label": GATEWAY_TOOL_LABELS[name]}
+        for name in sorted(set(allowed_tools) & set(GATEWAY_TOOL_LABELS))
+        if name in definitions and not definitions[name].acl.permits(user)
+    ]
 
 
 def model_unavailable(result: dict[str, Any]) -> bool:
@@ -116,6 +133,10 @@ class LangGraphEngine:
             "disabled_tools": disabled_gateway_tools(
                 agent.role_code, agent.tools_access, allowed_tools
             ),
+            # Granted, but the gateway's ACL refuses them to this user, so they never reach
+            # the model's tool list. Asked for an NDA without the drafting tool, the model
+            # explained the gap with a company rule the documents never state.
+            "restricted_tools": role_restricted_tools(user, allowed_tools),
             # What the tenant added to this agent's reply prompt -- plugin appends and the
             # administrator's own text. The graph puts it after its own rules.
             "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),
@@ -267,9 +288,12 @@ class LangGraphEngine:
         interrupt_item: dict[str, Any],
     ) -> WorkflowApproval:
         value = dict(interrupt_item.get("value") or {})
+        # The tool call id comes first: it is the key the graph registered this approval
+        # under through the gateway before suspending. LangGraph's own interrupt id is a
+        # different value, and keying on it opened a second, identical approval.
         interrupt_id = str(
-            interrupt_item.get("id")
-            or value.get("tool_call_id")
+            value.get("tool_call_id")
+            or interrupt_item.get("id")
             or f"{workflow.thread_id}:{value.get('tool_name')}"
         )
         approval_id = value.get("approval_id")

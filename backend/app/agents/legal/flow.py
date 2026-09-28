@@ -11,6 +11,7 @@ from app.domains.knowledge.rag_service import hybrid_search_documents
 from app.domains.platform.audit_service import log_audit_action
 from app.plugins.resolver import resolve_prompt_overlay
 from app.domains.legal.chat_contract_review import review_reply, run_chat_contract_review
+from app.domains.legal.contract_translation import ContractNotReviewable
 from app.agents.legal.llm_flow import (
     LegalIntentClassification,
     LegalPerspective,
@@ -245,13 +246,25 @@ def run_legal_turn(
     if contract_text is not None and represented_party is not None:
         # Drafts stored before the scope existed were reviewed as whole contracts.
         document_scope = document_scope or "FULL"
-        audit_res, review = run_chat_contract_review(
-            db,
-            user,
-            contract_text,
-            represented_party=represented_party,
-            document_scope=document_scope,
-        )
+        try:
+            audit_res, review = run_chat_contract_review(
+                db,
+                user,
+                contract_text,
+                represented_party=represented_party,
+                document_scope=document_scope,
+                on_usage=record_legal_usage,
+            )
+        except ContractNotReviewable as exc:
+            # Closed rather than left open: the side is answered, and a later message must
+            # not be read as answering it again.
+            response_data["reply"] = exc.reply
+            response_data["legal_risk_card"] = _legal_review_card(
+                status="DISMISSED",
+                contract_fingerprint=_contract_fingerprint(contract_text),
+                contract_char_count=len(contract_text),
+            )
+            return response_data
         response_data["tools_executed"].append({
             "tool_name": "audit_contract_risk",
             "input": {

@@ -15,7 +15,13 @@ from sqlalchemy.orm import Session
 
 from app.models.models import ContractReview, User
 from app.domains.legal import contract_review_store
+from app.agents.llm_json import UsageReporter
 from app.domains.legal.contract_review.clause_parser import split_contract_clauses
+from app.domains.legal.contract_translation import (
+    TRANSLATION_NOTICE,
+    mark_translated,
+    text_for_review,
+)
 from app.domains.legal.legal_approval_service import create_legal_approval
 from app.domains.legal.legal_service import audit_contract_text
 
@@ -42,19 +48,29 @@ def run_chat_contract_review(
     contract_text: str,
     *,
     represented_party: str,
-    document_scope: str,
+    document_scope: str | None,
+    on_usage: UsageReporter | None = None,
 ) -> tuple[dict[str, Any], ContractReview]:
     """Review the text, save the review, and open an approval if the result needs one.
 
     Commits when an approval is raised (create_legal_approval commits); otherwise the
-    review is only flushed and the caller's commit persists it.
+    review is only flushed and the caller's commit persists it. A contract that is not in
+    Vietnamese is reviewed from its translation; when it cannot be translated this raises
+    ContractNotReviewable before anything is stored. With no ``document_scope``, the scope
+    is read from the structure of the text the analyzer sees.
     """
-    result = audit_contract_text(
-        contract_text,
-        document_name=CHAT_DOCUMENT_NAME,
-        represented_party=represented_party,
-        document_scope=document_scope,
+    review_text = text_for_review(contract_text, on_usage=on_usage)
+    result = mark_translated(
+        audit_contract_text(
+            review_text.text,
+            document_name=CHAT_DOCUMENT_NAME,
+            represented_party=represented_party,
+            document_scope=document_scope or document_scope_from_structure(review_text.text),
+        ),
+        review_text,
     )
+    # Stored under the text the user sent, so sending the same contract again finds this
+    # review however the translation came out the second time.
     review = contract_review_store.save_contract_review(
         db,
         user=user,
@@ -98,4 +114,6 @@ def review_reply(result: dict[str, Any]) -> str:
             "\n\nNội dung bạn gửi là **một đoạn trích**, nên tôi chỉ đánh giá những "
             "gì có trong đó và không tính các điều khoản còn thiếu."
         )
+    if result.get("translated_for_review"):
+        reply += f"\n\n{TRANSLATION_NOTICE}"
     return reply

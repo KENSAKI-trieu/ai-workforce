@@ -1,5 +1,7 @@
 from abc import ABC, abstractmethod
 
+from app.services.chunking.rag_chunking import estimate_text_tokens
+
 
 class EmbeddingProvider(ABC):
     model_name: str
@@ -27,7 +29,9 @@ class EmbeddingProvider(ABC):
         return self.embed(prepared)
 
     def count_tokens(self, text: str) -> int:
-        return len(text.split())
+        # A provider with no local tokenizer (Gemini, OpenAI) counts the way the chunker
+        # sizes its chunks. Counting words undercounted Vietnamese by a third or more.
+        return estimate_text_tokens(text)
 
     def prepare_query(self, question: str) -> str:
         return (

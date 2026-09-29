@@ -33,6 +33,7 @@ def chunk_text(request: ChunkRequest) -> ChunkResponse:
         request.content,
         chunk_size=request.chunk_size,
         chunk_overlap=request.chunk_overlap,
+        min_chunk_size=request.min_chunk_size,
     ))
 
 
@@ -50,6 +51,7 @@ def stream_chunk_text(request: ChunkRequest) -> StreamingResponse:
             request.content,
             chunk_size=request.chunk_size,
             chunk_overlap=request.chunk_overlap,
+            min_chunk_size=request.min_chunk_size,
         ):
             last_progress = {
                 key: progress[key]

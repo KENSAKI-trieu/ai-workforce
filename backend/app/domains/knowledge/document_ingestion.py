@@ -9,7 +9,8 @@ import uuid
 from sqlalchemy.orm import Session
 
 from app.models.models import DocumentChunk, KnowledgeDocument, User
-from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
+from app.domains.knowledge.document_markdown import extract_knowledge_text
+from app.domains.knowledge.document_parser import DocumentParseError
 from app.domains.knowledge.document_processing_events import publish_processing_status
 from app.domains.knowledge.embedding_service import (
     build_embedding_text,
@@ -119,6 +120,12 @@ def _checkpoint_chunks(
             progress_callback=report_chunk_progress,
             progress_stream_id=progress_stream_id,
         )
+
+    if not raw_chunks:
+        # Text of nothing but page markers (a scan read by the plain parser, saved at the
+        # "parsed" checkpoint) passes the parse stage's empty check; without this the
+        # embedding stage failed later with "Chunk checkpoint is not available".
+        raise DocumentParseError("No readable text found in the file")
 
     if not latest_chunk_progress:
         report_chunk_progress({
@@ -437,7 +444,7 @@ def resume_document_ingestion(
             record.processing_progress = 0
             _commit_progress(db, record)
             original = read_original_file(record.storage_key)
-            parsed_text = extract_file_text(record.file_name, original).strip()
+            parsed_text = extract_knowledge_text(record.file_name, original).strip()
             if not parsed_text:
                 raise DocumentParseError("No readable text found in the file")
             record.parsed_text = parsed_text

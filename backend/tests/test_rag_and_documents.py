@@ -12,9 +12,9 @@ from app.domains.knowledge.rag_service import (
     CHUNK_SIZE_TOKENS,
     build_configured_chunks,
     chunk_document_content,
-    clean_document_text,
     _rank_sparse_bm25,
 )
+from app.domains.knowledge.rag_chunking import clean_document_text, estimate_text_tokens
 from app.models.models import DocumentChunk, KnowledgeDocument
 from app.core.config import settings
 from app.domains.knowledge.embedding_service import (
@@ -31,21 +31,22 @@ from app.domains.knowledge.knowledge_storage import read_original_file
 
 
 def test_chunking_respects_size_and_overlap():
-    """Long sections use the configured token limit and sliding overlap."""
+    """Long sections use the configured token limit and sliding overlap, both in tokens."""
     content = " ".join(f"token-{index}" for index in range(1100))
 
     chunks = chunk_document_content(content)
 
     assert len(chunks) >= 2
     assert all(chunk["token_count"] <= CHUNK_SIZE_TOKENS for chunk in chunks)
-    assert (
-        chunks[0]["content"].split()[-CHUNK_OVERLAP_TOKENS:]
-        == chunks[1]["content"].split()[:CHUNK_OVERLAP_TOKENS]
+    assert all(
+        chunk["token_count"] == estimate_text_tokens(chunk["content"]) for chunk in chunks
     )
-    assert (
-        chunks[-2]["content"].split()[-CHUNK_OVERLAP_TOKENS:]
-        == chunks[-1]["content"].split()[:CHUNK_OVERLAP_TOKENS]
-    )
+    for previous, following in ((chunks[0], chunks[1]), (chunks[-2], chunks[-1])):
+        following_words = following["content"].split()
+        shared = [word for word in previous["content"].split() if word in set(following_words)]
+        assert shared and following_words[:len(shared)] == shared
+        # "token-123" costs 3 tokens, so the overlap stops within one word of the limit.
+        assert CHUNK_OVERLAP_TOKENS - 3 < estimate_text_tokens(" ".join(shared)) <= CHUNK_OVERLAP_TOKENS
 
 
 def test_sparse_bm25_prioritizes_rare_domain_terms_over_common_words():
@@ -174,7 +175,8 @@ def test_chunking_preserves_markdown_header_context():
         "Quản lý phê duyệt."
     )
 
-    chunks = chunk_document_content(content)
+    # Boundary tests look at each section on its own, so nothing is merged.
+    chunks = chunk_document_content(content, min_chunk_size=0)
 
     assert [chunk["section_title"] for chunk in chunks] == [
         "Chính sách nhân sự",
@@ -201,7 +203,7 @@ def test_chunking_prefers_business_boundaries_before_token_windows():
         "Bước 2: Phê duyệt\nQuản lý xem xét yêu cầu."
     )
 
-    chunks = chunk_document_content(content)
+    chunks = chunk_document_content(content, min_chunk_size=0)
 
     assert [chunk["section_type"] for chunk in chunks] == [
         "heading",
@@ -226,7 +228,7 @@ def test_chunking_tracks_pdf_page_markers_without_leaking_them():
         "[[PAGE:5]]\nBước 1: Quản lý phê duyệt\nQuản lý phản hồi."
     )
 
-    chunks = chunk_document_content(content)
+    chunks = chunk_document_content(content, min_chunk_size=0)
 
     assert [chunk["page"] for chunk in chunks] == [4, 5]
     assert all("[[PAGE:" not in chunk["content"] for chunk in chunks)
@@ -235,7 +237,8 @@ def test_chunking_tracks_pdf_page_markers_without_leaking_them():
 def test_chunking_splits_appendix_from_previous_numbered_section():
     chunks = chunk_document_content(
         "[[PAGE:2]]\n10. Truy vấn qua RAG\nNội dung chính.\n"
-        "Phụ lục - Trạng thái workflow\nESCALATED_HR\nChuyển HR xử lý"
+        "Phụ lục - Trạng thái workflow\nESCALATED_HR\nChuyển HR xử lý",
+        min_chunk_size=0,
     )
 
     assert [chunk["section_title"] for chunk in chunks] == [
@@ -264,7 +267,7 @@ def test_cleaning_and_numbered_headings_preserve_business_structure():
     )
 
     cleaned = clean_document_text(raw)
-    chunks = chunk_document_content(raw)
+    chunks = chunk_document_content(raw, min_chunk_size=0)
 
     assert "Trang 1 / 4" not in cleaned
     assert "nghỉphép" in cleaned
@@ -585,6 +588,8 @@ def test_future_document_is_not_retrieved(client, ceo_token_headers):
 def test_document_lifecycle_hash_dedup_and_version_reuse(
     client, ceo_token_headers, transactional_db_session
 ):
+    # Each section is long enough to stay a chunk of its own; one-line sections merge.
+    stable_section = "# Phạm vi\n" + "Nội dung không thay đổi UniqueStableSection. " * 10
     base_payload = {
         "document_name": "versioned-policy.md",
         "document_id": "versioned-policy",
@@ -592,8 +597,8 @@ def test_document_lifecycle_hash_dedup_and_version_reuse(
         "document_type": "policy",
         "department_access": "HR",
         "content": (
-            "# Phạm vi\nNội dung không thay đổi UniqueStableSection.\n"
-            "## Quy trình\nNội dung phiên bản một."
+            f"{stable_section}\n"
+            "## Quy trình\n" + "Nội dung phiên bản một. " * 15
         ),
         "version": "1.0",
     }
@@ -603,10 +608,11 @@ def test_document_lifecycle_hash_dedup_and_version_reuse(
         headers=ceo_token_headers,
     )
     assert first.status_code == 200
+    # Without an ORDER BY the unchanged "Phạm vi" chunk is not reliably the first row.
     first_chunks = transactional_db_session.query(DocumentChunk).filter(
         DocumentChunk.document_id == "versioned-policy",
         DocumentChunk.version == "1.0",
-    ).all()
+    ).order_by(DocumentChunk.chunk_index).all()
     stable_hash = calculate_content_hash(first_chunks[0].content)
     stable_vector = list(first_chunks[0].embedding)
 
@@ -628,8 +634,8 @@ def test_document_lifecycle_hash_dedup_and_version_reuse(
     second_payload.update({
         "version": "2.0",
         "content": (
-            "# Phạm vi\nNội dung không thay đổi UniqueStableSection.\n"
-            "## Quy trình\nNội dung phiên bản hai đã cập nhật."
+            f"{stable_section}\n"
+            "## Quy trình\n" + "Nội dung phiên bản hai đã cập nhật. " * 15
         ),
     })
     second = client.post(

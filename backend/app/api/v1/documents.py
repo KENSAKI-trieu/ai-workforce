@@ -49,7 +49,8 @@ from app.domains.knowledge.document_processing_events import (
     wait_for_processing_event,
     wait_for_subscriber,
 )
-from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
+from app.domains.knowledge.document_markdown import extract_knowledge_text
+from app.domains.knowledge.document_parser import DocumentParseError
 from app.domains.knowledge.knowledge_storage import (
     delete_original_file,
     read_original_file,
@@ -505,11 +506,11 @@ def _visible_document_reader_source(
 
 def _extract_file_text(filename: str, data: bytes) -> str:
     try:
-        return extract_file_text(filename, data)
+        return extract_knowledge_text(filename, data)
     except DocumentParseError as exc:
         message = str(exc)
         status_code = 415 if message.startswith("Supported file types") else 422
-        if message == "PDF parser is not installed":
+        if message in {"PDF parser is not installed", "DOCX parser is not installed"}:
             status_code = 503
         raise HTTPException(status_code=status_code, detail=message) from exc
 

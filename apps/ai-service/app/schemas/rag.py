@@ -11,6 +11,7 @@ class ChunkRequest(BaseModel):
     content: str = Field(min_length=1)
     chunk_size: int | None = Field(default=None, ge=1)
     chunk_overlap: int | None = Field(default=None, ge=0)
+    min_chunk_size: int | None = Field(default=None, ge=0)
     progress_stream_id: str | None = Field(default=None, min_length=16, max_length=128)
     progress_completed_before: int = Field(default=0, ge=0)
     progress_total_count: int | None = Field(default=None, ge=1)

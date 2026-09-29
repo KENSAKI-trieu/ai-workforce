@@ -117,6 +117,7 @@ class AIServiceClient:
         *,
         chunk_size: int,
         chunk_overlap: int,
+        min_chunk_size: int | None = None,
         on_progress: Callable[[dict[str, int]], None] | None = None,
         progress_stream_id: str | None = None,
         progress_completed_before: int = 0,
@@ -129,6 +130,7 @@ class AIServiceClient:
                 "content": content,
                 "chunk_size": chunk_size,
                 "chunk_overlap": chunk_overlap,
+                "min_chunk_size": min_chunk_size,
                 "progress_stream_id": progress_stream_id,
                 "progress_completed_before": progress_completed_before,
                 "progress_total_count": progress_total_count,
@@ -148,6 +150,7 @@ class AIServiceClient:
             "content": content,
             "chunk_size": chunk_size,
             "chunk_overlap": chunk_overlap,
+            "min_chunk_size": min_chunk_size,
         })
         return list(result["chunks"])
 

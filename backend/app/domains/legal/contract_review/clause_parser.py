@@ -13,6 +13,14 @@ HEADING_PATTERN = re.compile(
     r"(\d+(?:\.\d+){0,3})[\s.:\-)]+(.{2,160})$",
     flags=re.IGNORECASE,
 )
+# An article line of any length: once a PDF's wrapped lines are rejoined, "Điều 3. Giao
+# hàng: Bên Bán giao hàng trong..." is one line, longer than a bare heading.
+ARTICLE_PATTERN = re.compile(
+    r"^\s*(điều|article|clause|section)\s+(\d+(?:\.\d+){0,3})[\s.:\-)]+(.{2,})$",
+    flags=re.IGNORECASE,
+)
+# Documents arrive as Markdown (document_markdown): "### Điều 1. ..." is still Điều 1.
+MARKDOWN_HEADING = re.compile(r"^#{1,6}\s+")
 
 
 def _compact(value: str, limit: int = 500) -> str:
@@ -50,17 +58,30 @@ def detect_contract_type(text: str) -> dict[str, Any]:
 
 
 def split_contract_clauses(text: str) -> list[dict[str, Any]]:
-    lines = [line.strip() for line in text.replace("\r\n", "\n").split("\n")]
+    lines = [MARKDOWN_HEADING.sub("", line.strip()) for line in text.replace("\r\n", "\n").split("\n")]
     clauses: list[dict[str, Any]] = []
     current: dict[str, Any] | None = None
     preamble: list[str] = []
+    # A document written in articles numbers the points inside each one "1.", "2." again.
+    # Split at every number and each article's points became clauses of their own: "2"
+    # named a dozen different points, and a statute ran out of the 200-clause cap at its
+    # 71st article. When there are articles, only an article starts a clause.
+    by_article = sum(1 for line in lines if ARTICLE_PATTERN.match(line)) >= 2
 
     for line_number, line in enumerate(lines, 1):
         if not line:
             continue
-        match = HEADING_PATTERN.match(line)
+        match = (
+            ARTICLE_PATTERN.match(line)
+            if by_article
+            else HEADING_PATTERN.match(line) or ARTICLE_PATTERN.match(line)
+        )
         is_upper_heading = (
-            len(line) <= 120
+            # Among articles, a line in capitals names a chapter or the parties; numbered
+            # as a clause of its own, it took the number of an article ("3").
+            not by_article
+            and not line.startswith("|")  # a table row in capitals is not a heading
+            and len(line) <= 120
             and len(line.split()) <= 14
             and line == line.upper()
             and any(character.isalpha() for character in line)
@@ -71,7 +92,7 @@ def split_contract_clauses(text: str) -> list[dict[str, Any]]:
                 clauses.append(current)
             if match:
                 number = match.group(2)
-                title = match.group(3).strip(" .:-")
+                title = _compact(match.group(3), 160).strip(" .:-")
             else:
                 number = str(len(clauses) + 1)
                 title = line.title()

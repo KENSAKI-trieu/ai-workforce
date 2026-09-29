@@ -86,6 +86,10 @@ class ToolDefinition:
     # A terminal tool's result carries the user-facing `reply`, and the graph ends the
     # turn on it instead of asking the model what to do next.
     terminal: bool = False
+    # The tool's effect is to put something in front of a human approver -- a draft waiting
+    # for sign-off -- so the graph runs it without stopping for an approval of the call
+    # first. Stopping as well meant approving the same thing twice.
+    opens_approval: bool = False
 
     def authorize(self, user: User) -> None:
         if not user.is_active or not self.acl.permits(user):
@@ -107,6 +111,7 @@ class ToolDefinition:
             },
             "audit_action": self.audit_action,
             "terminal": self.terminal,
+            "opens_approval": self.opens_approval,
             "input_schema": self.input_schema.model_json_schema(),
         }
 
@@ -143,6 +148,7 @@ def _definition(
     acl_match: str = "ROLE_AND_DEPARTMENT",
     *,
     terminal: bool = False,
+    opens_approval: bool = False,
 ) -> ToolDefinition:
     read_only = action == ToolAction.READ_ONLY
     return ToolDefinition(
@@ -156,6 +162,7 @@ def _definition(
         audit_action=audit_action,
         executor=executor,
         terminal=terminal,
+        opens_approval=opens_approval,
     )
 
 
@@ -166,6 +173,7 @@ def build_tool_registry() -> ToolRegistry:
     from app.tools.executors.knowledge import search_rag
     from app.tools.executors.legal import generate_legal_document_draft, review_contract_risk
     from app.tools.executors.tasks import create_task
+    from app.domains.legal.legal_documents import document_catalogue
 
     registry = ToolRegistry()
     definitions = (
@@ -174,7 +182,23 @@ def build_tool_registry() -> ToolRegistry:
         _definition("leave_lookup", "Read an ACL-filtered leave balance.", LeaveLookupInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10, "tool.leave.read", lookup_leave),
         _definition("create_task", "Create a tenant task.", CreateTaskInput, ToolAction.WRITE, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.task.create", create_task),
         _definition("expense_lookup", "Read AI spend and usage costs.", ExpenseLookupInput, ToolAction.READ_ONLY, {"Owner", "Admin", "CEO", "Manager"}, {"FINANCE"}, 20, "tool.expense.read", lookup_expenses, "ROLE_OR_DEPARTMENT"),
-        _definition("generate_legal_document", "Generate a legal draft for human approval.", GenerateLegalDocumentInput, ToolAction.WRITE, {"Owner", "Admin", "CEO"}, {"LEGAL"}, 45, "tool.legal.generate", generate_legal_document_draft, "ROLE_OR_DEPARTMENT"),
+        # Terminal, and it opens its own approval: the draft waits for Owner/Admin/CEO
+        # sign-off before its requester can download it, so nothing leaves on this call.
+        # It checks the fields before storing anything and says which are missing.
+        _definition(
+            "generate_legal_document",
+            "Draft a legal document from one of the company's templates and send it for "
+            "approval, only when the user asks for a document to be drafted. Put in "
+            "`fields` only values the user actually gave in this conversation; never "
+            "invent names, dates, amounts or terms. Call it even when some are missing: "
+            "it tells the user which ones it still needs. Its result is the answer to the "
+            "user, and the draft goes to approval by itself, so never submit another "
+            "approval for it. Templates, as document_type (label): field names, * = "
+            "required, with options and defaults:\n" + document_catalogue(),
+            GenerateLegalDocumentInput, ToolAction.WRITE, {"Owner", "Admin", "CEO"}, {"LEGAL"}, 45,
+            "tool.legal.generate", generate_legal_document_draft, "ROLE_OR_DEPARTMENT",
+            terminal=True, opens_approval=True,
+        ),
         _definition("submit_approval_request", "Create a human approval gate.", SubmitApprovalInput, ToolAction.EXTERNAL_ACTION, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.approval.submit", submit_approval_request),
         # READ_ONLY in the graph's sense -- it runs without a human approving it first --
         # although it stores the review it produces. That record is idempotent per user,

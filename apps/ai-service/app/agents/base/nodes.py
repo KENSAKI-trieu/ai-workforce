@@ -199,6 +199,7 @@ def model_decision(
             "args": redact_sensitive_data(decision.tool_args),
             "action": str((tool.metadata or {}).get("action", "READ_ONLY")),
             "terminal": bool((tool.metadata or {}).get("terminal")),
+            "opens_approval": bool((tool.metadata or {}).get("opens_approval")),
             "reason": decision.reason,
         }
     elif not decision.answerable:
@@ -238,7 +239,11 @@ def after_decision(state: WorkforceAgentState) -> str:
     pending = state.get("pending_tool_call")
     if not pending:
         return "output_validation"
-    return "execute_read_tool" if pending.get("action") == "READ_ONLY" else "approval_interrupt"
+    # A tool whose effect is an approval of its own -- a draft waiting for sign-off -- runs
+    # without stopping here first; stopping as well had the same thing approved twice.
+    if pending.get("action") == "READ_ONLY" or pending.get("opens_approval"):
+        return "execute_read_tool"
+    return "approval_interrupt"
 
 
 def _execute_tool(

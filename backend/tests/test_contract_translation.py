@@ -171,3 +171,22 @@ def test_an_uploaded_english_contract_is_refused_rather_than_scored_wrong(
     )
     assert response.status_code == 422
     assert response.json()["detail"] == UNAVAILABLE_REPLY
+
+
+def test_the_translator_never_sees_personal_data_and_the_translation_gets_it_back():
+    text = "EMPLOYMENT CONTRACT\nEmployee: John Smith, phone 0912 345 678.\nClause 1. Mr. John Smith works for twelve months."
+    translator = Translator()
+
+    def generate_text(messages, **_kwargs):
+        block = messages[-1]["content"]
+        translator.calls.append(block)
+        assert "Stand-ins" in messages[0]["content"] or "stand-ins" in messages[0]["content"]
+        return {"provider": "gemini", "content": "LANGUAGE: en\n" + block.replace("Clause", "Điều").replace("works for twelve months", "làm việc 12 tháng")}
+
+    translator.generate_text = generate_text  # type: ignore[method-assign]
+    result = text_for_review(text, client=translator)  # type: ignore[arg-type]
+
+    assert "John Smith" not in translator.calls[0] and "0912 345 678" not in translator.calls[0]
+    assert "[NGƯỜI_1]" in translator.calls[0]
+    assert result.translated and "Mr. John Smith làm việc 12 tháng" in result.text
+    assert "0912 345 678" in result.text

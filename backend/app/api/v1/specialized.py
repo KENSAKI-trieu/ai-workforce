@@ -5,12 +5,13 @@ API Endpoints for Legal, IT, Finance, and Sales domain operations.
 import io
 import json
 import mimetypes
+import re
 import uuid
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from urllib.parse import quote
 
-from fastapi import APIRouter, Depends, File, Form, HTTPException, UploadFile
+from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
 from fastapi.responses import PlainTextResponse, Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
@@ -20,8 +21,10 @@ from app.core.security import get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
 from app.core.tool_permissions import grant_decision
 from app.plugins.resolver import resolve_skill_restriction
+from app.domains.platform.audit_events import add_audit_event
 from app.domains.platform.audit_service import log_audit_action
 from app.domains.legal import contract_review_store
+from app.domains.knowledge.document_markdown import to_markdown
 from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
 from app.domains.legal.legal_service import (
     audit_contract_text,
@@ -29,7 +32,8 @@ from app.domains.legal.legal_service import (
     compare_contract_texts,
     detect_sensitive_data,
 )
-from app.domains.legal.contract_review import detect_contract_type, review_contract
+from app.domains.legal.contract_review.analyzer import ASSESSED_REVIEW_VERSION
+from app.domains.legal.contract_review.llm_assessment import review_with_assessment
 from app.domains.legal.contract_redline import build_redline_docx
 from app.domains.legal.contract_translation import (
     ContractNotReviewable,
@@ -39,10 +43,12 @@ from app.domains.legal.contract_translation import (
 from app.agents.usage import _llm_usage_recorder
 # Shared with the chat path so both entry points escalate identically.
 from app.domains.legal.legal_approval_service import create_legal_approval as _create_legal_approval
-from app.domains.legal.legal_document_generator import generate_legal_document
 from app.domains.legal.legal_draft_storage import read_legal_artifact, save_legal_artifact
+from app.domains.legal.legal_document_submission import (
+    LEGAL_DOCUMENT_APPROVERS,
+    submit_legal_document,
+)
 from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
-from app.domains.platform.notification_service import create_notification
 from app.domains.knowledge.rag_service import hybrid_search_documents
 from app.core.agent_status import refuse_under_development
 from app.domains.incubating.finance_service import audit_invoice_and_reconcile
@@ -88,7 +94,6 @@ def _legal_tool_required(tool_name: str):
 
     return Depends(dependency)
 MAX_LEGAL_FILE_BYTES = 10 * 1024 * 1024
-LEGAL_DOCUMENT_APPROVERS = {"Owner", "Admin", "CEO"}
 
 
 class ContractAuditRequest(BaseModel):
@@ -197,6 +202,50 @@ def _contract_review_for_user(
     return review
 
 
+def _audit_review_access(
+    db: Session,
+    current_user: User,
+    request: Request,
+    *,
+    action: str,
+    review_id: str | None = None,
+    status: str = "SUCCESS",
+    output: dict[str, Any] | None = None,
+) -> None:
+    """Record who read a contract review, from where, and whether they were let in.
+
+    A review holds the whole contract, and only its writes were audited: anyone who
+    could open it left no trace of having done so.
+    """
+    add_audit_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        action=action,
+        actor_user=current_user,
+        agent_role="LEGAL",
+        resource_type="CONTRACT_REVIEW",
+        resource_id=review_id,
+        request=request,
+        status=status,
+        output_result=output,
+    )
+    db.commit()
+
+
+def _readable_review(
+    db: Session, current_user: User, request: Request, review_id: str, *, action: str
+) -> ContractReview:
+    """The review, with the read recorded -- a refused one as DENIED, then re-raised."""
+    try:
+        review = _contract_review_for_user(db, current_user, review_id)
+    except HTTPException:
+        # Not found and not allowed are one 404 to the caller, and one DENIED here.
+        _audit_review_access(db, current_user, request, action=action, review_id=review_id, status="DENIED")
+        raise
+    _audit_review_access(db, current_user, request, action=action, review_id=str(review.id))
+    return review
+
+
 def _contract_review_item(
     review: ContractReview, decisions: list[dict[str, Any]], current_user: User
 ) -> dict[str, Any]:
@@ -253,13 +302,25 @@ async def _read_legal_file(file: UploadFile) -> tuple[str, str, list[str]]:
                     rows.append(" | ".join(values))
             text = "\n".join(rows)
         else:
-            text = extract_file_text(filename, data)
+            # A PDF or DOCX is read as Markdown: tables in place, Word's article numbers
+            # kept, page headers dropped. Anything else as plain text.
+            markdown = to_markdown(filename, data)
+            text = markdown if markdown is not None else extract_file_text(filename, data)
             if extension == ".csv" and text:
                 headers = [part.strip() for part in text.splitlines()[0].split("|")]
     except (DocumentParseError, UnicodeDecodeError, ValueError, json.JSONDecodeError) as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-    if not text.strip():
-        raise HTTPException(status_code=422, detail="No readable text was found in the file")
+    # A scanned PDF has no text layer but still yields its page markers, so it passed as
+    # "text" and an empty contract was reviewed and scored.
+    if not re.sub(r"\[\[PAGE:\d+\]\]", "", text).strip():
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                "Không đọc được chữ trong file: có thể đây là bản scan hoặc ảnh chụp. "
+                "Hệ thống chưa hỗ trợ nhận dạng chữ (OCR) cho tiếng Việt; hãy gửi bản DOCX "
+                "hoặc PDF có thể chọn/copy được chữ."
+            ),
+        )
     return filename, text, headers
 
 
@@ -356,15 +417,28 @@ def audit_contract_endpoint(
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
+    stored = contract_review_store.find_contract_review(
+        db,
+        user=current_user,
+        contract_text=req.contract_text,
+        represented_party=req.represented_party,
+        review_version=ASSESSED_REVIEW_VERSION,
+    )
+    if stored is not None:
+        result = dict(stored.result or {})
+        result["review_id"] = str(stored.id)
+        result["redline_url"] = f"/api/v1/legal/contract-reviews/{stored.id}/redline"
+        return result
+    on_usage = _llm_usage_recorder(db, current_user, "LEGAL")
     try:
-        review_text = text_for_review(
-            req.contract_text, on_usage=_llm_usage_recorder(db, current_user, "LEGAL")
-        )
+        review_text = text_for_review(req.contract_text, on_usage=on_usage)
     except ContractNotReviewable as exc:
         raise HTTPException(status_code=422, detail=exc.reply) from exc
     try:
         result = mark_translated(
-            review_contract(review_text.text, req.document_name, req.represented_party),
+            review_with_assessment(
+                review_text.text, req.document_name, req.represented_party, on_usage=on_usage
+            ),
             review_text,
         )
     except ValueError as exc:
@@ -394,25 +468,48 @@ async def review_legal_document(
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
     filename, text, _ = await _read_legal_file(file)
-    # Translated before anything reads it: the contract type, the references and the
-    # findings all come from Vietnamese rules.
+    stored = contract_review_store.find_contract_review(
+        db,
+        user=current_user,
+        contract_text=text,
+        represented_party=represented_party,
+        review_version=ASSESSED_REVIEW_VERSION,
+    )
+    if stored is not None:
+        # The same file for the same side: its review, redline decisions and escalation
+        # are already there, and the model is not asked a second time.
+        result = dict(stored.result or {})
+        result["review_id"] = str(stored.id)
+        result["decisions"] = contract_review_store.serialize_decisions(db, stored)
+        result["redline_url"] = f"/api/v1/legal/contract-reviews/{stored.id}/redline"
+        return result
+    on_usage = _llm_usage_recorder(db, current_user, "LEGAL")
+    # Translated before anything reads it: the rule floor under the model's reading is a
+    # set of Vietnamese rules.
     try:
-        review_text = text_for_review(
-            text, on_usage=_llm_usage_recorder(db, current_user, "LEGAL")
-        )
+        review_text = text_for_review(text, on_usage=on_usage)
     except ContractNotReviewable as exc:
         raise HTTPException(status_code=422, detail=exc.reply) from exc
-    detection = detect_contract_type(review_text.text)
-    references = _retrieve_contract_review_references(
-        db, current_user, detection["contract_type_label"]
-    )
     try:
         result = mark_translated(
-            review_contract(review_text.text, filename, represented_party, references),
+            review_with_assessment(review_text.text, filename, represented_party, on_usage=on_usage),
             review_text,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
+    # Looked up by the type the review settled on -- the model's, when it read the
+    # contract -- rather than by a keyword guess made before it.
+    known = {source.get("id") for source in result["reference_sources"]}
+    result["reference_sources"] = [
+        *result["reference_sources"],
+        *(
+            source
+            for source in _retrieve_contract_review_references(
+                db, current_user, result["contract_type_label"]
+            )
+            if source.get("id") not in known
+        ),
+    ]
     # Saved here rather than by a follow-up call from the browser: a second call
     # would have to accept the review body back from the client, which would let
     # anyone post a fabricated result and have it become the audit record.
@@ -450,6 +547,7 @@ async def review_legal_document(
 
 @router.get("/legal/contract-reviews", summary="List saved contract reviews")
 def list_contract_reviews_endpoint(
+    request: Request,
     limit: int = 50,
     offset: int = 0,
     risk_level: Optional[str] = None,
@@ -458,6 +556,10 @@ def list_contract_reviews_endpoint(
 ) -> list[dict[str, Any]]:
     reviews = contract_review_store.list_contract_reviews(
         db, user=current_user, limit=limit, offset=offset, risk_level=risk_level
+    )
+    _audit_review_access(
+        db, current_user, request, action="contract_review.list",
+        output={"review_ids": [str(review.id) for review in reviews]},
     )
     return [
         _contract_review_item(
@@ -473,10 +575,11 @@ def list_contract_reviews_endpoint(
 )
 def get_contract_review_endpoint(
     review_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Dict[str, Any]:
-    review = _contract_review_for_user(db, current_user, review_id)
+    review = _readable_review(db, current_user, request, review_id, action="contract_review.view")
     decisions = contract_review_store.serialize_decisions(db, review)
     # The stored analyzer output is spread at the top level so the client renders a
     # reopened review through exactly the same shape as a fresh one.
@@ -645,91 +748,15 @@ def submit_legal_document_draft(
     current_user: User = Depends(get_current_active_user),
 ) -> dict[str, Any]:
     try:
-        draft_content, filename, media_type = generate_legal_document(
-            req.document_type, req.output_format, req.fields, approved=False
-        )
-        approved_content, _, _ = generate_legal_document(
-            req.document_type, req.output_format, req.fields, approved=True
+        approval = submit_legal_document(
+            db,
+            current_user,
+            document_type=req.document_type,
+            output_format=req.output_format,
+            fields=req.fields,
         )
     except ValueError as exc:
         raise HTTPException(status_code=422, detail=str(exc)) from exc
-
-    artifact_id = uuid.uuid4().hex
-    draft_key = save_legal_artifact(
-        tenant_id=current_user.tenant_id,
-        artifact_id=artifact_id,
-        variant="draft",
-        filename=filename,
-        content=draft_content,
-    )
-    approved_key = save_legal_artifact(
-        tenant_id=current_user.tenant_id,
-        artifact_id=artifact_id,
-        variant="approved",
-        filename=filename,
-        content=approved_content,
-    )
-    template = next(
-        (
-            item
-            for item in list_document_schemas()
-            if item["id"] == req.document_type.upper()
-        ),
-        None,
-    )
-    document_type_label = template["label"] if template else req.document_type
-    workflow = AgentWorkflow(
-        tenant_id=current_user.tenant_id,
-        initiator_id=current_user.id,
-        title=f"Phê duyệt văn bản: {document_type_label}",
-        status="AWAITING_APPROVAL",
-        current_step=1,
-        dag_plan={
-            "agent_role": "LEGAL",
-            "steps": ["DRAFT_CREATED", "EXECUTIVE_APPROVAL", "CREATOR_DOWNLOAD"],
-        },
-    )
-    db.add(workflow)
-    db.flush()
-    approval = WorkflowApproval(
-        workflow_id=workflow.id,
-        action_type="LEGAL_DOCUMENT_APPROVAL",
-        risk_level="MEDIUM",
-        payload={
-            "artifact_id": artifact_id,
-            "document_type": req.document_type.upper(),
-            "document_type_label": document_type_label,
-            "filename": filename,
-            "media_type": media_type,
-            "output_format": req.output_format.lower(),
-            "draft_storage_key": draft_key,
-            "approved_storage_key": approved_key,
-            "requester_id": str(current_user.id),
-            "requester_name": current_user.full_name,
-            "reason": "Văn bản do Legal Agent tạo cần CEO, Admin hoặc Owner phê duyệt trước khi người tạo tải xuống.",
-            "data_sources": [document_type_label],
-            "preview_url": f"/api/v1/legal/document-drafts/{artifact_id}/preview",
-            "review_download_url": f"/api/v1/legal/document-drafts/{artifact_id}/download?variant=draft",
-        },
-        status="WAITING",
-    )
-    db.add(approval)
-    for approver in db.query(User).filter(
-        User.tenant_id == current_user.tenant_id,
-        User.role.in_(LEGAL_DOCUMENT_APPROVERS),
-        User.is_active.is_(True),
-    ).all():
-        create_notification(
-            db,
-            user=approver,
-            event_type="APPROVAL_REQUIRED",
-            title="Văn bản pháp lý chờ phê duyệt",
-            message=f"{current_user.full_name} đã gửi {document_type_label}.",
-            severity="WARNING",
-            entity_type="APPROVAL",
-            entity_id=str(approval.id),
-            dedup_key=f"legal-document-approval:{approval.id}:{approver.id}",
-        )
     db.commit()
     db.refresh(approval)
     return _legal_draft_item(approval, current_user)
@@ -835,10 +862,11 @@ def download_legal_document_draft(
 )
 def download_contract_redline(
     review_id: str,
+    request: Request,
     db: Session = Depends(get_db),
     current_user: User = Depends(get_current_active_user),
 ) -> Response:
-    review = _contract_review_for_user(db, current_user, review_id)
+    review = _readable_review(db, current_user, request, review_id, action="contract_review.redline_download")
     decisions = contract_review_store.serialize_decisions(db, review)
     if not any(item["decision"] in {"ACCEPTED", "EDITED"} for item in decisions):
         raise HTTPException(

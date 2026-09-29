@@ -72,6 +72,7 @@ def test_tools_are_built_from_the_contracts_the_backend_returns() -> None:
     assert rag.metadata["action"] == "READ_ONLY"
     assert rag.metadata["terminal"] is False
     assert tools["audit_contract_risk"].metadata["terminal"] is True
+    assert rag.metadata["opens_approval"] is False
 
     invocation = {
         "tenant_id": str(uuid.uuid4()),

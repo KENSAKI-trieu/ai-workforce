@@ -27,6 +27,7 @@ from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 
 from app.core.database import Base
+from app.core.encryption import EncryptedJSONB, EncryptedText
 
 
 def utcnow():
@@ -635,8 +636,8 @@ class ContractReview(Base):
     risk_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="LOW")
     total_findings: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
-    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    contract_text: Mapped[str] = mapped_column(EncryptedText, nullable=False)
+    result: Mapped[dict] = mapped_column(EncryptedJSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="OPEN")
     redline_artifact_id: Mapped[str | None] = mapped_column(String(64))
     redline_storage_key: Mapped[str | None] = mapped_column(Text)
@@ -1102,7 +1103,9 @@ class ChatMessage(Base):
         nullable=False,
     )
     sender: Mapped[str] = mapped_column(String(20), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Sealed for every agent: a column cannot tell a Legal message from another, and HR
+    # chat carries salaries.
+    content: Mapped[str] = mapped_column(EncryptedText, nullable=False)
     citations: Mapped[dict] = mapped_column(JSONB, default=list)
     tools_executed: Mapped[dict] = mapped_column(JSONB, default=list)
     attachments: Mapped[dict] = mapped_column(JSONB, default=list)

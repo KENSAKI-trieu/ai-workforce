@@ -22,6 +22,7 @@ from typing import Any
 
 from app.agents.llm_json import UsageReporter, is_echo_provider, report_usage
 from app.clients.ai_service_client import AIServiceClient, AIServiceError, get_ai_service_client
+from app.domains.legal.contract_privacy import STAND_IN_INSTRUCTION, Pseudonymizer
 
 logger = logging.getLogger(__name__)
 
@@ -54,6 +55,7 @@ Otherwise write the whole Vietnamese translation after that line:
   Party B are "Bên A" and "Bên B".
 - The text may be one piece of a longer contract and start or stop mid-clause; translate it
   as it stands.
+- """ + STAND_IN_INSTRUCTION + """
 No other text before or after."""
 
 UNAVAILABLE_REPLY = (
@@ -161,7 +163,9 @@ def text_for_review(
     ai_client = client or get_ai_service_client()
     if not ai_client.enabled:
         raise ContractNotReviewable(UNAVAILABLE_REPLY)
-    blocks = _blocks(text)
+    # The provider sees stand-ins for personal data; the translation gets them back.
+    hider = Pseudonymizer()
+    blocks = _blocks(hider.hide(text))
     if len(blocks) > MAX_BLOCKS:
         raise ContractNotReviewable(TOO_LONG_REPLY)
     try:
@@ -186,7 +190,7 @@ def text_for_review(
     if any(not translation for _, translation in parsed):
         raise ContractNotReviewable(UNAVAILABLE_REPLY)
     return ReviewText(
-        "\n\n".join(translation for _, translation in parsed), language, True
+        hider.reveal("\n\n".join(translation for _, translation in parsed)), language, True
     )
 
 

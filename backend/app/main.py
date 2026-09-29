@@ -11,6 +11,7 @@ from fastapi.responses import JSONResponse
 
 from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
+from app.core.encryption import cipher
 from app.api.v1.router import api_router
 
 # ---------------------------------------------------------------------------
@@ -45,6 +46,11 @@ async def lifespan(app: FastAPI):
     except Exception as e:
         logger.error(f"⚠️ Database connectivity check failed: {e}")
         raise
+    # A malformed key fails here, at startup, rather than on the first message saved.
+    if cipher() is None:
+        logger.warning(
+            "⚠️ DATA_ENCRYPTION_KEY is not set: contract reviews and chat messages are stored unencrypted."
+        )
     graph_roles = sorted(role for role in ("HR", "LEGAL", "KNOWLEDGE", "IT", "FINANCE", "SALES", "CEO") if uses_langgraph(role))
     if graph_roles:
         # A role on LangGraph skips its deterministic flow. For LEGAL that means the intent

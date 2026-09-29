@@ -475,3 +475,42 @@ def test_a_terminal_tool_without_a_reply_hands_back_to_the_model() -> None:
 
     assert result["final_answer"] == "Đã rà soát."
     assert not decider.decisions
+
+
+def test_a_tool_that_opens_its_own_approval_runs_without_a_second_gate() -> None:
+    """A legal draft waits for sign-off by itself; stopping first had it approved twice."""
+    security = _security(
+        allowed_tools={"generate_legal_document"}, department="LEGAL", agent_role="LEGAL"
+    )
+    draft = FakeTool(
+        "generate_legal_document",
+        "WRITE",
+        {"status": "SUBMITTED", "approval_id": "a-1", "reply": "Tôi đã tạo bản nháp NDA."},
+    )
+    draft.metadata.update({"terminal": True, "opens_approval": True})
+    registered: list[dict[str, Any]] = []
+    context = OrchestrationRuntimeContext(
+        security=security,
+        decision_provider=SequenceDecisionProvider(
+            GraphDecision(
+                tool_name="generate_legal_document",
+                tool_args={"document_type": "NDA", "fields": {"party_a": "NovaSoft"}},
+                reason="draft it",
+            ),
+        ),
+        tools={"generate_legal_document": draft},
+        approval_registrar=lambda payload: registered.append(payload) or {"approval_id": "x"},
+    )
+
+    result = LangGraphEngine().invoke(
+        _state(security, "Soạn NDA với NovaSoft", requested_agent="LEGAL"),
+        context=context,
+        thread_id="legal-draft-thread",
+    )
+
+    assert "__interrupt__" not in result
+    assert registered == []
+    assert result["final_answer"] == "Tôi đã tạo bản nháp NDA."
+    assert len(draft.calls) == 1
+    # Still a write: the gateway gets its idempotency key.
+    assert draft.calls[0]["audit"]["idempotency_key"].startswith("graph:")

@@ -2,6 +2,7 @@
 
 from app.domains.legal.legal_documents.schemas import (
     DOCUMENT_SCHEMAS,
+    document_catalogue,
     get_document_schema,
     list_document_schemas,
 )
@@ -9,6 +10,7 @@ from app.domains.legal.legal_documents.validators import validate_document_field
 
 __all__ = [
     "DOCUMENT_SCHEMAS",
+    "document_catalogue",
     "get_document_schema",
     "list_document_schemas",
     "validate_document_fields",

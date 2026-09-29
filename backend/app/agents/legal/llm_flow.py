@@ -28,6 +28,7 @@ from app.agents.llm_json import (
     report_usage,
 )
 from app.clients.ai_service_client import AIServiceClient, AIServiceError, get_ai_service_client
+from app.domains.legal.contract_privacy import Pseudonymizer
 
 logger = logging.getLogger(__name__)
 
@@ -119,7 +120,8 @@ def classify_legal_request(
                 "content": json.dumps(
                     {
                         "pending_state": pending_state,
-                        "message": bounded_message(message),
+                        # Only a label comes back, so the provider never needs the people.
+                        "message": bounded_message(Pseudonymizer().hide(message)),
                     },
                     ensure_ascii=False,
                 ),
@@ -188,7 +190,7 @@ def extract_represented_party(
             {
                 "role": "user",
                 "content": json.dumps(
-                    {"message": bounded_message(message)}, ensure_ascii=False
+                    {"message": bounded_message(Pseudonymizer().hide(message))}, ensure_ascii=False
                 ),
             },
         ], timeout=settings.AI_SERVICE_ROUTER_TIMEOUT_SECONDS)

@@ -59,6 +59,32 @@ def can_access_contract_review(user: User, review: ContractReview) -> bool:
     return user.role in LEGAL_REVIEW_APPROVERS or review.created_by_id == user.id
 
 
+def find_contract_review(
+    db: Session,
+    *,
+    user: User,
+    contract_text: str,
+    represented_party: str,
+    review_version: str,
+) -> ContractReview | None:
+    """The review this person already has of this text, for this side and analyzer version.
+
+    Callers look before a model-assisted review runs: its wording differs from run to
+    run, so a fresh result shown over a stored row would carry finding keys the stored
+    row does not have, and every decision taken on the card would be refused.
+    """
+    key = _idempotency_key(
+        created_by_id=user.id,
+        text_hash=content_hash(contract_text),
+        represented_party=represented_party.upper(),
+        review_version=review_version,
+    )
+    return db.query(ContractReview).filter(
+        ContractReview.tenant_id == user.tenant_id,
+        ContractReview.idempotency_key == key,
+    ).first()
+
+
 def save_contract_review(
     db: Session,
     *,
@@ -82,10 +108,13 @@ def save_contract_review(
         represented_party=represented_party,
         review_version=review_version,
     )
-    existing = db.query(ContractReview).filter(
-        ContractReview.tenant_id == user.tenant_id,
-        ContractReview.idempotency_key == key,
-    ).first()
+    existing = find_contract_review(
+        db,
+        user=user,
+        contract_text=contract_text,
+        represented_party=represented_party,
+        review_version=review_version,
+    )
     if existing:
         # Late escalation: a review first run below the approval threshold can be
         # linked to a workflow on a later identical run.

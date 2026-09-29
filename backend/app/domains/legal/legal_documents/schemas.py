@@ -221,3 +221,26 @@ def get_document_schema(document_type: str) -> dict[str, Any]:
 
 def list_document_schemas() -> list[dict[str, Any]]:
     return [get_document_schema(document_type) for document_type in DOCUMENT_SCHEMAS]
+
+
+def _catalogue_field(field: dict[str, Any]) -> str:
+    details = [field["label"]]
+    if field.get("options"):
+        details.append("|".join(option["value"] for option in field["options"]))
+    if field.get("default"):
+        details.append(f"default {field['default']}")
+    marker = "*" if field["required"] else ""
+    return f"{field['name']}{marker} ({'; '.join(details)})"
+
+
+def document_catalogue() -> str:
+    """Every template as a model filling one in needs it: its id, and each field's name.
+
+    The drafting tool used to offer `fields` as a free-form object, so the model guessed
+    names and the draft failed for missing fields only after someone had approved it.
+    """
+    return "\n".join(
+        f"{document_type} ({schema['label']}): "
+        + ", ".join(_catalogue_field(field) for field in schema["fields"])
+        for document_type, schema in DOCUMENT_SCHEMAS.items()
+    )

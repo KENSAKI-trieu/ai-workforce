@@ -2,7 +2,9 @@
 
     input_guard → <agent>_policy → <agent>_tool_scope → retrieve_context → model_decision
         model_decision → execute_read_tool → model_decision   (read tools loop back)
-        model_decision → approval_interrupt                     (actions wait for a human)
+        model_decision → approval_interrupt                     (actions wait for a human,
+                                                                 unless the tool opens its
+                                                                 own approval)
         → output_validation → citation_verification → response
 
 There is no parent graph routing between agents: the user always talks to one agent and

@@ -18,8 +18,16 @@ from app.domains.legal.legal_document_generator import generate_legal_document
 from app.domains.legal.legal_documents import DOCUMENT_SCHEMAS
 from app.domains.legal.legal_draft_storage import save_legal_artifact
 from app.domains.platform.notification_service import create_notification
+from app.domains.platform.position_service import has_permission, users_with_permission
 
-LEGAL_DOCUMENT_APPROVERS = frozenset({"Owner", "Admin", "CEO"})
+# Ticked in org-structure as "Duyệt văn bản pháp lý"; it replaced the Owner/Admin/CEO
+# role strings, which no box on a position could grant or take away.
+LEGAL_DOCUMENT_APPROVE_PERMISSION = "legal.document.approve"
+LEGAL_DOCUMENT_GENERATE_PERMISSION = "legal.document.generate"
+
+
+def can_approve_legal_documents(user: User) -> bool:
+    return has_permission(None, user, LEGAL_DOCUMENT_APPROVE_PERMISSION)
 
 
 def document_type_label(document_type: str) -> str:
@@ -101,11 +109,7 @@ def submit_legal_document(
     )
     db.add(approval)
     db.flush()
-    for approver in db.query(User).filter(
-        User.tenant_id == user.tenant_id,
-        User.role.in_(LEGAL_DOCUMENT_APPROVERS),
-        User.is_active.is_(True),
-    ).all():
+    for approver in users_with_permission(db, user.tenant_id, LEGAL_DOCUMENT_APPROVE_PERMISSION):
         create_notification(
             db,
             user=approver,

@@ -13,6 +13,7 @@ from sqlalchemy.orm import aliased
 
 from app.models.models import Department, EmploymentContract, User, UserProfile
 from app.domains.platform.audit_events import add_audit_event
+from app.domains.platform.position_service import has_permission
 from app.domains.hr.hr_access_policy import authorize_employee_access, normalize_sections
 from app.domains.hr.hr_service import (
     authorized_employee_ids,
@@ -54,6 +55,23 @@ def list_tenant_departments(db: Session, *, actor: User) -> tuple[tuple[str, str
     return tuple(sorted(catalogue.items()))
 
 
+DIRECTORY_PERMISSION = "hr.directory.view"
+
+
+def directory_scope(db: Session, actor: User) -> tuple[set, str]:
+    """Whose BASIC records the directory may list for ``actor``, and the scope label.
+
+    The directory is the BASIC section of other people's records, listed in bulk. The
+    profile path asked for `hr.directory.view` through the section policy while these two
+    did not, so unticking "Tra cứu danh bạ nhân sự" hid one person's card yet still listed
+    and exported everyone in scope. Without it the list is the actor alone -- the same
+    self-service floor the profile path keeps.
+    """
+    if has_permission(db, actor, DIRECTORY_PERMISSION):
+        return set(authorized_employee_ids(db, actor)), hr_scope_label(actor)
+    return {actor.id}, "SELF"
+
+
 def query_company_users_sql(
     db: Session,
     *,
@@ -79,7 +97,7 @@ def query_company_users_sql(
         str(value).strip()[:50] for value in (roles or []) if str(value).strip()
     ))
     safe_limit = max(1, min(int(limit), 100))
-    scoped_ids = authorized_employee_ids(db, actor)
+    scoped_ids, scope = directory_scope(db, actor)
     manager = aliased(User)
     statement = (
         select(
@@ -140,7 +158,6 @@ def query_company_users_sql(
         }
         for row in rows
     ]
-    scope = hr_scope_label(actor)
     add_audit_event(
         db,
         tenant_id=actor.tenant_id,
@@ -200,7 +217,7 @@ def export_company_users_dataset(
         str(value).strip()[:50] for value in (roles or []) if str(value).strip()
     ))
     safe_max_rows = max(1, min(int(max_rows), 10_000))
-    scoped_ids = authorized_employee_ids(db, actor)
+    scoped_ids, scope = directory_scope(db, actor)
     manager = aliased(User)
     statement = (
         select(
@@ -262,7 +279,6 @@ def export_company_users_dataset(
         }
         for row in rows
     ]
-    scope = hr_scope_label(actor)
     add_audit_event(
         db,
         tenant_id=actor.tenant_id,
@@ -491,7 +507,7 @@ def list_contract_status_summaries(
         output_result={
             "request_id": request_id,
             "result": "ALLOWED",
-            "scope": "COMPANY" if actor.role in {"Owner", "CEO"} else "SCOPED",
+            "scope": hr_scope_label(actor),
             "result_ids": [item["id"] for item in items],
             "target_employee_ids": list(dict.fromkeys(item["employee_id"] for item in items)),
             "allowed_sections": ["CONTRACT"],
@@ -504,7 +520,7 @@ def list_contract_status_summaries(
     return {
         "request_id": request_id,
         "purpose": purpose,
-        "scope": "COMPANY" if actor.role in {"Owner", "CEO"} else "SCOPED",
+        "scope": hr_scope_label(actor),
         "items": items,
     }
 

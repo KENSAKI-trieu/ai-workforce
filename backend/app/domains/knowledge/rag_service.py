@@ -239,6 +239,25 @@ def _rank_sparse_bm25(
     return sorted(scores, key=lambda item: item[1], reverse=True)[:limit]
 
 
+def user_search_scope(db: Session, user: Any) -> Dict[str, Any]:
+    """How far a person's knowledge search reaches, from the permissions of their position.
+
+    Every agent used to decide this with ``user.role in {"Owner", "Admin", "CEO"}``, so the
+    org-structure boxes "Tra cứu tri thức mọi phòng ban" and "Xem tài liệu hạn chế" changed
+    nothing. Spread into ``hybrid_search_documents``; a caller pinning its own department
+    overrides ``department`` after the spread.
+    """
+    from app.domains.platform.position_service import user_permissions
+
+    granted = user_permissions(db, user)
+    return {
+        "department": "*" if "knowledge.scope.company" in granted else user.department,
+        "can_read_restricted": "knowledge.view_restricted" in granted,
+        "user_role": user.role,
+        "user_department": user.department,
+    }
+
+
 def hybrid_search_documents(
     db: Session,
     tenant_id: uuid.UUID,
@@ -250,10 +269,15 @@ def hybrid_search_documents(
     user_role: str | None = None,
     user_department: str | None = None,
     as_of: date | None = None,
+    can_read_restricted: bool | None = None,
 ) -> List[Dict[str, Any]]:
     """
     Hybrid Search combining Dense Vector Cosine Similarity and Sparse Keyword Matching.
     Calculates RRF (Reciprocal Rank Fusion) scores and returns Top-K relevant document chunks with metadata.
+
+    ``can_read_restricted`` lifts the per-document role list and the "restricted" label; a
+    person's callers pass it from ``user_search_scope``. Left None, it falls back to the
+    old role-string check, for callers searching as a system principal.
     """
     effective_on = as_of or date.today()
     query = db.query(DocumentChunk).filter(
@@ -303,8 +327,9 @@ def hybrid_search_documents(
         user_department.strip().lower() if user_department else None
     )
     principals = {value for value in (normalized_role, normalized_department) if value}
-    privileged_roles = {"owner", "admin", "ceo"}
-    if normalized_role not in privileged_roles:
+    if can_read_restricted is None:
+        can_read_restricted = normalized_role in {"owner", "admin", "ceo"}
+    if not can_read_restricted:
         explicit_role_matches = [
             DocumentChunk.allowed_roles.contains([principal])
             for principal in sorted(principals)

@@ -313,8 +313,10 @@ def test_direct_document_generator_is_disabled(client, employee_token_headers, c
 
 
 def test_legal_document_draft_requires_executive_approval_before_creator_download(
-    client, employee_token_headers, ceo_token_headers
+    client, employee_token_headers, ceo_token_headers, transactional_db_session
 ):
+    from app.models.models import User
+
     fields = {
         "nda_type": "mutual",
         "party_a": "NovaSoft",
@@ -327,15 +329,22 @@ def test_legal_document_draft_requires_executive_approval_before_creator_downloa
         "governing_law": "Việt Nam",
         "dispute_resolution": "Trọng tài VIAC",
     }
-    submitted = client.post(
-        "/api/v1/legal/document-drafts",
-        json={
-            "document_type": "NDA",
-            "output_format": "docx",
-            "fields": fields,
-        },
-        headers=employee_token_headers,
-    )
+    request = {"document_type": "NDA", "output_format": "docx", "fields": fields}
+    # Drafting is the "Soạn văn bản pháp lý" box on the person's position, nothing else:
+    # the Legal page used to let anybody draft what the agent refused them in chat.
+    refused = client.post("/api/v1/legal/document-drafts", json=request, headers=employee_token_headers)
+    assert refused.status_code == 403
+
+    db = transactional_db_session
+    employee = db.query(User).filter(User.email == "employee@company.com").one()
+    original = list(employee.position.permissions or [])
+    employee.position.permissions = sorted({*original, "legal.document.generate"})
+    db.commit()
+    try:
+        submitted = client.post("/api/v1/legal/document-drafts", json=request, headers=employee_token_headers)
+    finally:
+        employee.position.permissions = original
+        db.commit()
     assert submitted.status_code == 201
     draft = submitted.json()
     assert draft["status"] == "WAITING"

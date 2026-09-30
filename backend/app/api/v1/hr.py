@@ -36,6 +36,7 @@ from app.domains.hr.hr_service import (
     serialize_onboarding,
 )
 from app.domains.platform.notification_service import create_notification
+from app.domains.platform.position_service import is_supervisor
 from app.domains.hr.hr_export_service import create_hr_directory_export
 
 router = APIRouter(prefix="/hr", tags=["AI HR Operations"])
@@ -267,7 +268,8 @@ def update_hr_employment(
                 User.tenant_id == current_user.tenant_id,
                 User.is_active.is_(True),
             ).first()
-            if not manager or manager.role not in {"Manager", "Owner", "CEO"}:
+            # Anyone whose position runs people, whatever the company calls that job.
+            if not manager or not is_supervisor(db, manager):
                 raise HTTPException(status_code=422, detail="manager_id is not an eligible manager")
         employee.manager_id = manager_id
     for field, value in changes.items():

@@ -51,6 +51,21 @@ def _open_workflow_for_review(
     return str(review.workflow_id) if waiting else None
 
 
+def _finding_summary(findings: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """What an approver needs of each finding, without the contract's wording.
+
+    The approval payload is stored unsealed and shown on the approvals screen; the full
+    finding carries the clause text, which already lives sealed in the review behind it.
+    """
+    return [
+        {
+            key: finding.get(key)
+            for key in ("finding_key", "clause", "clause_title", "severity", "finding_type", "issue", "recommendation")
+        }
+        for finding in findings
+    ]
+
+
 def create_legal_approval(
     db: Session,
     current_user: User,
@@ -58,9 +73,15 @@ def create_legal_approval(
     action_type: str = "LEGAL_CONTRACT_APPROVAL",
     *,
     contract_review_id: str | None = None,
+    force: bool = False,
+    extra_payload: dict[str, Any] | None = None,
+    reason: str | None = None,
 ) -> str | None:
-    """Open an approval when the result asks for one; return the workflow id."""
-    if not result.get(
+    """Open an approval when the result asks for one, or when ``force``; return the workflow id.
+
+    ``force`` is the requester sending a review for approval themselves, whatever its risk.
+    """
+    if not force and not result.get(
         "requires_legal_approval",
         result.get("risk_level") in {"HIGH", "CRITICAL"},
     ):
@@ -71,6 +92,8 @@ def create_legal_approval(
             return existing_workflow
     document_name = result.get("document_name") or result.get("manifest") or "Legal review"
     findings = result.get("risks") or result.get("findings") or []
+    if contract_review_id:
+        findings = _finding_summary(findings)
     workflow = AgentWorkflow(
         tenant_id=current_user.tenant_id,
         initiator_id=current_user.id,
@@ -88,13 +111,16 @@ def create_legal_approval(
         "document_name": document_name,
         "risk_score": result.get("risk_score"),
         "findings": findings,
-        "reason": REASON_BY_ACTION.get(action_type, "Legal review is required."),
+        "reason": reason or REASON_BY_ACTION.get(action_type, "Legal review is required."),
         "requester_name": current_user.full_name,
+        # Written by the server: it is what stops a requester approving their own request.
+        "requester_id": str(current_user.id),
         "data_sources": [document_name],
     }
     if contract_review_id:
         # Lets the approvals screen open the saved review behind the escalation.
         payload["contract_review_id"] = contract_review_id
+    payload.update(extra_payload or {})
     approval = WorkflowApproval(
         workflow_id=workflow.id,
         action_type=action_type,

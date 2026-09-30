@@ -34,8 +34,8 @@ import json
 import logging
 import re
 import time
-from concurrent.futures import ThreadPoolExecutor
-from typing import Any
+from concurrent.futures import ThreadPoolExecutor, as_completed
+from typing import Any, Callable
 
 from app.agents.llm_json import UsageReporter, extract_json_object, is_echo_provider, report_usage
 from app.clients.ai_service_client import AIServiceClient, AIServiceError, get_ai_service_client
@@ -43,6 +43,10 @@ from app.domains.legal.contract_privacy import STAND_IN_INSTRUCTION, Pseudonymiz
 from app.domains.legal.contract_review.analyzer import VALID_PERSPECTIVES, review_contract
 from app.domains.legal.contract_review.clause_parser import split_contract_clauses
 from app.domains.legal.contract_review.schemas import CONTRACT_REVIEW_SCHEMAS
+
+# Told of each stage as it starts and ends -- (stage, status, detail) -- so a long review
+# can show where it is instead of one spinner for a minute and a half.
+ProgressReporter = Callable[[str, str, "str | None"], None]
 
 logger = logging.getLogger(__name__)
 
@@ -202,6 +206,15 @@ Reply with one JSON object and nothing else:
 # --------------------------------------------------------------------------- parsing
 
 
+def _progress(on_progress: ProgressReporter | None, stage: str, status: str, detail: str | None = None) -> None:
+    if on_progress is None:
+        return
+    try:
+        on_progress(stage, status, detail)
+    except Exception:  # a reporter that fails must not fail the review
+        logger.debug("Contract review progress reporter failed", exc_info=True)
+
+
 def _clause_payload(clauses: list[dict[str, Any]]) -> list[dict[str, str]]:
     return [
         {"id": str(clause["id"]), "number": str(clause["number"]), "title": str(clause["title"]), "text": str(clause["text"])}
@@ -211,6 +224,12 @@ def _clause_payload(clauses: list[dict[str, Any]]) -> list[dict[str, str]]:
 
 def _text(value: Any, limit: int = 1200) -> str:
     return re.sub(r"\s+", " ", str(value or "")).strip()[:limit]
+
+
+def _wording(value: Any, limit: int = 2000) -> str:
+    """Clause wording with its line breaks kept: points 1., 2. are paragraphs of the clause."""
+    lines = (re.sub(r"[ \t]+", " ", line).strip() for line in str(value or "").replace("\r\n", "\n").split("\n"))
+    return "\n".join(line for line in lines if line)[:limit]
 
 
 def _code(value: Any) -> str | None:
@@ -272,7 +291,7 @@ def _parse_findings(
             "reason": _text(item.get("reason")),
             "legal_basis": _text(item.get("legal_basis"), 240) or None,
             "recommendation": _text(item.get("recommendation")),
-            "suggested_revision": _text(item.get("suggested_revision"), 2000),
+            "suggested_revision": _wording(item.get("suggested_revision")),
         })
     return findings
 
@@ -400,6 +419,7 @@ def assess_contract(
     client: AIServiceClient | None = None,
     on_usage: UsageReporter | None = None,
     budget_seconds: float = DEFAULT_BUDGET_SECONDS,
+    on_progress: ProgressReporter | None = None,
 ) -> dict[str, Any] | None:
     """The model's reading of the clauses, or None when there is none to be had.
 
@@ -410,9 +430,11 @@ def assess_contract(
     """
     payload = _clause_payload(clauses)
     if not payload or sum(len(clause["text"]) for clause in payload) > MAX_ASSESSED_CHARS:
+        _progress(on_progress, "MAP", "skipped", "Hợp đồng quá dài hoặc không có điều khoản để AI đọc")
         return None
     ai_client = client or get_ai_service_client()
     if not ai_client.enabled:
+        _progress(on_progress, "MAP", "skipped", "Chưa cấu hình dịch vụ AI")
         return None
     budget = _Budget(budget_seconds)
     hider = Pseudonymizer()
@@ -423,6 +445,7 @@ def assess_contract(
     is_excerpt = document_scope.upper() == "EXCERPT"
 
     # 1. Map.
+    _progress(on_progress, "MAP", "running", f"{len(payload)} điều khoản")
     timeout = budget.timeout(_MAP_TIMEOUT)
     mapped_result = _call(ai_client, MAP_SYSTEM_PROMPT, {
         "represented_side": side, "document_scope": document_scope.upper(), "clauses": hidden,
@@ -432,7 +455,9 @@ def assess_contract(
     mapped = _reply(mapped_result)
     if not mapped or _code(mapped.get("contract_type")) is None:
         logger.warning("Contract map failed; reviewing with the rules alone")
+        _progress(on_progress, "MAP", "failed", "AI không đọc được hợp đồng; chuyển sang bộ luật kiểm tra cố định")
         return None
+    _progress(on_progress, "MAP", "done", str(mapped.get("contract_type_label") or mapped.get("contract_type") or ""))
     categories = {
         str(item.get("clause_id")): _code(item.get("category")) or "OTHER"
         for item in mapped.get("clause_categories") or []
@@ -450,12 +475,18 @@ def assess_contract(
     batches = _batches(hidden, categories)
     timeout = budget.timeout(_REVIEW_TIMEOUT)
     if timeout is None or not batches:
+        _progress(on_progress, "REVIEW", "failed", "Hết thời gian trước khi rà soát từng điều khoản")
         return None
+    _progress(on_progress, "REVIEW", "running", f"0/{len(batches)} nhóm điều khoản")
+    results: list[dict[str, Any] | None] = [None] * len(batches)
     with ThreadPoolExecutor(max_workers=len(batches)) as pool:
-        results = list(pool.map(
-            lambda batch: _call(ai_client, REVIEW_SYSTEM_PROMPT, {**context, "clauses_to_review": batch}, timeout),
-            batches,
-        ))
+        futures = {
+            pool.submit(_call, ai_client, REVIEW_SYSTEM_PROMPT, {**context, "clauses_to_review": batch}, timeout): position
+            for position, batch in enumerate(batches)
+        }
+        for finished, future in enumerate(as_completed(futures), 1):
+            results[futures[future]] = future.result()
+            _progress(on_progress, "REVIEW", "running", f"{finished}/{len(batches)} nhóm điều khoản")
     findings: list[dict[str, Any]] = []
     unreviewed: list[str] = []
     for batch, result in zip(batches, results):
@@ -469,7 +500,12 @@ def assess_contract(
         findings.extend(_parse_findings(reply.get("findings"), shown, is_excerpt, allowed_types=CONTENT_TYPES))
     if len(unreviewed) == sum(len(batch) for batch in batches):
         logger.warning("Every contract review batch failed; reviewing with the rules alone")
+        _progress(on_progress, "REVIEW", "failed", "Mọi nhóm điều khoản đều lỗi; chuyển sang bộ luật kiểm tra cố định")
         return None
+    _progress(
+        on_progress, "REVIEW", "done",
+        f"{len(findings)} vấn đề" + (f" · chưa rà soát được điều {', '.join(unreviewed)}" if unreviewed else ""),
+    )
     # Live, the map judged clauses as well as cross-checking them, and every one-sided
     # term of a lease came back twice. A clause and category the review already raised is
     # the review's; the map keeps what only the whole text shows.
@@ -483,7 +519,12 @@ def assess_contract(
     # 3. Revise.
     revisions_missing = bool(findings)
     timeout = budget.timeout(_REVISE_TIMEOUT)
+    if not findings:
+        _progress(on_progress, "REVISE", "skipped", "Không có vấn đề cần đề xuất sửa")
+    elif not timeout:
+        _progress(on_progress, "REVISE", "failed", "Hết thời gian trước khi viết đề xuất sửa")
     if findings and timeout:
+        _progress(on_progress, "REVISE", "running", f"{len(findings)} đề xuất")
         problems = [
             {
                 "id": index,
@@ -504,8 +545,12 @@ def assess_contract(
         if revised is not None:
             for item in revised.get("revisions") or []:
                 if isinstance(item, dict) and isinstance(item.get("id"), int) and 0 <= item["id"] < len(findings):
-                    findings[item["id"]]["suggested_revision"] = _text(item.get("suggested_revision"), 2000)
+                    findings[item["id"]]["suggested_revision"] = _wording(item.get("suggested_revision"))
             revisions_missing = any(not finding["suggested_revision"] for finding in findings)
+        _progress(
+            on_progress, "REVISE", "done" if revised is not None else "failed",
+            "Một số phát hiện chưa có đề xuất sửa" if revisions_missing else "Đã viết đề xuất sửa",
+        )
 
     assessment = parse_assessment(
         {**mapped, "findings": findings, "unreviewed_clauses": unreviewed, "revisions_missing": revisions_missing},
@@ -545,6 +590,7 @@ def review_with_assessment(
     client: AIServiceClient | None = None,
     on_usage: UsageReporter | None = None,
     budget_seconds: float = DEFAULT_BUDGET_SECONDS,
+    on_progress: ProgressReporter | None = None,
 ) -> dict[str, Any]:
     """Review the text with the model's reading of it, or with the rules alone and a notice.
 
@@ -553,14 +599,18 @@ def review_with_assessment(
     """
     if represented_party.upper() not in VALID_PERSPECTIVES:
         raise ValueError("represented_party phải là PARTY_A, PARTY_B hoặc NEUTRAL")
+    clauses = split_contract_clauses(contract_text.strip())
+    _progress(on_progress, "SPLIT", "done", f"{len(clauses)} điều khoản")
     assessment = assess_contract(
-        split_contract_clauses(contract_text.strip()),
+        clauses,
         represented_party=represented_party,
         document_scope=document_scope,
         client=client,
         on_usage=on_usage,
         budget_seconds=budget_seconds,
+        on_progress=on_progress,
     )
+    _progress(on_progress, "SCORE", "running")
     result = review_contract(
         contract_text,
         document_name,
@@ -580,4 +630,8 @@ def review_with_assessment(
             notices.append(REVISIONS_MISSING_NOTICE)
     if notices:
         result["review_disclaimer"] = " ".join([*notices, result["review_disclaimer"]])
+    _progress(
+        on_progress, "SCORE", "done",
+        f"{result['risk_level']} · {result['risk_score']}/100 · {len(result['findings'])} phát hiện",
+    )
     return result

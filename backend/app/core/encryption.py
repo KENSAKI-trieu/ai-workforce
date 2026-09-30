@@ -67,6 +67,33 @@ def unseal(value: str) -> str:
         raise EncryptionKeyMissing("No configured DATA_ENCRYPTION_KEY opens this value") from exc
 
 
+SEALED_BYTES_PREFIX = SEALED_PREFIX.encode("ascii")
+
+
+def seal_bytes(value: bytes) -> bytes:
+    """A file's bytes sealed with the current key, or unchanged when no key is set.
+
+    For uploaded contracts kept on disk: the column holding their text is sealed, and the
+    original file beside it would otherwise be the same contract in the clear.
+    """
+    fernet = cipher()
+    if fernet is None or value.startswith(SEALED_BYTES_PREFIX):
+        return value
+    return SEALED_BYTES_PREFIX + fernet.encrypt(value)
+
+
+def unseal_bytes(value: bytes) -> bytes:
+    if not value.startswith(SEALED_BYTES_PREFIX):
+        return value
+    fernet = cipher()
+    if fernet is None:
+        raise EncryptionKeyMissing("An encrypted file was read but DATA_ENCRYPTION_KEY is not set")
+    try:
+        return fernet.decrypt(value[len(SEALED_BYTES_PREFIX):])
+    except InvalidToken as exc:
+        raise EncryptionKeyMissing("No configured DATA_ENCRYPTION_KEY opens this file") from exc
+
+
 class EncryptedText(TypeDecorator):
     """Text, sealed in the database."""
 

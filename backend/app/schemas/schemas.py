@@ -35,6 +35,8 @@ class UserResponse(UserBase):
     tenant_id: UUID
     # The company's own name for this job, read off the assigned position.
     position_name: Optional[str] = None
+    # What the position ticks in org-structure; the UI hides what the server would refuse.
+    permissions: list[str] = []
     is_active: bool
     created_at: datetime
 

@@ -10,7 +10,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import get_current_active_user, RoleRequired
 from app.models.models import User
-from app.domains.knowledge.rag_service import hybrid_search_documents
+from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.domains.platform.eval_service import evaluate_rag_quality
 
 router = APIRouter(prefix="/eval", tags=["RAG Benchmark & Evaluation"])
@@ -35,8 +35,7 @@ def run_rag_benchmark(
         current_user.tenant_id,
         req.query,
         top_k=5,
-        user_role=current_user.role,
-        user_department=current_user.department,
+        **{**user_search_scope(db, current_user), "department": "ALL"},
     )
     sample_answer = chunks[0]["content"] if chunks else "Thông tin được cập nhật theo quy định công ty."
     

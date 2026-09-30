@@ -62,6 +62,7 @@ from app.domains.knowledge.rag_service import (
     CHUNK_SIZE_TOKENS,
     build_configured_chunks,
     hybrid_search_documents,
+    user_search_scope,
     ingest_document,
 )
 from app.domains.platform.notification_service import create_notification
@@ -959,14 +960,9 @@ def search_rag(
         db=db,
         tenant_id=current_user.tenant_id,
         query_text=req.query,
-        department=(
-            "*" if current_user.role in {"Owner", "Admin", "CEO"}
-            else current_user.department
-        ),
         top_k=req.top_k,
         collections=req.collections,
-        user_role=current_user.role,
-        user_department=current_user.department,
+        **user_search_scope(db, current_user),
     )
     return [DocumentChunkResponse(**result) for result in results]
 

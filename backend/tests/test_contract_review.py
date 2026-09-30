@@ -310,6 +310,7 @@ def test_review_references_deduplicate_chunks_and_expose_reader_url(monkeypatch)
         tenant_id="tenant",
         role="CEO",
         department="BOARD",
+        position_id=None,
     )
 
     references = specialized._retrieve_contract_review_references(

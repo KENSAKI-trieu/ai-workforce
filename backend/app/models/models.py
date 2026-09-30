@@ -218,6 +218,22 @@ class User(Base):
         """
         return self.position.name if self.position else None
 
+    @property
+    def permissions(self) -> list[str]:
+        """The codes this person's position grants, for the client to show or hide controls.
+
+        Mirrors `position_service.position_permissions`, which the server's guards use;
+        this copy only decides what the UI offers, never what the server allows.
+        """
+        from app.core.permissions import PERMISSION_CODES, normalize_permissions
+
+        position = self.position
+        if position is None or not position.is_active:
+            return []
+        if position.grants_all:
+            return sorted(PERMISSION_CODES)
+        return normalize_permissions(position.permissions)
+
 
 class RefreshToken(Base):
     """One issued refresh token, so that a session can actually be ended.
@@ -642,6 +658,18 @@ class ContractReview(Base):
     redline_artifact_id: Mapped[str | None] = mapped_column(String(64))
     redline_storage_key: Mapped[str | None] = mapped_column(Text)
     redline_filename: Mapped[str | None] = mapped_column(String(255))
+    # The uploaded file itself (sealed on disk) and its form -- layout, styles, positions --
+    # recorded before it was parsed, so accepted revisions can be written back into it
+    # without breaking it. Absent for a contract pasted into chat.
+    original_storage_key: Mapped[str | None] = mapped_column(Text)
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    original_format: Mapped[str | None] = mapped_column(String(10))
+    form_snapshot: Mapped[dict | None] = mapped_column(EncryptedJSONB)
+    # The latest file with the accepted revisions written in, and what was written where.
+    revised_storage_key: Mapped[str | None] = mapped_column(Text)
+    revised_filename: Mapped[str | None] = mapped_column(String(255))
+    revision_report: Mapped[dict | None] = mapped_column(EncryptedJSONB)
+    revised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

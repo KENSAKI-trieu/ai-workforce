@@ -22,7 +22,7 @@ from app.domains.hr.hr_employee_tools import (
     query_company_users_sql,
 )
 from app.domains.platform.position_service import supervisory_role_names
-from app.domains.knowledge.rag_service import hybrid_search_documents
+from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.domains.platform.audit_service import log_audit_action
 from app.plugins.resolver import resolve_prompt_overlay
 from app.agents.hr.llm_flow import UsageReporter
@@ -687,11 +687,10 @@ def run_hr_turn(
             db,
             user.tenant_id,
             message,
-            department="HR",
             collections=None,
             agent_access=agent.knowledge_access if agent.knowledge_access else None,
-            user_role=user.role,
-            user_department=user.department,
+            # HR policy questions search the HR shelf whatever the asker's reach.
+            **{**user_search_scope(db, user), "department": "HR"},
         )
         response_data["tools_executed"].append({
             "tool_name": "rag_search",

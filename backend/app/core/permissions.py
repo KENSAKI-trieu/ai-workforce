@@ -67,6 +67,10 @@ PERMISSIONS: tuple[Permission, ...] = (
         "knowledge.view_restricted", "Tri thức", "Xem tài liệu hạn chế",
         "Đọc được tài liệu đánh dấu hạn chế, bỏ qua danh sách chức vụ được phép.",
     ),
+    Permission(
+        "knowledge.scope.company", "Tri thức", "Tra cứu tri thức mọi phòng ban",
+        "Agent tìm trong tài liệu của mọi phòng ban, không chỉ phòng mình và tài liệu chung.",
+    ),
     # --- Nhân sự ---
     Permission(
         "hr.directory.view", "Nhân sự", "Tra cứu danh bạ nhân sự",
@@ -125,6 +129,10 @@ PERMISSIONS: tuple[Permission, ...] = (
         "approvals.sign_critical", "Phê duyệt", "Phê duyệt yêu cầu tối quan trọng",
         "Duyệt cả những yêu cầu được đánh dấu mức rủi ro CRITICAL.",
     ),
+    Permission(
+        "legal.document.approve", "Phê duyệt", "Duyệt văn bản pháp lý",
+        "Duyệt hoặc từ chối bản nháp văn bản pháp lý và tải bản nháp chưa duyệt.",
+    ),
     # --- Chuyên môn ---
     Permission(
         "finance.expense.view", "Chuyên môn", "Tra cứu chi phí",
@@ -133,6 +141,10 @@ PERMISSIONS: tuple[Permission, ...] = (
     Permission(
         "legal.document.generate", "Chuyên môn", "Soạn văn bản pháp lý",
         "Dùng công cụ sinh bản nháp văn bản pháp lý.",
+    ),
+    Permission(
+        "legal.review.view_all", "Chuyên môn", "Xem mọi bản rà soát hợp đồng",
+        "Mở, quyết định và tải file của bản rà soát hợp đồng do người khác tạo.",
     ),
     # --- Báo cáo ---
     Permission(
@@ -243,6 +255,10 @@ _ADMIN_CORE = _MANAGER_CORE + (
     "costs.manage",
     "audit.view_all",
     "legal.document.generate",
+    # These three were the Owner/Admin/CEO role check they replace.
+    "knowledge.scope.company",
+    "legal.document.approve",
+    "legal.review.view_all",
 )
 
 # The sections a line manager could read about their reports.
@@ -411,18 +427,27 @@ def legacy_role_for_position(
     the actual access drift apart. Takes plain values rather than a `Position` so this
     module keeps its no-model-imports rule.
 
-    Custom positions have no legacy equivalent, so they are classified by the powers they
-    carry, erring downwards: a position that is not clearly administrative is a Manager,
-    and one that runs nobody is an Employee.
+    Every position is classified by the powers it carries, erring downwards: one that is
+    not clearly administrative is a Manager, and one that runs nobody is an Employee.
+
+    Default positions used to be pinned to their slug's role whatever they granted, so
+    unticking "Phê duyệt yêu cầu" on "Quản lý" left its holders Managers and every role
+    guard still let them through. Their slug now only names the flavour of a level the
+    powers already reach -- the `ceo` job at the administrative level is "CEO", the `guest`
+    job at the lowest is "Guest" -- which reproduces every default tree exactly.
     """
     if grants_all:
         return "CEO"
-    known = _SLUG_TO_LEGACY_ROLE.get(slug)
-    if known is not None:
-        return known
     codes = frozenset(granted)
     if codes & _ADMIN_MARKERS:
-        return "Admin"
-    if codes & _MANAGER_MARKERS:
-        return "Manager"
-    return "Employee"
+        classified = "Admin"
+    elif codes & _MANAGER_MARKERS:
+        classified = "Manager"
+    else:
+        classified = "Employee"
+    known = _SLUG_TO_LEGACY_ROLE.get(slug)
+    if known == "CEO" and classified == "Admin":
+        return "CEO"
+    if known == "Guest" and classified == "Employee":
+        return "Guest"
+    return classified

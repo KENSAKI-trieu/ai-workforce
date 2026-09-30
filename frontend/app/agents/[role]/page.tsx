@@ -31,7 +31,7 @@ import {
 } from "@/components/hr/HRChatTools";
 import api from "@/lib/api";
 import { ExecutionPhase, streamAgentChat } from "@/lib/chatStream";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useAuthStore, userCan } from "@/store/useAuthStore";
 
 interface Agent {
   id: string;
@@ -441,7 +441,8 @@ export default function AgentPage() {
   const selectNoKnowledge = () => setKnowledgeAccess(["none"]);
 
   if (!hasHydrated || !isAuthenticated) return null;
-  const canConfigure = ["Owner", "Admin", "CEO"].includes(user?.role || "");
+  // "Cấu hình nhân viên AI" in org-structure; the server checks the same code.
+  const canConfigure = userCan(user, "agents.configure");
   const canManageHR = ["Owner", "CEO"].includes(user?.role || "") || (
     user?.department === "HR" && ["Manager", "Admin"].includes(user?.role || "")
   );

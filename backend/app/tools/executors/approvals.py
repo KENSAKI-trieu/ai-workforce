@@ -7,7 +7,7 @@ from typing import Any
 from fastapi import HTTPException
 
 from app.models.models import AgentWorkflow, User, WorkflowApproval
-from app.agents.langgraph.approvals import GRAPH_APPROVER_ROLES
+from app.domains.platform.position_service import can_sign_approvals
 from app.tools.registry import ToolContext
 from app.tools.schemas import SubmitApprovalInput
 
@@ -37,10 +37,10 @@ def _validate_approver(context: ToolContext, request: SubmitApprovalInput) -> Us
     ).first()
     if not approver:
         raise HTTPException(status_code=422, detail="Approver is unavailable")
-    if approver.role not in GRAPH_APPROVER_ROLES:
+    if not can_sign_approvals(context.db, approver):
         raise HTTPException(
             status_code=422,
-            detail="Approver must hold an approver role (Owner, Admin, CEO or Manager)",
+            detail="Approver's position does not grant the approvals.sign permission",
         )
     return approver
 

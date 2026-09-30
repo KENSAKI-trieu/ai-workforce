@@ -7,7 +7,7 @@ from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
-from app.domains.knowledge.rag_service import hybrid_search_documents
+from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.domains.platform.audit_service import log_audit_action
 from app.plugins.resolver import resolve_prompt_overlay
 from app.domains.legal.chat_contract_review import review_reply, run_chat_contract_review
@@ -298,11 +298,9 @@ def run_legal_turn(
         db,
         user.tenant_id,
         message,
-        department="*" if user.role in {"Owner", "Admin", "CEO"} else user.department,
         collections=None,
         agent_access=agent.knowledge_access if agent.knowledge_access else None,
-        user_role=user.role,
-        user_department=user.department,
+        **user_search_scope(db, user),
     )
     response_data["tools_executed"].append({
         "tool_name": "rag_search",

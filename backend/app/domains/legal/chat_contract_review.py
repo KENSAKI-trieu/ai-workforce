@@ -1,15 +1,14 @@
 """Run one contract review for a chat user and record it the way every chat review is.
 
 Shared by the Legal chat executor and the `audit_contract_risk` gateway tool, so a
-contract reviewed through LangGraph is stored, escalated and linked exactly like one
-reviewed in the deterministic chat: a CRITICAL result raises the same approval, and the
-saved review carries the same redline link.
+contract reviewed through LangGraph is stored and linked exactly like one reviewed in the
+deterministic chat: the saved review carries the same redline link. Neither sends it for
+approval; the reviewer does that from the saved review.
 """
 
 from __future__ import annotations
 
 import time
-import uuid
 from typing import Any
 
 from sqlalchemy.orm import Session
@@ -25,7 +24,6 @@ from app.domains.legal.contract_translation import (
     mark_translated,
     text_for_review,
 )
-from app.domains.legal.legal_approval_service import create_legal_approval
 
 CHAT_DOCUMENT_NAME = "Nội dung gửi qua chat"
 
@@ -53,10 +51,9 @@ def run_chat_contract_review(
     document_scope: str | None,
     on_usage: UsageReporter | None = None,
 ) -> tuple[dict[str, Any], ContractReview]:
-    """Review the text, save the review, and open an approval if the result needs one.
+    """Review the text and save the review.
 
-    Commits when an approval is raised (create_legal_approval commits); otherwise the
-    review is only flushed and the caller's commit persists it. A contract that is not in
+    The review is only flushed; the caller's commit persists it. A contract that is not in
     Vietnamese is reviewed from its translation; when it cannot be translated this raises
     ContractNotReviewable before anything is stored. With no ``document_scope``, the scope
     is read from the structure of the text the analyzer sees.
@@ -99,23 +96,8 @@ def run_chat_contract_review(
         )
     result["review_id"] = str(review.id)
     result["redline_url"] = f"/api/v1/legal/contract-reviews/{review.id}/redline"
-    # Chat used to skip this, so a CRITICAL contract pasted here notified nobody while the
-    # same file uploaded to the Legal page raised an approval.
-    workflow_id = create_legal_approval(db, user, result, contract_review_id=str(review.id))
-    if workflow_id:
-        review.workflow_id = uuid.UUID(workflow_id)
-        result["workflow_id"] = workflow_id
-        result["approval_created"] = True
-        # The row was flushed before the escalation existed, and a plain JSON column does
-        # not track mutations of the dict it was given -- so the blob has to be reassigned,
-        # or reopening the review from the saved list would show no sign that it had
-        # raised an approval.
-        review.result = {
-            **(review.result or {}),
-            "review_id": str(review.id),
-            "workflow_id": workflow_id,
-            "approval_created": True,
-        }
+    # Nothing is sent for approval here, as on the Legal page: the reviewer opens the saved
+    # review, decides on the findings and sends it themselves.
     return result, review
 
 

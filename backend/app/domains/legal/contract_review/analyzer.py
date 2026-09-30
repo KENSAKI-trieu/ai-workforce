@@ -26,8 +26,11 @@ VALID_PERSPECTIVES = {"PARTY_A", "PARTY_B", "NEUTRAL"}
 # The shape of a review changes with how it was made, and a stored review is reused only
 # for the same version (see contract_review_store): a rules-only review saved while the
 # model was down must not stand in for the model's reading on the next run.
+# 3.1: a revised file is checked against the round it came from; a 3.0 review of the same
+# text was made without it and is not reused for it.
 RULES_REVIEW_VERSION = "2.0"
-ASSESSED_REVIEW_VERSION = "3.0"
+ASSESSED_REVIEW_VERSION = "3.1"
+ROUND_FIELDS = ("round_status", "round_note", "parent_finding_key")
 AI_BASIS_NOTE = "Căn cứ do AI nêu, chưa được đối chiếu với văn bản luật; Legal cần xác nhận trước khi dựa vào."
 
 
@@ -145,8 +148,12 @@ def _finding(
     sources: list[dict[str, Any]] | None = None,
     confidence: float | None = None,
     favors: str | None = None,
+    round_fields: dict[str, Any] | None = None,
 ) -> None:
     findings.append({
+        # Set on the next round of a review (``rereview``): what became of the finding
+        # since the round before, and which finding of that round it was.
+        **(round_fields or {}),
         "id": f"finding-{len(findings) + 1}",
         "finding_key": _finding_key(
             contract_type=contract_type,
@@ -457,9 +464,11 @@ def _merge_assessment(
             suggested_revision=item["suggested_revision"],
             perspective=perspective,
             impact=item["impact"],
-            sources=_assessment_sources(item),
+            # A finding taken over from an earlier round keeps the sources it was shown with.
+            sources=item["sources"] if item.get("sources") is not None else _assessment_sources(item),
             confidence=item.get("confidence"),
             favors=item.get("favors"),
+            round_fields={key: item[key] for key in ROUND_FIELDS if item.get(key) is not None},
         )
     raised: dict[tuple[str, str], int] = {}
     for finding in findings:
@@ -615,6 +624,9 @@ def review_contract(
         "contract_type": contract_type,
         "contract_type_label": detection["contract_type_label"],
         "contract_type_confidence": detection["confidence"],
+        # The parties as the model read them, kept so the next round of this review can be
+        # read with the same roles.
+        "parties": assessment["parties"] if assessment is not None else None,
         "metadata": metadata,
         "clauses": clauses,
         "checklist": checklist,

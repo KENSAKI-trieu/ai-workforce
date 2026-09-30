@@ -25,6 +25,7 @@ from app.domains.legal.contract_document.common import (
     plan_edits,
 )
 from app.domains.legal.contract_document.docx_form import apply_docx_revisions, capture_docx_form
+from app.domains.legal.contract_document.marker import read_review_marker, stamp_review_marker
 from app.domains.legal.contract_document.pdf_form import apply_pdf_revisions, capture_pdf_form
 
 EDITABLE_FORMATS = {"docx", "pdf"}
@@ -41,7 +42,9 @@ __all__ = [
     "capture_form",
     "decisions_fingerprint",
     "document_format",
+    "read_review_marker",
     "revised_filename",
+    "stamp_review_marker",
 ]
 
 

@@ -89,9 +89,9 @@ def test_the_tool_reviews_exactly_what_the_user_sent(client, transactional_db_se
     review = transactional_db_session.get(ContractReview, uuid.UUID(result["review_id"]))
     assert review.contract_text == CONTRACT
     assert review.created_by_id == employee.id
-    # CRITICAL findings escalate as they do in the deterministic chat.
-    assert result["approval_created"] is True
-    assert review.workflow_id is not None
+    # CRITICAL findings, and still nothing sent for approval: the reviewer sends it.
+    assert result["approval_created"] is False
+    assert review.workflow_id is None
     # The graph ends the turn on this, in the deterministic chat's own words.
     assert result["reply"].startswith("Tôi đã rà soát nội dung hợp đồng theo góc nhìn")
 

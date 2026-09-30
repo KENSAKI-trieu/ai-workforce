@@ -9,7 +9,7 @@ import json
 
 from app.domains.legal import contract_review_store
 from app.domains.legal.chat_contract_review import run_chat_contract_review
-from app.domains.legal.contract_review.analyzer import review_contract
+from app.domains.legal.contract_review.analyzer import ASSESSED_REVIEW_VERSION, review_contract
 from app.domains.legal.contract_review.clause_parser import split_contract_clauses
 from app.clients.ai_service_client import AIServiceError
 from app.domains.legal.contract_review.llm_assessment import (
@@ -103,7 +103,7 @@ def test_a_lease_is_judged_as_a_lease_not_a_service_agreement():
     assert result["contract_type"] == "LEASE"
     assert result["contract_type_label"] == "Hợp đồng thuê văn phòng"
     assert result["contract_type_confidence"] == 0.93
-    assert result["review_version"] == "3.0" and result["review_engine"] == "LLM_ASSISTED"
+    assert result["review_version"] == ASSESSED_REVIEW_VERSION and result["review_engine"] == "LLM_ASSISTED"
     categories = {finding["category"] for finding in result["findings"]}
     # No service-agreement checklist borrowed for a type the rule pack does not know.
     assert not categories & {"SLA", "SCOPE", "INTELLECTUAL_PROPERTY", "DATA_PROTECTION"}

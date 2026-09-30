@@ -13,6 +13,7 @@ caller owns the transaction. That matters most in the chat path, where
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import uuid
 from datetime import datetime, timezone
@@ -21,6 +22,7 @@ from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
 from app.core.encryption import seal_bytes, unseal_bytes
 from app.domains.legal.contract_document import (
     decisions_fingerprint,
@@ -167,6 +169,110 @@ def get_contract_review(
     if not review or not can_access_contract_review(user, review):
         return None
     return review
+
+
+def _marker_signature(review_id: str, tenant_id: str) -> str:
+    message = f"contract-review-marker|{review_id}|{tenant_id}".encode("utf-8")
+    return hmac.new(settings.SECRET_KEY.encode("utf-8"), message, hashlib.sha256).hexdigest()[:32]
+
+
+def review_marker(review: ContractReview) -> str:
+    """The mark a revised file carries back: this review's id, signed by the server.
+
+    Signed so that only a file this server wrote can claim to be the next round of a
+    review; the id alone could be pasted into any document.
+    """
+    return f"{review.id}.{_marker_signature(str(review.id), str(review.tenant_id))}"
+
+
+def review_from_marker(db: Session, *, user: User, marker: str | None) -> ContractReview | None:
+    """The review a revised file names, when the mark is genuine and the user may open it."""
+    review_id, _, signature = str(marker or "").strip().partition(".")
+    if not review_id or not signature:
+        return None
+    expected = _marker_signature(review_id, str(user.tenant_id))
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return get_contract_review(db, user=user, review_id=review_id)
+
+
+def review_round(review: ContractReview) -> int:
+    return int((review.result or {}).get("review_round") or 1)
+
+
+# A finding the new round took over unchanged -- its clause was not touched, or the
+# reviewer had already accepted the risk -- keeps the decision taken on it.
+_KEEPS_DECISION = {"CARRIED", "ACCEPTED_RISK"}
+
+
+def link_to_previous(db: Session, review: ContractReview, previous: ContractReview) -> int:
+    """Record ``previous`` as the round this review follows and carry its decisions over.
+
+    Returns how many decisions were carried. Flushes without committing. A decision is
+    carried only onto a finding taken over as it stood; a finding the change touched is
+    a new question for the reviewer.
+    """
+    if review.parent_review_id is not None or review.id == previous.id:
+        return 0
+    review.parent_review_id = previous.id
+    earlier = {
+        row.finding_key: row
+        for row in db.query(ContractReviewDecision).filter(ContractReviewDecision.review_id == previous.id)
+    }
+    existing = {
+        row.finding_key
+        for row in db.query(ContractReviewDecision).filter(ContractReviewDecision.review_id == review.id)
+    }
+    when = previous.created_at.strftime("%d/%m/%Y") if previous.created_at else "vòng trước"
+    carried = 0
+    for finding in (review.result or {}).get("findings", []):
+        source = earlier.get(str(finding.get("parent_finding_key") or ""))
+        key = str(finding.get("finding_key") or "")
+        if source is None or not key or key in existing or finding.get("round_status") not in _KEEPS_DECISION:
+            continue
+        note = f"Giữ từ bản rà soát {when}"
+        db.add(ContractReviewDecision(
+            review_id=review.id,
+            finding_key=key,
+            finding_ref=str(finding.get("id") or "") or None,
+            decision=source.decision,
+            revised_text=source.revised_text,
+            comment=f"{note}: {source.comment}" if source.comment else note,
+            # The person who decided it, not the one who uploaded the next round.
+            decided_by_id=source.decided_by_id,
+        ))
+        existing.add(key)
+        carried += 1
+    db.flush()
+    _refresh_status(db, review)
+    db.flush()
+    return carried
+
+
+def can_delete_contract_review(user: User, review: ContractReview) -> bool:
+    """Only the person who ran a review deletes it.
+
+    Seeing every review (``legal.review.view_all``) is a right to read, not to remove
+    someone else's record of a contract and the decisions taken on it.
+    """
+    return review.tenant_id == user.tenant_id and review.created_by_id == user.id
+
+
+def delete_contract_review(db: Session, review: ContractReview) -> list[str]:
+    """Delete the review with its decisions; return the storage keys of its files.
+
+    Flushes without committing. The files are the caller's to remove once the delete is
+    committed, so a rolled-back delete does not leave a review pointing at nothing. A later
+    round of this review stays, unlinked from it (``parent_review_id`` is SET NULL).
+    """
+    keys = [
+        key
+        for key in (review.original_storage_key, review.revised_storage_key, review.redline_storage_key)
+        if key
+    ]
+    db.delete(review)
+    db.flush()
+    return keys
 
 
 def list_contract_reviews(

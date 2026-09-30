@@ -215,9 +215,9 @@ def build_tool_registry() -> ToolRegistry:
         _definition("submit_approval_request", "Create a human approval gate.", SubmitApprovalInput, ToolAction.EXTERNAL_ACTION, {"Owner", "Admin", "CEO", "Manager", "Employee"}, {"*"}, 10, "tool.approval.submit", submit_approval_request),
         # READ_ONLY in the graph's sense -- it runs without a human approving it first --
         # although it stores the review it produces. That record is idempotent per user,
-        # text and side, and the only escalation it can raise is itself an approval for a
-        # human to decide, exactly as a review in the deterministic chat does. Gating the
-        # review itself would put every analysis behind an approval nobody needs.
+        # text and side, and it sends nothing for approval: the reviewer does that from the
+        # saved review, as after a review in the deterministic chat. Gating the review
+        # itself would put every analysis behind an approval nobody needs.
         # Terminal: the backend already knows what to tell the user -- the side question,
         # or the review summary behind its card. Handing the result back to the model
         # instead made it re-call the tool and open approvals of its own.

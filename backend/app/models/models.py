@@ -670,6 +670,12 @@ class ContractReview(Base):
     revised_filename: Mapped[str | None] = mapped_column(String(255))
     revision_report: Mapped[dict | None] = mapped_column(EncryptedJSONB)
     revised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The review this one is the next round of: its revised file came back to be reviewed
+    # again, and was checked against what that review found. SET NULL: deleting an earlier
+    # round must not take the later ones with it.
+    parent_review_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_reviews.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )

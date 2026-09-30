@@ -411,6 +411,59 @@ def _batches(clauses: list[dict[str, str]], categories: dict[str, str]) -> list[
     return [batch for batch in batches if batch]
 
 
+def _revise(
+    ai_client: AIServiceClient,
+    findings: list[dict[str, Any]],
+    *,
+    hidden_text: dict[str, str],
+    side: str,
+    parties: Any,
+    budget: _Budget,
+    on_usage: UsageReporter | None,
+    on_progress: ProgressReporter | None,
+) -> bool:
+    """Write replacement wording for every finding that has none; True when some still lack it.
+
+    A finding that already carries wording -- one taken over from an earlier round -- keeps it.
+    """
+    pending = [index for index, finding in enumerate(findings) if not finding["suggested_revision"]]
+    timeout = budget.timeout(_REVISE_TIMEOUT)
+    if not pending:
+        _progress(on_progress, "REVISE", "skipped", "Không có vấn đề cần đề xuất sửa")
+        return False
+    if not timeout:
+        _progress(on_progress, "REVISE", "failed", "Hết thời gian trước khi viết đề xuất sửa")
+        return True
+    _progress(on_progress, "REVISE", "running", f"{len(pending)} đề xuất")
+    problems = [
+        {
+            "id": index,
+            "finding_type": findings[index]["finding_type"],
+            "clause_text": hidden_text.get(findings[index]["clause_id"] or "", ""),
+            "issue": findings[index]["issue"],
+            "reason": findings[index]["reason"],
+            "recommendation": findings[index]["recommendation"],
+        }
+        for index in pending
+    ]
+    revised_result = _call(ai_client, REVISE_SYSTEM_PROMPT, {
+        "represented_side": side, "parties": parties, "problems": problems,
+    }, timeout)
+    if revised_result:
+        report_usage(on_usage, revised_result)
+    revised = _reply(revised_result)
+    if revised is not None:
+        for item in revised.get("revisions") or []:
+            if isinstance(item, dict) and type(item.get("id")) is int and item["id"] in pending:
+                findings[item["id"]]["suggested_revision"] = _wording(item.get("suggested_revision"))
+    missing = any(not findings[index]["suggested_revision"] for index in pending)
+    _progress(
+        on_progress, "REVISE", "done" if revised is not None else "failed",
+        "Một số phát hiện chưa có đề xuất sửa" if missing else "Đã viết đề xuất sửa",
+    )
+    return missing
+
+
 def assess_contract(
     clauses: list[dict[str, Any]],
     *,
@@ -517,40 +570,11 @@ def assess_contract(
     ]
 
     # 3. Revise.
-    revisions_missing = bool(findings)
-    timeout = budget.timeout(_REVISE_TIMEOUT)
-    if not findings:
-        _progress(on_progress, "REVISE", "skipped", "Không có vấn đề cần đề xuất sửa")
-    elif not timeout:
-        _progress(on_progress, "REVISE", "failed", "Hết thời gian trước khi viết đề xuất sửa")
-    if findings and timeout:
-        _progress(on_progress, "REVISE", "running", f"{len(findings)} đề xuất")
-        problems = [
-            {
-                "id": index,
-                "finding_type": finding["finding_type"],
-                "clause_text": hidden_text.get(finding["clause_id"] or "", ""),
-                "issue": finding["issue"],
-                "reason": finding["reason"],
-                "recommendation": finding["recommendation"],
-            }
-            for index, finding in enumerate(findings)
-        ]
-        revised_result = _call(ai_client, REVISE_SYSTEM_PROMPT, {
-            "represented_side": side, "parties": mapped.get("parties"), "problems": problems,
-        }, timeout)
-        if revised_result:
-            report_usage(on_usage, revised_result)
-        revised = _reply(revised_result)
-        if revised is not None:
-            for item in revised.get("revisions") or []:
-                if isinstance(item, dict) and isinstance(item.get("id"), int) and 0 <= item["id"] < len(findings):
-                    findings[item["id"]]["suggested_revision"] = _wording(item.get("suggested_revision"))
-            revisions_missing = any(not finding["suggested_revision"] for finding in findings)
-        _progress(
-            on_progress, "REVISE", "done" if revised is not None else "failed",
-            "Một số phát hiện chưa có đề xuất sửa" if revisions_missing else "Đã viết đề xuất sửa",
-        )
+    revisions_missing = _revise(
+        ai_client, findings,
+        hidden_text=hidden_text, side=side, parties=mapped.get("parties"),
+        budget=budget, on_usage=on_usage, on_progress=on_progress,
+    )
 
     assessment = parse_assessment(
         {**mapped, "findings": findings, "unreviewed_clauses": unreviewed, "revisions_missing": revisions_missing},
@@ -580,6 +604,76 @@ def _unreviewed_notice(numbers: list[str]) -> str:
     )
 
 
+ROUND_FALLBACK_NOTICE = (
+    "Lần này AI không đối chiếu được bản sửa với vòng rà soát trước, nên hợp đồng được rà "
+    "soát lại toàn bộ; một số vấn đề mức trung bình/thấp có thể được nêu lại theo cách khác."
+)
+ROUND_UNVERIFIED_NOTICE = (
+    "AI chưa đối chiếu được một số vấn đề của vòng trước với bản sửa; các vấn đề đó được giữ "
+    "nguyên kết quả vòng trước."
+)
+
+
+def _assess_round(
+    clauses: list[dict[str, Any]],
+    previous: dict[str, Any],
+    *,
+    represented_party: str,
+    client: AIServiceClient | None,
+    on_usage: UsageReporter | None,
+    budget_seconds: float,
+    on_progress: ProgressReporter | None,
+) -> dict[str, Any] | None:
+    """The revised contract read against the previous round, or None to read it in full."""
+    from app.domains.legal.contract_review.rereview import reassess_contract
+
+    ai_client = client or get_ai_service_client()
+    if not ai_client.enabled:
+        return None
+    assessment = reassess_contract(
+        clauses,
+        previous=previous,
+        represented_party=represented_party,
+        client=ai_client,
+        budget=_Budget(budget_seconds),
+        on_usage=on_usage,
+        on_progress=on_progress,
+    )
+    if assessment is not None:
+        _progress(on_progress, "MAP", "skipped", "Dùng loại hợp đồng và các bên đã nhận diện ở vòng trước")
+        _progress(on_progress, "REVIEW", "skipped", "Chỉ đối chiếu phần đã sửa với vòng trước")
+    return assessment
+
+
+def _record_round(
+    result: dict[str, Any], previous: dict[str, Any], assessment: dict[str, Any] | None
+) -> None:
+    """Mark the result as the next round of ``previous``: what became of each finding."""
+    result["review_round"] = int(previous.get("round") or 1) + 1
+    result["parent_review_id"] = previous["review_id"]
+    round_info = (assessment or {}).get("round")
+    if round_info is None:
+        # Read in full after all: the findings stand on their own, nothing is carried.
+        result["round_mode"] = "FULL"
+        return
+    changed = set(round_info["changed_clause_ids"])
+    for finding in result["findings"]:
+        if not finding.get("round_status"):
+            # A rule of the floor that fired on this round's text.
+            finding["round_status"] = "NEW" if finding.get("clause_id") in changed or not finding.get("clause_id") else "CARRIED"
+    summary = {"RESOLVED": len(round_info["resolved_findings"])}
+    for finding in result["findings"]:
+        summary[finding["round_status"]] = summary.get(finding["round_status"], 0) + 1
+    result["round_mode"] = "VERIFIED"
+    result["round_summary"] = {
+        **summary,
+        "changed_clauses": round_info["changed_clauses"],
+        "added_clauses": round_info["added_clauses"],
+        "removed_clauses": round_info["removed_clauses"],
+    }
+    result["resolved_findings"] = round_info["resolved_findings"]
+
+
 def review_with_assessment(
     contract_text: str,
     document_name: str,
@@ -591,8 +685,14 @@ def review_with_assessment(
     on_usage: UsageReporter | None = None,
     budget_seconds: float = DEFAULT_BUDGET_SECONDS,
     on_progress: ProgressReporter | None = None,
+    previous: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Review the text with the model's reading of it, or with the rules alone and a notice.
+
+    ``previous`` is the review this text is the revised version of -- ``review_id``,
+    ``round``, ``result`` and ``decisions`` -- when there is one: the text is then checked
+    against what that review found (``rereview``) rather than read afresh, as long as it is
+    still recognisably the same contract.
 
     Raises ValueError, before any model call, for a side that is not PARTY_A, PARTY_B or
     NEUTRAL.
@@ -601,15 +701,34 @@ def review_with_assessment(
         raise ValueError("represented_party phải là PARTY_A, PARTY_B hoặc NEUTRAL")
     clauses = split_contract_clauses(contract_text.strip())
     _progress(on_progress, "SPLIT", "done", f"{len(clauses)} điều khoản")
-    assessment = assess_contract(
-        clauses,
-        represented_party=represented_party,
-        document_scope=document_scope,
-        client=client,
-        on_usage=on_usage,
-        budget_seconds=budget_seconds,
-        on_progress=on_progress,
-    )
+    assessment = None
+    if previous is not None:
+        from app.domains.legal.contract_review.rereview import MIN_MATCHED_SHARE, revision_share
+
+        share = revision_share(previous["result"] or {}, clauses)
+        if share < MIN_MATCHED_SHARE:
+            _progress(
+                on_progress, "VERIFY", "skipped",
+                f"Chỉ {round(share * 100)}% điều khoản khớp với vòng trước, nên đây không còn là bản sửa của nó; rà soát lại toàn bộ",
+            )
+            previous = None
+        else:
+            assessment = _assess_round(
+                clauses, previous,
+                represented_party=represented_party, client=client, on_usage=on_usage,
+                budget_seconds=budget_seconds, on_progress=on_progress,
+            )
+    round_fallback = previous is not None and assessment is None
+    if assessment is None:
+        assessment = assess_contract(
+            clauses,
+            represented_party=represented_party,
+            document_scope=document_scope,
+            client=client,
+            on_usage=on_usage,
+            budget_seconds=budget_seconds,
+            on_progress=on_progress,
+        )
     _progress(on_progress, "SCORE", "running")
     result = review_contract(
         contract_text,
@@ -620,6 +739,12 @@ def review_with_assessment(
         assessment=assessment,
     )
     notices: list[str] = []
+    if previous is not None:
+        _record_round(result, previous, assessment)
+        if round_fallback:
+            notices.append(ROUND_FALLBACK_NOTICE)
+        elif ((assessment or {}).get("round") or {}).get("unverified"):
+            notices.append(ROUND_UNVERIFIED_NOTICE)
     if assessment is None:
         notices.append(RULES_ONLY_NOTICE)
     else:

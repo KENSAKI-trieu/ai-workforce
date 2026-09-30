@@ -46,6 +46,8 @@ from app.domains.legal.contract_document import (
     apply_revisions,
     capture_form,
     document_format,
+    read_review_marker,
+    stamp_review_marker,
 )
 from app.domains.legal.contract_review.analyzer import ASSESSED_REVIEW_VERSION, VALID_PERSPECTIVES
 from app.domains.legal.contract_review.llm_assessment import ProgressReporter, review_with_assessment
@@ -58,7 +60,7 @@ from app.domains.legal.contract_translation import (
 from app.agents.usage import _llm_usage_recorder
 # Shared with the chat path so both entry points escalate identically.
 from app.domains.legal.legal_approval_service import create_legal_approval as _create_legal_approval
-from app.domains.legal.legal_draft_storage import read_legal_artifact, save_legal_artifact
+from app.domains.legal.legal_draft_storage import delete_legal_artifact, read_legal_artifact, save_legal_artifact
 from app.domains.legal.legal_document_submission import (
     LEGAL_DOCUMENT_GENERATE_PERMISSION,
     can_approve_legal_documents,
@@ -308,6 +310,7 @@ def _contract_review_item(
     db: Session | None = None,
 ) -> dict[str, Any]:
     accepted = sum(item["decision"] in {"ACCEPTED", "EDITED"} for item in decisions)
+    approval = _approval_state(db, _review_approval(db, review)) if db is not None else None
     return {
         "review_id": str(review.id),
         "workflow_id": str(review.workflow_id) if review.workflow_id else None,
@@ -330,7 +333,12 @@ def _contract_review_item(
         "redline_url": f"/api/v1/legal/contract-reviews/{review.id}/redline",
         "can_decide": contract_review_store.can_access_contract_review(current_user, review),
         "document": contract_review_store.document_state(review, decisions),
-        "approval": _approval_state(db, _review_approval(db, review)) if db is not None else None,
+        "approval": approval,
+        # The creator's, and not while an approval is waiting on it (the endpoint refuses).
+        "can_delete": contract_review_store.can_delete_contract_review(current_user, review)
+        and not (approval and approval["status"] == "WAITING"),
+        "review_round": contract_review_store.review_round(review),
+        "parent_review_id": str(review.parent_review_id) if review.parent_review_id else None,
     }
 
 
@@ -538,6 +546,53 @@ def _no_progress(stage: str, status: str, detail: str | None = None) -> None:
     return None
 
 
+def _previous_review(
+    db: Session,
+    current_user: User,
+    filename: str,
+    data: bytes,
+    represented_party: str,
+    progress: ProgressReporter,
+) -> ContractReview | None:
+    """The review an uploaded file is the revised version of, when it carries its mark.
+
+    Only a file this server wrote carries one (the revised-file download stamps it), and
+    only a review the uploader may open, made for the same side by the model, is used.
+    """
+    fmt = document_format(filename)
+    marker = read_review_marker(fmt, data) if fmt else None
+    if not marker:
+        progress("LINK", "skipped", "Không phải bản sửa tải từ hệ thống; rà soát như hợp đồng mới")
+        return None
+    previous = contract_review_store.review_from_marker(db, user=current_user, marker=marker)
+    if previous is None:
+        progress("LINK", "skipped", "File mang dấu của một bản rà soát bạn không mở được; rà soát như hợp đồng mới")
+        return None
+    earlier = previous.result or {}
+    if previous.represented_party != represented_party.upper():
+        progress("LINK", "skipped", "Vòng trước rà soát cho bên khác; rà soát lại toàn bộ cho bên đã chọn")
+        return None
+    if earlier.get("review_engine") != "LLM_ASSISTED" or earlier.get("translated_for_review") or not earlier.get("clauses"):
+        progress("LINK", "skipped", "Vòng trước không có kết quả AI để đối chiếu; rà soát lại toàn bộ")
+        return None
+    progress(
+        "LINK", "done",
+        f"Bản sửa của “{previous.document_name}” (vòng {contract_review_store.review_round(previous)}) · "
+        "đối chiếu với kết quả vòng trước",
+    )
+    return previous
+
+
+def _previous_round(db: Session, previous: ContractReview) -> dict[str, Any]:
+    """What the next round is checked against: the earlier review and its decisions."""
+    return {
+        "review_id": str(previous.id),
+        "round": contract_review_store.review_round(previous),
+        "result": previous.result or {},
+        "decisions": contract_review_store.serialize_decisions(db, previous),
+    }
+
+
 def _review_uploaded_contract(
     db: Session,
     current_user: User,
@@ -580,6 +635,7 @@ def _review_uploaded_contract(
         contract_review_store.attach_original(stored, filename=filename, data=data, form=form)
         db.commit()
         return _review_response(db, stored, current_user)
+    previous = _previous_review(db, current_user, filename, data, represented_party, progress)
     on_usage = _llm_usage_recorder(db, current_user, "LEGAL")
     # Translated before anything reads it: the rule floor under the model's reading is a
     # set of Vietnamese rules.
@@ -592,10 +648,19 @@ def _review_uploaded_contract(
         "LANGUAGE", "done",
         f"Đã dịch từ {review_text.source_language} sang tiếng Việt để rà soát" if review_text.translated else "Tiếng Việt",
     )
+    if review_text.translated:
+        # The previous round's clauses are those of its translation; a new translation of
+        # the revised file will not line up with them clause by clause.
+        previous = None
     try:
         result = mark_translated(
             review_with_assessment(
-                review_text.text, filename, represented_party, on_usage=on_usage, on_progress=progress
+                review_text.text,
+                filename,
+                represented_party,
+                on_usage=on_usage,
+                on_progress=progress,
+                previous=_previous_round(db, previous) if previous is not None else None,
             ),
             review_text,
         )
@@ -621,10 +686,10 @@ def _review_uploaded_contract(
     # would have to accept the review body back from the client, which would let
     # anyone post a fabricated result and have it become the audit record.
     #
-    # The review is stored before the escalation so its id can be handed to
-    # create_legal_approval, which uses it to reuse the approval already waiting on
-    # this same review instead of opening a second card for one contract. The
-    # approval then carries the id too, so the approvals screen can open the review.
+    # Nothing is sent for approval here, whatever the risk: the reviewer decides on the
+    # findings, writes the accepted ones into the file and sends it themselves
+    # (submit-approval). An automatic card went out before any of that, for a draft
+    # the reviewer had not yet worked through.
     review = contract_review_store.save_contract_review(
         db,
         user=current_user,
@@ -633,23 +698,15 @@ def _review_uploaded_contract(
         source="UPLOAD",
     )
     contract_review_store.attach_original(review, filename=filename, data=data, form=form)
-    result["workflow_id"] = _create_legal_approval(
-        db, current_user, result, contract_review_id=str(review.id)
-    )
-    result["approval_created"] = result["workflow_id"] is not None
-    if result["workflow_id"]:
-        review.workflow_id = uuid.UUID(result["workflow_id"])
-        # The stored blob is what a reopened review renders from, so it has to carry
-        # the escalation as well as the analyzer output.
-        review.result = {
-            **(review.result or {}),
-            "workflow_id": result["workflow_id"],
-            "approval_created": True,
-        }
+    carried = 0
+    if previous is not None and result.get("parent_review_id") == str(previous.id):
+        carried = contract_review_store.link_to_previous(db, review, previous)
     db.commit()
     progress(
         "SAVE", "done",
-        "Đã lưu bản rà soát" + (" · rủi ro cao nên đã tự tạo phiếu phê duyệt" if result["workflow_id"] else ""),
+        "Đã lưu bản rà soát"
+        + (f" · giữ {carried} quyết định từ vòng trước" if carried else "")
+        + (" · rủi ro cao, hãy gửi phê duyệt khi đã xử lý xong" if result.get("requires_legal_approval") else ""),
     )
     return _review_response(db, review, current_user)
 
@@ -795,6 +852,54 @@ def get_contract_review_endpoint(
     # The stored analyzer output is spread at the top level so the client renders a
     # reopened review through exactly the same shape as a fresh one.
     return _review_response(db, review, current_user)
+
+
+@router.delete(
+    "/legal/contract-reviews/{review_id}",
+    summary="Delete a saved contract review, its decisions and its files",
+)
+def delete_contract_review_endpoint(
+    review_id: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> Dict[str, Any]:
+    """Delete a review its creator no longer needs.
+
+    Refused while an approval is waiting on it: the approver would be left deciding on a
+    contract that is gone. A decided approval stays in the approval history with its
+    summary; only the review behind it goes.
+    """
+    try:
+        review = _contract_review_for_user(db, current_user, review_id)
+    except HTTPException:
+        _audit_review_access(db, current_user, request, action="contract_review.delete", review_id=review_id, status="DENIED")
+        raise
+    if not contract_review_store.can_delete_contract_review(current_user, review):
+        _audit_review_access(
+            db, current_user, request, action="contract_review.delete", review_id=str(review.id), status="DENIED",
+        )
+        raise HTTPException(status_code=403, detail="Chỉ người tạo bản rà soát mới xoá được bản này.")
+    approval = _review_approval(db, review)
+    if approval is not None and approval.status == "WAITING":
+        raise HTTPException(
+            status_code=409,
+            detail="Bản rà soát đang chờ phê duyệt nên chưa xoá được; hãy chờ phiếu được duyệt hoặc từ chối.",
+        )
+    deleted_id, document_name = str(review.id), review.document_name
+    keys = contract_review_store.delete_contract_review(db, review)
+    db.commit()
+    _audit_review_access(
+        db, current_user, request, action="contract_review.delete", review_id=deleted_id,
+        output={"document_name": document_name, "files": len(keys)},
+    )
+    # After the commit: a failed delete must not leave the review pointing at missing files.
+    for key in keys:
+        try:
+            delete_legal_artifact(key)
+        except (OSError, ValueError):
+            logger.warning("Could not remove a file of deleted contract review %s", deleted_id, exc_info=True)
+    return {"status": "DELETED", "review_id": deleted_id}
 
 
 @router.put(
@@ -1268,6 +1373,9 @@ def download_revised_contract(
         content = contract_review_store.read_revised(review)
     except (OSError, ValueError, EncryptionKeyMissing) as exc:
         raise HTTPException(status_code=404, detail="File hợp đồng đã sửa không còn trên máy chủ.") from exc
+    # Stamped on the way out, so a file written before the mark existed carries it too:
+    # uploaded again, it is reviewed as the next round of this review.
+    content = stamp_review_marker(review.original_format, content, contract_review_store.review_marker(review))
     return _file_response(content, str(review.revised_filename), review.original_format)
 
 
@@ -1306,8 +1414,9 @@ def submit_contract_review_for_approval(
 ) -> Dict[str, Any]:
     """Open an approval for the review, or refresh the one already waiting on it.
 
-    Any risk level may be sent: the automatic escalation covers HIGH and CRITICAL, this is
-    the reviewer asking for sign-off on their own. The revised file goes with it -- written
+    The only way a contract review reaches the approval center: nothing is sent when a
+    review finishes, whatever its risk, and any risk level may be sent. The revised file
+    goes with it -- written
     now when the decisions have moved on since it was last built; a file that cannot be
     written does not stop the submission, it is reported back instead.
     """

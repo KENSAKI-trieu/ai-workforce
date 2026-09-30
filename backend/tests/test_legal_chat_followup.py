@@ -120,39 +120,34 @@ def test_confirming_the_ambiguous_prompt_still_asks_for_the_perspective(
     assert "đại diện cho bên nào" in confirmed["reply"]
 
 
-def test_reviewing_the_same_contract_twice_reuses_the_open_approval(
+def test_reviewing_the_same_contract_twice_reuses_the_review_and_sends_nothing(
     client, employee_token_headers, transactional_db_session
 ):
-    """One contract, one waiting card.
+    """One contract, one review -- and no approval card until the reviewer sends it.
 
-    The review row is already idempotent, but each run opened a new workflow against
-    it -- so approvers saw the same contract twice and `review.workflow_id` pointed
-    at the newest, orphaning the earlier approval.
+    Each run used to open an approval of its own before the reviewer had looked at
+    the findings.
     """
     _, first = _reviewed(client, employee_token_headers)
     _, second = _reviewed(client, employee_token_headers)
 
     assert first["legal_risk_card"]["review_id"] == second["legal_risk_card"]["review_id"]
-    assert first["legal_risk_card"]["workflow_id"] == second["legal_risk_card"]["workflow_id"]
 
     review_id = first["legal_risk_card"]["review_id"]
     review = transactional_db_session.query(ContractReview).filter(
         ContractReview.id == review_id
     ).one()
-    approvals = transactional_db_session.query(WorkflowApproval).filter(
-        WorkflowApproval.workflow_id == review.workflow_id
-    ).all()
-    assert len(approvals) == 1
-    assert approvals[0].payload.get("contract_review_id") == review_id
+    assert review.workflow_id is None
+    sent = [
+        approval
+        for approval in transactional_db_session.query(WorkflowApproval).all()
+        if (approval.payload or {}).get("contract_review_id") == review_id
+    ]
+    assert sent == []
 
 
-def test_a_chat_review_reopens_with_its_escalation(client, employee_token_headers):
-    """The saved review is what the chat card links to, so it must carry the workflow.
-
-    The row is flushed before the approval exists and the result column is plain
-    JSON, which does not track mutations of the dict it was handed: without an
-    explicit reassignment the reopened review showed no escalation at all.
-    """
+def test_a_chat_review_reopens_unsent_and_ready_to_send(client, employee_token_headers):
+    """The saved review is what the chat card links to; it is sent from there."""
     _, reviewed = _reviewed(client, employee_token_headers)
     review_id = reviewed["legal_risk_card"]["review_id"]
 
@@ -162,7 +157,8 @@ def test_a_chat_review_reopens_with_its_escalation(client, employee_token_header
 
     assert response.status_code == 200, response.text
     reopened = response.json()
-    assert reopened["workflow_id"] == reviewed["legal_risk_card"]["workflow_id"]
-    assert reopened["approval_created"] is True
+    assert reopened["workflow_id"] is None
+    assert reopened["approval"] is None
+    assert reopened["requires_legal_approval"] is True
     assert reopened["total_risks_found"] == reviewed["legal_risk_card"]["total_risks_found"]
     assert reopened["findings"]

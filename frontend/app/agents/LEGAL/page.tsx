@@ -34,6 +34,7 @@ import {
   Download,
   ExternalLink,
   Eye,
+  Trash2,
 } from "lucide-react";
 import { FormEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import Link from "next/link";
@@ -136,6 +137,10 @@ interface SavedReviewSummary {
   created_at?: string | null;
   redline_ready: boolean;
   redline_url: string;
+  review_round?: number;
+  // The creator's, and not while an approval is waiting on it.
+  can_delete?: boolean;
+  approval?: { status: "WAITING" | "APPROVED" | "REJECTED" | "EXPIRED" } | null;
 }
 interface RiskFinding {
   id: string;
@@ -156,6 +161,20 @@ interface RiskFinding {
   perspective: string;
   impact: "ADVERSE" | "BENEFICIAL" | "BALANCED" | "SHARED";
   sources: Array<{ id: string; title: string; type: string; url?: string; note?: string }>;
+  // On the next round of a review: what became of the finding since the round before.
+  round_status?: RoundStatus;
+  round_note?: string | null;
+}
+type RoundStatus = "CARRIED" | "ACCEPTED_RISK" | "PARTIAL" | "UNRESOLVED" | "UNVERIFIED" | "NEW";
+interface ResolvedFinding {
+  parent_finding_key: string;
+  clause: string;
+  clause_title?: string | null;
+  severity: Severity;
+  finding_type: RiskFinding["finding_type"];
+  issue: string;
+  note?: string | null;
+  fix_applied: boolean;
 }
 interface ContractReview {
   review_version: string;
@@ -187,9 +206,16 @@ interface ContractReview {
   category_summary: Array<{ category: string; severity: Severity }>;
   reference_sources: Array<{ id: string; title: string; type: string; url?: string; reader_url?: string; note?: string; citation_tag?: string; section_title?: string }>;
   review_disclaimer: string;
+  requires_legal_approval?: boolean;
   approval_created: boolean;
   workflow_id?: string | null;
   review_id: string;
+  // Set when a revised file came back to be reviewed again.
+  review_round?: number;
+  parent_review_id?: string | null;
+  round_mode?: "VERIFIED" | "FULL";
+  round_summary?: Partial<Record<RoundStatus | "RESOLVED", number>> & { changed_clauses?: number; added_clauses?: number; removed_clauses?: number };
+  resolved_findings?: ResolvedFinding[];
   decisions?: ReviewDecision[];
   redline_url?: string;
   can_decide?: boolean;
@@ -274,21 +300,30 @@ interface DocumentReader {
 }
 
 // The stages the server reports while it reviews an upload, in the order they run.
-// CACHE appears only when the same file was reviewed before and the stored review is reused.
+// CACHE appears only when the same file was reviewed before and the stored review is reused;
+// VERIFY only when the file is the revised version of an earlier review.
 const PIPELINE_STAGES: Array<{ id: string; label: string; hint: string }> = [
   { id: "UPLOAD", label: "Nhận file", hint: "Tải file lên máy chủ" },
   { id: "FORM", label: "Ghi nhớ bố cục", hint: "Lưu form văn bản trước khi đọc, để sửa không làm hỏng" },
   { id: "PARSE", label: "Đọc nội dung", hint: "Chuyển PDF/DOCX sang văn bản có cấu trúc" },
   { id: "CACHE", label: "Dùng bản đã rà soát", hint: "File này đã được rà soát trước đó" },
+  { id: "LINK", label: "Nhận diện vòng trước", hint: "Kiểm tra đây có phải bản sửa tải từ một bản rà soát không" },
   { id: "LANGUAGE", label: "Kiểm tra ngôn ngữ", hint: "Dịch sang tiếng Việt nếu cần" },
   { id: "SPLIT", label: "Tách điều khoản", hint: "Chia hợp đồng theo từng Điều" },
+  { id: "VERIFY", label: "AI đối chiếu bản sửa", hint: "Kiểm tra từng vấn đề vòng trước đã được xử lý chưa" },
   { id: "MAP", label: "AI đọc tổng thể", hint: "Nhận diện loại hợp đồng, các bên, nhóm điều khoản" },
   { id: "REVIEW", label: "AI rà soát từng điều", hint: "Tìm điều khoản bất lợi hoặc trái luật" },
   { id: "REVISE", label: "AI viết đề xuất sửa", hint: "Soạn lời văn thay thế cho từng vấn đề" },
   { id: "SCORE", label: "Chấm điểm rủi ro", hint: "Đối chiếu bộ luật kiểm tra và tính điểm" },
   { id: "REFERENCES", label: "Tra tài liệu nội bộ", hint: "Tìm policy/mẫu hợp đồng liên quan" },
-  { id: "SAVE", label: "Lưu kết quả", hint: "Lưu bản rà soát, tự tạo phiếu duyệt nếu rủi ro cao" },
+  { id: "SAVE", label: "Lưu kết quả", hint: "Lưu bản rà soát; gửi phê duyệt do bạn tự bấm" },
 ];
+// Shown only once the server reports them.
+const OPTIONAL_STAGES = new Set(["CACHE", "VERIFY"]);
+const ROUND_LABELS: Record<RoundStatus, string> = {
+  CARRIED: "Giữ từ vòng trước", ACCEPTED_RISK: "Đã chấp nhận rủi ro", PARTIAL: "Sửa chưa hết",
+  UNRESOLVED: "Chưa xử lý", UNVERIFIED: "Chưa đối chiếu được", NEW: "Mới phát sinh",
+};
 // A stage running longer than this is flagged, so a slow model call reads as slow, not stuck.
 const SLOW_STAGE_MS = 45_000;
 
@@ -475,7 +510,7 @@ export default function LegalAgentPage() {
         if (!current) return current;
         const next = { ...current };
         const running = PIPELINE_STAGES.find((stage) => next[stage.id]?.status === "running")
-          || PIPELINE_STAGES.find((stage) => next[stage.id]?.status === "pending" && stage.id !== "CACHE");
+          || PIPELINE_STAGES.find((stage) => next[stage.id]?.status === "pending" && !OPTIONAL_STAGES.has(stage.id));
         if (running) next[running.id] = { ...next[running.id], status: "failed", detail: message, endedAt: now() };
         return next;
       });
@@ -503,6 +538,8 @@ export default function LegalAgentPage() {
             const next = { ...current };
             for (const stage of PIPELINE_STAGES) {
               const state = next[stage.id];
+              // A stage that only some reviews go through stays hidden when this one did not.
+              if (OPTIONAL_STAGES.has(stage.id) && state.status === "pending") continue;
               if (state.status === "pending" || state.status === "running") {
                 next[stage.id] = { ...state, status: state.status === "running" ? "done" : "skipped", endedAt: now() };
               }
@@ -543,6 +580,31 @@ export default function LegalAgentPage() {
     } finally {
       setBusy(false);
     }
+  };
+
+  // One request per review: each is refused or allowed on its own (creator only, nothing
+  // waiting on it), and what went is dropped from the list even when another is refused.
+  const deleteSavedReviews = async (items: SavedReviewSummary[]) => {
+    if (!items.length) return false;
+    const names = items.length === 1 ? `“${items[0].document_name}”` : `${items.length} bản rà soát`;
+    if (!window.confirm(`Xoá ${names}? Quyết định đã ghi và file hợp đồng (bản gốc, bản đã sửa) của bản rà soát cũng bị xoá, không khôi phục được.`)) return false;
+    setBusy(true);
+    setError(null);
+    const deleted: string[] = [];
+    const refused: string[] = [];
+    for (const item of items) {
+      try {
+        await api.delete(`/api/v1/legal/contract-reviews/${item.review_id}`);
+        deleted.push(item.review_id);
+      } catch (reason) {
+        refused.push(`${item.document_name}: ${messageFrom(reason)}`);
+      }
+    }
+    setSavedReviews((current) => current.filter((item) => !deleted.includes(item.review_id)));
+    setReviewResult((current) => current && "review_id" in current && deleted.includes(current.review_id) ? null : current);
+    if (refused.length) setError(`Không xoá được ${refused.length} bản — ${refused.join("; ")}`);
+    setBusy(false);
+    return true;
   };
 
   // The approvals center links here with ?review=<id> to open the review behind a card.
@@ -679,7 +741,7 @@ export default function LegalAgentPage() {
               />
             )}
 
-            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item.review_id)} startReview={() => openTool("contract")} />}
+            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item.review_id)} remove={deleteSavedReviews} startReview={() => openTool("contract")} />}
 
             {view === "drafts" && <DraftWorkspace drafts={drafts} canReview={userCan(user, "legal.document.approve")} canGenerate={userCan(user, "legal.document.generate")} notice={draftNotice} openGenerator={() => { setDraftNotice(null); setShowGenerator(true); }} preview={(draft) => void previewDraft(draft)} download={(draft) => void downloadDraft(draft)} openApprovals={() => router.push("/approvals")} busy={busy} />}
           </main>
@@ -775,7 +837,9 @@ function ChatRiskCard({ card, live, onQuickReply, onOpenReview }: {
     <div className={styles.chatSeverities}>
       {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as Severity[]).map((level) => <span key={level}><b className={riskClass(level)}>{card.severity_counts?.[level] || 0}</b>{level}</span>)}
     </div>
-    {card.approval_created && <p className={styles.chatCardAlert}><ShieldAlert size={13} />Đã tạo approval workflow — Legal phải duyệt trước khi ký.</p>}
+    {card.approval_created
+      ? <p className={styles.chatCardAlert}><ShieldAlert size={13} />Đã tạo approval workflow — Legal phải duyệt trước khi ký.</p>
+      : card.requires_legal_approval && <p className={styles.chatCardAlert}><ShieldAlert size={13} />Rủi ro cao — mở bản rà soát để xử lý đề xuất rồi bấm “Gửi phê duyệt”.</p>}
     <ul className={styles.chatFindings}>
       {preview.map((item) => <li key={item.id}>
         <span className={`${styles.severityDot} ${riskClass(item.severity)}`} />
@@ -817,24 +881,44 @@ function DraftWorkspace({ drafts, canReview, canGenerate, notice, openGenerator,
   </>;
 }
 
-function SavedReviewWorkspace({ reviews, busy, open, startReview }: {
+function SavedReviewWorkspace({ reviews, busy, open, remove, startReview }: {
   reviews: SavedReviewSummary[]; busy: boolean;
-  open: (review: SavedReviewSummary) => void; startReview: () => void;
+  open: (review: SavedReviewSummary) => void;
+  remove: (reviews: SavedReviewSummary[]) => Promise<boolean>;
+  startReview: () => void;
 }) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const deletable = reviews.filter((item) => item.can_delete);
+  const chosen = deletable.filter((item) => selected.includes(item.review_id));
+  const toggle = (reviewId: string) => setSelected((current) => current.includes(reviewId) ? current.filter((id) => id !== reviewId) : [...current, reviewId]);
+  const removeAndClear = async (items: SavedReviewSummary[]) => {
+    if (await remove(items)) setSelected((current) => current.filter((id) => !items.some((item) => item.review_id === id)));
+  };
+  const deleteHint = (item: SavedReviewSummary) => item.can_delete ? "Xoá bản rà soát này" : item.approval?.status === "WAITING" ? "Đang chờ phê duyệt nên chưa xoá được" : "Chỉ người tạo mới xoá được";
   return <>
     <div className={styles.headingRow}><div><span className={styles.eyebrow}>CONTRACT REVIEW HISTORY</span><h1>Rà soát đã lưu</h1><p>Mở lại bản rà soát cũ kèm quyết định đã đánh dấu và tải file redline.</p></div><button className={styles.primaryButton} onClick={startReview}><FileSearch size={16} />Rà soát hợp đồng mới</button></div>
     <section className={styles.draftPanel}>
-      <header><div><h2>{reviews.length} bản rà soát</h2><p>Quyền xem được kiểm tra ở server</p></div></header>
-      {reviews.length === 0 ? <div className={styles.draftEmpty}><FileSearch size={30} /><strong>Chưa có bản rà soát nào</strong><p>Kết quả rà soát hợp đồng sẽ được lưu lại tại đây.</p></div> : <div className={styles.draftList}>{reviews.map((item) => <article key={item.review_id}>
+      <header>
+        <div><h2>{reviews.length} bản rà soát</h2><p>Quyền xem được kiểm tra ở server · chỉ người tạo xoá được, trừ bản đang chờ phê duyệt</p></div>
+        {deletable.length > 0 && <div className={styles.bulkActions}>
+          <label><input type="checkbox" checked={chosen.length > 0 && chosen.length === deletable.length} onChange={(event) => setSelected(event.target.checked ? deletable.map((item) => item.review_id) : [])} />Chọn tất cả</label>
+          <button type="button" className={styles.dangerButton} disabled={busy || chosen.length === 0} onClick={() => void removeAndClear(chosen)}><Trash2 size={13} />Xoá{chosen.length ? ` (${chosen.length})` : ""}</button>
+        </div>}
+      </header>
+      {reviews.length === 0 ? <div className={styles.draftEmpty}><FileSearch size={30} /><strong>Chưa có bản rà soát nào</strong><p>Kết quả rà soát hợp đồng sẽ được lưu lại tại đây.</p></div> : <div className={`${styles.draftList} ${styles.reviewList}`}>{reviews.map((item) => <article key={item.review_id}>
+        <input type="checkbox" className={styles.reviewCheck} aria-label={`Chọn ${item.document_name}`} disabled={!item.can_delete} title={item.can_delete ? undefined : deleteHint(item)} checked={selected.includes(item.review_id)} onChange={() => toggle(item.review_id)} />
         <span className={styles.draftFileIcon}><FileSearch size={18} /></span>
         <div className={styles.draftInfo}>
           <strong>{item.document_name}</strong>
-          <small>{item.contract_type_label || item.source} · {item.represented_party_label || "—"} · {item.created_by_name || ""}</small>
+          <small>{item.contract_type_label || item.source} · {item.represented_party_label || "—"}{(item.review_round ?? 1) > 1 ? ` · Vòng ${item.review_round}` : ""} · {item.created_by_name || ""}</small>
           <em>{item.created_at ? new Date(item.created_at).toLocaleString("vi-VN") : ""}</em>
         </div>
         <span className={`${styles.riskBadge} ${riskClass(item.risk_level)}`}>{item.risk_score}/100 {item.risk_level}</span>
         <span className={styles.draftStatus}>{item.decided_count}/{item.total_findings} đã xử lý</span>
-        <div className={styles.draftActions}><button disabled={busy} onClick={() => open(item)}><Eye size={13} />Mở lại</button></div>
+        <div className={styles.draftActions}>
+          <button disabled={busy} onClick={() => open(item)}><Eye size={13} />Mở lại</button>
+          <button disabled={busy || !item.can_delete} title={deleteHint(item)} aria-label={`Xoá ${item.document_name}`} className={styles.deleteButton} onClick={() => void removeAndClear([item])}><Trash2 size={13} /></button>
+        </div>
       </article>)}</div>}
     </section>
   </>;
@@ -859,7 +943,7 @@ function formatDuration(ms: number) {
 function ReviewPipeline({ pipeline, collapsedWhenDone }: { pipeline: PipelineState; collapsedWhenDone: boolean }) {
   const [now, setNow] = useState(() => Date.now());
   const [expanded, setExpanded] = useState(false);
-  const stages = PIPELINE_STAGES.filter((stage) => stage.id !== "CACHE" || pipeline.CACHE?.status !== "pending");
+  const stages = PIPELINE_STAGES.filter((stage) => !OPTIONAL_STAGES.has(stage.id) || pipeline[stage.id]?.status !== "pending");
   const running = stages.find((stage) => pipeline[stage.id]?.status === "running");
   const settled = stages.filter((stage) => ["done", "skipped", "failed"].includes(pipeline[stage.id]?.status));
   const doneCount = settled.length;
@@ -980,6 +1064,43 @@ const APPROVAL_LABELS: Record<ReviewApproval["status"], string> = {
 const APPLY_LABELS: Record<RevisionReport["applied"][number]["action"], string> = {
   REPLACED: "Đã sửa tại chỗ", INSERTED: "Đã thêm điều khoản", ANNEXED: "Đưa vào Phụ lục sửa đổi",
 };
+
+// A revised file reviewed again is checked against the round it came from: what the changes
+// settled, what they left, and what they brought in.
+function RoundComparison({ review }: { review: ContractReview }) {
+  const summary = review.round_summary || {};
+  const resolved = review.resolved_findings || [];
+  const chips: Array<{ key: RoundStatus | "RESOLVED"; label: string }> = [
+    { key: "RESOLVED", label: "Đã xử lý" },
+    { key: "PARTIAL", label: ROUND_LABELS.PARTIAL },
+    { key: "UNRESOLVED", label: ROUND_LABELS.UNRESOLVED },
+    { key: "NEW", label: ROUND_LABELS.NEW },
+    { key: "CARRIED", label: ROUND_LABELS.CARRIED },
+    { key: "ACCEPTED_RISK", label: ROUND_LABELS.ACCEPTED_RISK },
+    { key: "UNVERIFIED", label: ROUND_LABELS.UNVERIFIED },
+  ];
+  return <section className={styles.reviewSection}>
+    <div className={styles.reviewSectionTitle}>
+      <div>
+        <strong>Đối chiếu với vòng {(review.review_round ?? 2) - 1}</strong>
+        <small>{summary.changed_clauses ?? 0} điều sửa · {summary.added_clauses ?? 0} điều thêm · {summary.removed_clauses ?? 0} điều bỏ · điều không đổi giữ nguyên kết quả và quyết định vòng trước</small>
+      </div>
+    </div>
+    <div className={styles.roundSummary}>
+      {chips.filter((chip) => summary[chip.key]).map((chip) => <span key={chip.key} className={styles[`round_${chip.key}`]}><b>{summary[chip.key]}</b>{chip.label}</span>)}
+    </div>
+    {resolved.length > 0 && <details className={styles.resolvedList}>
+      <summary>{resolved.length} vấn đề của vòng trước đã được xử lý</summary>
+      {resolved.map((item) => <div key={item.parent_finding_key} className={styles.reportApplied}>
+        <CheckCircle2 size={13} />
+        <span>
+          <strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong>
+          <small>{item.severity}{item.fix_applied ? " · theo đề xuất bạn đã chấp nhận" : ""}{item.note ? ` · ${item.note}` : ""}</small>
+        </span>
+      </div>)}
+    </details>}
+  </section>;
+}
 
 function ContractReviewResult({ review, onReviewChanged }: { review: ContractReview; onReviewChanged: () => void }) {
   // Keyed by finding_key, not by the positional id, and seeded from what the server
@@ -1142,7 +1263,11 @@ function ContractReviewResult({ review, onReviewChanged }: { review: ContractRev
       detail: !docState?.original_available ? "Không có file gốc" : docState.revised_stale ? "Cần cập nhật" : docState.revised_ready ? `${docState.revision_report?.applied.length ?? 0} điều đã ghi` : "Chưa ghi",
       state: !docState?.original_available ? "idle" : docState.revised_stale ? "warn" : docState.revised_ready ? "done" : acceptedCount > 0 ? "active" : "idle",
     },
-    { label: "Gửi phê duyệt", detail: approval ? (approval.submitted_manually ? "Đã gửi" : "Tự động (rủi ro cao)") : "Chưa gửi", state: approval ? "done" : "idle" },
+    {
+      label: "Gửi phê duyệt",
+      detail: approval ? (approval.submitted_manually ? "Đã gửi" : "Tự động (rủi ro cao)") : review.requires_legal_approval ? "Chưa gửi · rủi ro cao" : "Chưa gửi",
+      state: approval ? "done" : review.requires_legal_approval ? "warn" : "idle",
+    },
     {
       label: "Kết quả duyệt",
       detail: approval ? APPROVAL_LABELS[approval.status] : "—",
@@ -1193,7 +1318,7 @@ function ContractReviewResult({ review, onReviewChanged }: { review: ContractRev
   };
 
   return <div className={styles.contractResult}>
-    <header><div className={`${styles.scoreRing} ${riskClass(review.risk_level)}`}><strong>{review.risk_score}</strong><small>/100</small></div><div><span className={`${styles.riskBadge} ${riskClass(review.risk_level)}`}>{review.risk_level} RISK</span><h2>{review.document_name}</h2><p>{review.contract_type_label} · {review.represented_party_label} · {review.total_risks_found} phát hiện</p></div></header>
+    <header><div className={`${styles.scoreRing} ${riskClass(review.risk_level)}`}><strong>{review.risk_score}</strong><small>/100</small></div><div><span className={`${styles.riskBadge} ${riskClass(review.risk_level)}`}>{review.risk_level} RISK</span><h2>{review.document_name}</h2><p>{review.contract_type_label} · {review.represented_party_label} · {review.total_risks_found} phát hiện{(review.review_round ?? 1) > 1 ? ` · Vòng ${review.review_round}` : ""}</p></div></header>
     <div className={styles.contractScroll}>
       {saveError && <div className={styles.workflowAlert}><AlertTriangle size={17} /><span><strong>Không lưu được quyết định</strong><small>{saveError}</small></span></div>}
 
@@ -1321,14 +1446,16 @@ function ContractReviewResult({ review, onReviewChanged }: { review: ContractRev
         <div className={styles.checklist}>{review.checklist.map((item) => <div key={item.category} className={item.status === "MISSING" ? styles.missingItem : ""}>{item.status === "PRESENT" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}<span>{item.label}</span><small>{item.status === "PRESENT" ? "Có" : item.status === "NOT_IN_EXCERPT" ? "Ngoài đoạn trích" : `Thiếu · ${item.severity_if_missing}`}</small></div>)}</div>
       </section>
 
+      {review.round_mode === "VERIFIED" && <RoundComparison review={review} />}
+
       <section className={`${styles.reviewSection} ${styles.findingSection}`}>
         <div className={styles.reviewSectionTitle}><div><strong>Phát hiện & đề xuất sửa</strong><small>File gốc luôn được giữ nguyên; chỉ đề xuất bạn chấp nhận hoặc chỉnh sửa mới được ghi vào bản sửa</small></div></div>
         <div className={styles.findings}>{review.findings.map((item) => {
           const decision = decisions[item.finding_key];
           const draft = drafts[item.finding_key] ?? item.suggested_revision;
           return <article key={item.id}>
-            <div className={styles.findingHeader}><span className={`${styles.severityDot} ${riskClass(item.severity)}`} /><strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong><span className={`${styles.impactBadge} ${styles[item.impact.toLowerCase()]}`}>{item.impact === "ADVERSE" ? "Bất lợi" : item.impact === "BENEFICIAL" ? "Có lợi" : item.impact === "BALANCED" ? "Cân bằng" : "Chung"}</span><span className={styles.findingType}>{findingTypeLabels[item.finding_type]}</span><span className={`${styles.riskBadge} ${riskClass(item.severity)}`}>{item.severity}</span></div>
-            <div className={styles.findingExplanation}><p><b>Lý do:</b> {item.reason}</p><p><b>Khuyến nghị:</b> {item.recommendation}</p></div>
+            <div className={styles.findingHeader}><span className={`${styles.severityDot} ${riskClass(item.severity)}`} /><strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong><span className={`${styles.impactBadge} ${styles[item.impact.toLowerCase()]}`}>{item.impact === "ADVERSE" ? "Bất lợi" : item.impact === "BENEFICIAL" ? "Có lợi" : item.impact === "BALANCED" ? "Cân bằng" : "Chung"}</span><span className={styles.findingType}>{findingTypeLabels[item.finding_type]}</span>{item.round_status && <span className={`${styles.roundBadge} ${styles[`round_${item.round_status}`]}`}>{ROUND_LABELS[item.round_status]}</span>}<span className={`${styles.riskBadge} ${riskClass(item.severity)}`}>{item.severity}</span></div>
+            <div className={styles.findingExplanation}>{item.round_note && <p className={styles.roundNote}><b>So với vòng trước:</b> {item.round_note}</p>}<p><b>Lý do:</b> {item.reason}</p><p><b>Khuyến nghị:</b> {item.recommendation}</p></div>
             <div className={styles.redlineGrid}>
               <div><small>ORIGINAL</small><blockquote>{item.original_text}</blockquote></div>
               <div><small>AI RECOMMENDATION</small>{editingId === item.id ? <textarea value={draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.finding_key]: event.target.value }))} /> : <blockquote>{draft}</blockquote>}</div>

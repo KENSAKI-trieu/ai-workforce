@@ -74,17 +74,25 @@ def _sql_directory_item(employee: dict[str, Any], *, scope: str) -> dict[str, An
 
 
 def _employee_profile_reply(payload: dict[str, Any]) -> str:
-    employee = payload["employee"]
+    employee = payload.get("employee") or {}
     balance = payload.get("leave_balance")
-    reply = (
-        f"Hồ sơ nhân sự của **{employee['name']}**:\n"
-        f"- Email: **{employee['email']}**\n"
-        f"- Vai trò: **{employee['role']}**\n"
-        f"- Phòng ban: **{employee['department']}**\n"
-        f"- Chức danh: **{employee['job_title'] or 'Chưa cập nhật'}**\n"
-        f"- Trạng thái: **{employee['employment_status']}**\n"
-        f"- Quản lý trực tiếp: **{employee['manager_name'] or 'Chưa thiết lập'}**"
-    )
+    if employee.get("name"):
+        reply = (
+            f"Hồ sơ nhân sự của **{employee['name']}**:\n"
+            f"- Email: **{employee.get('email') or 'Chưa cập nhật'}**\n"
+            f"- Vai trò: **{employee.get('role') or 'Chưa cập nhật'}**\n"
+            f"- Phòng ban: **{employee.get('department') or 'Chưa cập nhật'}**\n"
+            f"- Chức danh: **{employee.get('job_title') or 'Chưa cập nhật'}**\n"
+            f"- Trạng thái: **{employee.get('employment_status') or 'Chưa cập nhật'}**\n"
+            f"- Quản lý trực tiếp: **{employee.get('manager_name') or 'Chưa thiết lập'}**"
+        )
+    else:
+        # A position may grant a section (contracts, say) without the directory: the
+        # basic card is then withheld, and reading its fields anyway was an HTTP 500.
+        reply = (
+            "Hồ sơ nhân sự được phép xem (chức vụ của bạn chưa có quyền "
+            "\"Tra cứu danh bạ nhân sự\" nên thông tin cơ bản được ẩn):"
+        )
     if balance:
         reply += f"\n- Phép còn lại: **{balance['remaining_days']} ngày**"
     private = payload.get("private") or {}

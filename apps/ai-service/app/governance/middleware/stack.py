@@ -21,7 +21,12 @@ from app.governance.middleware.context import AgentRuntimeContext
 from app.governance.middleware.model_selection import ComplexityModelSelectionMiddleware
 from app.governance.middleware.observability import ModelTelemetryMiddleware, TelemetrySink
 from app.governance.middleware.output_validation import OutputCitationValidationMiddleware
-from app.governance.middleware.redaction import PHONE_PATTERN
+from app.governance.middleware.redaction import (
+    detect_credit_card,
+    detect_email,
+    detect_ip,
+    detect_phone_number,
+)
 from app.governance.middleware.tenant_acl import TenantACLContextMiddleware
 from app.core.config import settings
 
@@ -79,10 +84,11 @@ def governed_middleware(
     )
     middleware: list[AgentMiddleware] = [
         TenantACLContextMiddleware(),
-        PIIMiddleware("email", strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
-        PIIMiddleware("credit_card", strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
-        PIIMiddleware("ip", strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
-        PIIMiddleware("phone_number", detector=PHONE_PATTERN, strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
+        # The graph's own redaction uses these same detectors, so both agree.
+        PIIMiddleware("email", detector=detect_email, strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
+        PIIMiddleware("credit_card", detector=detect_credit_card, strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
+        PIIMiddleware("ip", detector=detect_ip, strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
+        PIIMiddleware("phone_number", detector=detect_phone_number, strategy="redact", apply_to_input=True, apply_to_output=True, apply_to_tool_results=True),
         ModelCallLimitMiddleware(run_limit=policy.max_model_calls, exit_behavior="error"),
         ToolCallLimitMiddleware(run_limit=policy.max_tool_calls, exit_behavior="error"),
         ComplexityModelSelectionMiddleware(

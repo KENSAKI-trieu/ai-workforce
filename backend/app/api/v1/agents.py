@@ -11,14 +11,16 @@ from app.core.database import get_db
 from app.core.gateway_tools import GATEWAY_TOOL_DESCRIPTIONS
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
 from app.core.tool_permissions import canonical_tool_names
-from app.core.security import RoleRequired, get_current_active_user
+from app.core.security import PermissionRequired, get_current_active_user
+from app.domains.platform.position_service import has_permission
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
 from app.domains.knowledge.agent_knowledge_scope import existing_knowledge_targets, orphaned_selectors
 from app.domains.platform.auth_service import ensure_tenant_default_agents, supported_agent_tools
 
 router = APIRouter(prefix="/agents", tags=["AI Agents"])
-AGENT_CONFIG_ROLES = {"Owner", "Admin", "CEO"}
+# Ticked in org-structure as "Cấu hình nhân viên AI"; it replaced the Owner/Admin/CEO role set.
+AGENT_CONFIG_PERMISSION = "agents.configure"
 TOOL_DESCRIPTIONS = {
     "get_employee_private_profile": "Đọc thông tin cá nhân được lọc và masking theo quyền.",
     "get_employee_contract_summary": "Đọc tóm tắt hợp đồng, không trả tài liệu gốc.",
@@ -78,7 +80,7 @@ def _get_tenant_agent(db: Session, tenant_id, role_code: str) -> AIAgent:
 
 def _public_agent_response(agent: AIAgent, current_user: User) -> AIAgentResponse:
     response = AIAgentResponse.model_validate(agent)
-    if current_user.role in AGENT_CONFIG_ROLES:
+    if has_permission(None, current_user, AGENT_CONFIG_PERMISSION):
         return response
     return response.model_copy(update={
         "system_prompt": "Managed by workspace administrators.",
@@ -204,7 +206,7 @@ def get_agent(
 @router.get(
     "/{role_code}/configuration-options",
     summary="List tools and governed knowledge available to an AI Employee",
-    dependencies=[Depends(RoleRequired("Owner", "Admin", "CEO"))],
+    dependencies=[Depends(PermissionRequired("agents.configure"))],
 )
 def get_agent_configuration_options(
     role_code: str,
@@ -272,7 +274,7 @@ def get_agent_configuration_options(
     "/{role_code}",
     response_model=AIAgentResponse,
     summary="Configure an AI Employee",
-    dependencies=[Depends(RoleRequired("Owner", "Admin", "CEO"))],
+    dependencies=[Depends(PermissionRequired("agents.configure"))],
 )
 def update_agent(
     role_code: str,
@@ -368,7 +370,7 @@ def update_agent(
 @router.patch(
     "/{role_code}/toggle",
     summary="Toggle AI Employee active status",
-    dependencies=[Depends(RoleRequired("Owner", "Admin", "CEO"))],
+    dependencies=[Depends(PermissionRequired("agents.configure"))],
 )
 def toggle_agent(
     role_code: str,

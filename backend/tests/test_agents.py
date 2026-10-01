@@ -56,11 +56,19 @@ def test_owner_admin_and_ceo_can_configure_agent(
     assert toggled_by_ceo.status_code == 200
     client.patch("/api/v1/agents/HR/toggle", headers=ceo_token_headers)
 
+    # Made an administrator the way the org chart does it -- by position. Writing the role
+    # string alone used to be enough; the permission it stands for is what counts now.
+    from app.domains.platform.position_service import assign_position, ensure_tenant_positions
+
     admin = transactional_db_session.query(User).filter(
         User.email == "legal.counsel@company.com"
     ).one()
-    admin.role = "Admin"
+    assign_position(
+        transactional_db_session, admin,
+        ensure_tenant_positions(transactional_db_session, admin.tenant_id)["admin"],
+    )
     transactional_db_session.commit()
+    assert admin.role == "Admin"
     admin_headers = _login(client, admin.email)
 
     options = client.get(

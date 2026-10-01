@@ -68,6 +68,8 @@ class UserInToken(BaseModel):
     department: str
     tenant_id: UUID
     avatar_url: Optional[str] = None
+    # What the position ticks in org-structure; the UI hides what the server would refuse.
+    permissions: list[str] = []
 
     model_config = {"from_attributes": True}
 

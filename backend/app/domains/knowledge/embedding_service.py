@@ -4,7 +4,6 @@ import hashlib
 import logging
 import math
 import os
-import re
 import time
 from functools import lru_cache
 from pathlib import Path
@@ -13,8 +12,8 @@ from typing import Any
 
 from app.core.config import settings
 from app.clients.ai_service_client import AIServiceError, get_ai_service_client
+from app.domains.knowledge.rag_chunking import estimate_text_tokens
 
-_TOKEN_PATTERN = re.compile(r"\S+")
 logger = logging.getLogger(__name__)
 
 
@@ -230,7 +229,7 @@ class EmbeddingService:
             return counts
         tokenizer = self._load_tokenizer()
         if tokenizer is None:
-            return [len(_TOKEN_PATTERN.findall(text)) for text in texts]
+            return [estimate_text_tokens(text) for text in texts]
         encoded = tokenizer(
             texts,
             add_special_tokens=True,

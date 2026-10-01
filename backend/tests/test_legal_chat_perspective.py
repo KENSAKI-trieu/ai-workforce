@@ -174,8 +174,8 @@ def test_perspective_is_not_asked_when_the_tool_is_disabled(
         transactional_db_session.commit()
 
 
-def test_high_risk_chat_review_raises_an_approval(client, employee_token_headers):
-    """Chat and upload must escalate alike; chat used to escalate nothing."""
+def test_high_risk_chat_review_waits_for_the_reviewer_to_send_it(client, employee_token_headers):
+    """Chat and upload behave alike: a high-risk review is flagged, not sent for approval."""
     first = _chat(client, employee_token_headers, CONTRACT)
     reviewed = _chat(
         client, employee_token_headers, "Bên A nhé", first["conversation_id"]
@@ -183,5 +183,5 @@ def test_high_risk_chat_review_raises_an_approval(client, employee_token_headers
 
     card = reviewed["legal_risk_card"]
     assert card["requires_legal_approval"] is True
-    assert card.get("approval_created") is True
-    assert card.get("workflow_id")
+    assert not card.get("approval_created")
+    assert not card.get("workflow_id")

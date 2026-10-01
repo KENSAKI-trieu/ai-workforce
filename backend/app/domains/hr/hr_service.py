@@ -224,20 +224,19 @@ def _find_approver(db: Session, user: User) -> User | None:
         ).first()
         if manager:
             return manager
-    department_manager = db.query(User).filter(
-        User.tenant_id == user.tenant_id,
-        User.department == user.department,
-        User.role == "Manager",
-        User.is_active.is_(True),
-        User.id != user.id,
-    ).first()
-    if department_manager:
-        return department_manager
-    return db.query(User).filter(
-        User.tenant_id == user.tenant_id,
-        User.role.in_(["Owner", "CEO"]),
-        User.is_active.is_(True),
-    ).first()
+    # By what the position lets them sign, not by the "Manager"/"CEO" role strings: a
+    # company's own team-lead job never matched those, and a Manager whose signing right
+    # was unticked kept receiving leave requests they could no longer approve.
+    from app.domains.platform.position_service import approval_signers, can_sign_critical
+
+    signers = [candidate for candidate in approval_signers(db, user.tenant_id) if candidate.id != user.id]
+    department_signer = next(
+        (candidate for candidate in signers if candidate.department == user.department and not can_sign_critical(db, candidate)),
+        None,
+    ) or next((candidate for candidate in signers if candidate.department == user.department), None)
+    if department_signer:
+        return department_signer
+    return next((candidate for candidate in signers if can_sign_critical(db, candidate)), None)
 
 
 def _sync_legacy_balance(db: Session, user: User, balance: LeaveBalance) -> None:

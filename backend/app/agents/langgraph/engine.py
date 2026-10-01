@@ -2,13 +2,18 @@
 
 from __future__ import annotations
 
+import re
 import uuid
 from datetime import datetime, timezone
 from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
-from app.core.gateway_tools import disabled_gateway_tools, effective_tool_grants
+from app.core.gateway_tools import (
+    GATEWAY_TOOL_LABELS,
+    disabled_gateway_tools,
+    effective_tool_grants,
+)
 from app.core.security import create_internal_tool_token
 from app.models.models import (
     AIAgent,
@@ -31,6 +36,7 @@ from app.agents.langgraph.approvals import (
     GRAPH_WORKFLOW_KIND,
     ensure_graph_approval,
 )
+from app.agents.legal.review import _legal_review_card, _load_legal_review_draft
 
 
 # How much of the conversation the graph sees besides the current message. The graph used
@@ -55,6 +61,19 @@ class GraphModelUnavailable(AIServiceError):
         super().__init__("The graph's decision model is unavailable", status_code=503)
 
 
+def role_restricted_tools(user: User, allowed_tools: list[str]) -> list[dict[str, str]]:
+    """The agent's granted gateway tools whose role/department ACL refuses this user."""
+    # Imported here: the registry builds itself at import time and pulls in the chat flows.
+    from app.tools.registry import tool_registry
+
+    definitions = {definition.name: definition for definition in tool_registry.all()}
+    return [
+        {"name": name, "label": GATEWAY_TOOL_LABELS[name]}
+        for name in sorted(set(allowed_tools) & set(GATEWAY_TOOL_LABELS))
+        if name in definitions and not definitions[name].acl.permits(user)
+    ]
+
+
 def model_unavailable(result: dict[str, Any]) -> bool:
     state = result.get("state") or {}
     if result.get("status") == "AWAITING_APPROVAL" or state.get("tool_calls"):
@@ -71,6 +90,10 @@ SUSPENDED_CONVERSATION_REPLY = (
     "tin nhắn mới ở đây. Tôi sẽ tiếp tục khi yêu cầu được duyệt hoặc từ chối. Nếu cần hỏi "
     "việc khác, bạn hãy mở một cuộc hội thoại mới."
 )
+
+# The tag retrieval hands the model: "[Citation: <document>, v<version>, <section>; chunk=<id>]".
+CITATION_TAG = re.compile(r"\[Citation:\s*([^\]]+)\]", re.IGNORECASE)
+CHUNK_REFERENCE = re.compile(r";?\s*chunk\s*=\s*([^\s;,\]]+)", re.IGNORECASE)
 
 
 class LangGraphEngine:
@@ -116,6 +139,10 @@ class LangGraphEngine:
             "disabled_tools": disabled_gateway_tools(
                 agent.role_code, agent.tools_access, allowed_tools
             ),
+            # Granted, but the gateway's ACL refuses them to this user, so they never reach
+            # the model's tool list. Asked for an NDA without the drafting tool, the model
+            # explained the gap with a company rule the documents never state.
+            "restricted_tools": role_restricted_tools(user, allowed_tools),
             # What the tenant added to this agent's reply prompt -- plugin appends and the
             # administrator's own text. The graph puts it after its own rules.
             "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),
@@ -267,9 +294,12 @@ class LangGraphEngine:
         interrupt_item: dict[str, Any],
     ) -> WorkflowApproval:
         value = dict(interrupt_item.get("value") or {})
+        # The tool call id comes first: it is the key the graph registered this approval
+        # under through the gateway before suspending. LangGraph's own interrupt id is a
+        # different value, and keying on it opened a second, identical approval.
         interrupt_id = str(
-            interrupt_item.get("id")
-            or value.get("tool_call_id")
+            value.get("tool_call_id")
+            or interrupt_item.get("id")
             or f"{workflow.thread_id}:{value.get('tool_name')}"
         )
         approval_id = value.get("approval_id")
@@ -368,7 +398,9 @@ class LangGraphEngine:
             agent,
             workflow=workflow,
             approval=approval,
-            legal_risk_card=self.legal_risk_card(db, user, result),
+            legal_risk_card=self.legal_risk_card(
+                db, user, result, agent=agent, conversation_id=conversation_id
+            ),
         )
 
     def execute_stream(
@@ -445,7 +477,9 @@ class LangGraphEngine:
                 agent,
                 workflow=workflow,
                 approval=approval,
-                legal_risk_card=self.legal_risk_card(db, user, result),
+                legal_risk_card=self.legal_risk_card(
+                    db, user, result, agent=agent, conversation_id=conversation_id
+                ),
             ),
         }
 
@@ -651,13 +685,22 @@ class LangGraphEngine:
 
     @staticmethod
     def legal_risk_card(
-        db: Session, user: User | None, result: dict[str, Any]
+        db: Session,
+        user: User | None,
+        result: dict[str, Any],
+        *,
+        agent: AIAgent | None = None,
+        conversation_id: str | None = None,
     ) -> dict[str, Any] | None:
-        """The saved review behind this turn's contract review, shaped as the chat card.
+        """This turn's contract review card, in the shape the deterministic Legal chat uses.
 
-        The model only receives a summary of the review, so without this the user would
-        get a paragraph and no card: no findings, no evidence, no redline. `tool_calls`
-        starts empty on every run, so each entry belongs to this turn.
+        A finished review is the saved review behind it: the model only receives a summary,
+        so without this the user would get a paragraph and no card -- no findings, no
+        evidence, no redline. A review still waiting for the user's side is the same open
+        question the deterministic chat leaves, so a next turn that falls back to that chat
+        still reads "bên B" as the answer. Any other Legal turn closes a question left open
+        earlier: the user moved on, and a later message must not be read as answering it.
+        `tool_calls` starts empty on every run, so each entry belongs to this turn.
         """
         if user is None:
             return None
@@ -666,11 +709,20 @@ class LangGraphEngine:
             if not isinstance(call, dict) or call.get("name") != "audit_contract_risk":
                 continue
             if call.get("status") != "SUCCESS" or not isinstance(call.get("result"), dict):
-                return None
-            review_id = call["result"].get("review_id")
+                break
+            outcome = call["result"]
+            if outcome.get("status") == "NEEDS_REPRESENTED_PARTY" and outcome.get("contract_fingerprint"):
+                return _legal_review_card(
+                    status="COLLECTING",
+                    contract_fingerprint=str(outcome["contract_fingerprint"]),
+                    contract_char_count=int(outcome.get("contract_char_count") or 0),
+                    excerpt=str(outcome.get("contract_excerpt") or ""),
+                    document_scope=outcome.get("document_scope"),
+                )
+            review_id = outcome.get("review_id")
             if not review_id:
-                # The tool asked for the user's side or found no text; nothing reviewed.
-                return None
+                # Nothing was reviewed: no text, or one that could not be translated.
+                break
             try:
                 review_uuid = uuid.UUID(str(review_id))
             except ValueError:
@@ -689,7 +741,17 @@ class LangGraphEngine:
                 "review_id": str(review.id),
                 "redline_url": f"/api/v1/legal/contract-reviews/{review.id}/redline",
             }
-        return None
+        if agent is None or agent.role_code.upper() != "LEGAL" or not conversation_id:
+            return None
+        pending = _load_legal_review_draft(db, user, conversation_id)
+        if pending is None:
+            return None
+        draft, _ = pending
+        return _legal_review_card(
+            status="DISMISSED",
+            contract_fingerprint=str(draft.get("contract_fingerprint") or ""),
+            contract_char_count=int(draft.get("contract_char_count") or 0),
+        )
 
     @staticmethod
     def public_citations(state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -700,42 +762,75 @@ class LangGraphEngine:
         "Tài liệu nội bộ" instead of the document. Each citation is matched back to the
         retrieved chunk it names and replaced by that chunk's own metadata; one that
         matches nothing retrieved is dropped (the graph has already verified the answer).
+        Retrieved means what the graph verifies against: its own search and every search
+        the model ran after it -- matched against the first alone, an answer resting on a
+        later search reached the user verified but with no sources.
         """
         context = [item for item in (state.get("retrieved_context") or []) if isinstance(item, dict)]
-        cited: list[dict[str, Any]] = []
-        for citation in state.get("citations") or []:
-            if not isinstance(citation, dict):
-                continue
-            keys = {
+        for call in state.get("tool_calls") or []:
+            if (
+                isinstance(call, dict)
+                and call.get("name") == "rag_search"
+                and call.get("status") == "SUCCESS"
+                and isinstance(call.get("result"), list)
+            ):
+                context.extend(item for item in call["result"] if isinstance(item, dict))
+        references: list[set[str]] = [
+            {
                 str(value).strip().casefold()
                 for field in ("chunk_id", "id", "document_id", "document_title", "document_name", "source", "citation_tag")
                 for value in [citation.get(field)]
                 if value
             }
-            chunk_ids = {key.split("chunk=")[-1].rstrip("]").strip() for key in keys if "chunk=" in key}
-            match = next(
-                (
-                    item for item in context
-                    if str(item.get("id") or "").casefold() in keys | chunk_ids
-                ),
-                None,
-            ) or next(
-                (
-                    item for item in context
-                    if {
-                        str(item.get(field) or "").casefold()
-                        for field in ("document_id", "document_title", "document_name")
-                    } & keys
-                ),
-                None,
-            )
-            if match is None or any(item.get("id") == match.get("id") for item in cited):
-                continue
+            for citation in state.get("citations") or []
+            if isinstance(citation, dict)
+        ]
+        # The tags the answer itself carries: the model's citation objects sometimes hold
+        # only part of one (a document and section, no chunk), and the answer the graph
+        # verified was shown with no sources.
+        references.extend({tag.strip().casefold()} for tag in CITATION_TAG.findall(state.get("final_answer") or ""))
+
+        def chunk_match(keys: set[str]) -> dict[str, Any] | None:
+            ids = keys | {match.group(1) for key in keys for match in [CHUNK_REFERENCE.search(key)] if match}
+            return next((item for item in context if str(item.get("id") or "").casefold() in ids), None)
+
+        def named_documents(keys: set[str]) -> set[str]:
+            # As the graph verifies a tag: its document is what comes before the first comma.
+            return keys | {CHUNK_REFERENCE.sub("", key).split(",", 1)[0].strip() for key in keys}
+
+        def document_fields(item: dict[str, Any]) -> set[str]:
+            return {
+                str(item.get(field) or "").casefold()
+                for field in ("document_id", "document_title", "document_name")
+            } - {""}
+
+        cited: list[dict[str, Any]] = []
+
+        def cite(match: dict[str, Any]) -> None:
+            if any(item.get("id") == match.get("id") for item in cited):
+                return
             cited.append({
                 field: match.get(field)
                 for field in ("id", "document_id", "document_name", "document_title", "section_title", "version", "citation_tag")
                 if match.get(field) is not None
             })
+
+        # A reference naming its chunk shows that chunk. One naming only a document shows
+        # that document's first retrieved chunk -- unless a chunk of it is already shown.
+        unmatched: list[set[str]] = []
+        for keys in references:
+            match = chunk_match(keys)
+            if match is None:
+                unmatched.append(keys)
+            else:
+                cite(match)
+        for keys in unmatched:
+            documents = named_documents(keys)
+            if any(document_fields(item) & documents for item in cited):
+                continue
+            match = next((item for item in context if document_fields(item) & documents), None)
+            if match is not None:
+                cite(match)
         return cited
 
     @staticmethod

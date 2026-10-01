@@ -259,3 +259,62 @@ def test_changing_a_decision_invalidates_the_cached_redline(
 
     assert after.status_code == 200
     assert after.content != before
+
+
+def test_reading_a_review_is_audited_and_a_refused_read_too(
+    client, employee_token_headers, manager_token_headers, transactional_db_session
+):
+    """A review holds the whole contract; only its writes used to leave a trace."""
+    from app.models.models import AuditLog, User
+
+    review_id = _review(client, employee_token_headers, text=unique_contract("audit-read"))["review_id"]
+    assert client.get(f"/api/v1/legal/contract-reviews/{review_id}", headers=employee_token_headers).status_code == 200
+    assert client.get(f"/api/v1/legal/contract-reviews/{review_id}", headers=manager_token_headers).status_code == 404
+
+    db = transactional_db_session
+    rows = db.query(AuditLog).filter(
+        AuditLog.action == "contract_review.view", AuditLog.resource_id == review_id
+    ).all()
+    by_actor = {row.actor_user_id: row for row in rows}
+    employee = db.query(User).filter(User.email == "employee@company.com").one()
+    manager = db.query(User).filter(User.email == "hr.manager@company.com").one()
+    assert by_actor[employee.id].status == "SUCCESS"
+    assert by_actor[manager.id].status == "DENIED"
+    assert by_actor[employee.id].resource_type == "CONTRACT_REVIEW"
+
+
+def test_a_scanned_pdf_is_refused_rather_than_reviewed_empty(client, employee_token_headers):
+    import io
+
+    from PIL import Image
+
+    scan = io.BytesIO()
+    Image.new("RGB", (400, 200), "white").save(scan, format="PDF")
+    response = client.post(
+        "/api/v1/legal/review-document",
+        files={"file": ("scan.pdf", scan.getvalue(), "application/pdf")},
+        data={"represented_party": "PARTY_A"},
+        headers=employee_token_headers,
+    )
+
+    assert response.status_code == 422
+    assert "bản scan" in response.json()["detail"]
+
+
+def test_an_uploaded_docx_is_reviewed_by_its_word_numbered_articles(client, employee_token_headers):
+    """Articles numbered by Word used to lose their numbers, so no article was found."""
+    from tests.test_document_markdown import _auto_numbered_docx
+
+    response = client.post(
+        "/api/v1/legal/review-document",
+        files={"file": ("hop-dong.docx", _auto_numbered_docx(), "application/vnd.openxmlformats-officedocument.wordprocessingml.document")},
+        data={"represented_party": "PARTY_B"},
+        headers=employee_token_headers,
+    )
+
+    assert response.status_code == 200, response.text
+    clauses = {clause["number"]: clause for clause in response.json()["clauses"]}
+    assert [clauses[number]["title"] for number in ("1", "2", "3")] == ["Hàng hóa", "Thanh toán", "Phạt vi phạm"]
+    assert "| Tổng cộng | 1.045.000.000 |" in clauses["1"]["text"]
+    penalty = [finding for finding in response.json()["findings"] if finding["category"] == "PENALTY"]
+    assert penalty and penalty[0]["clause"] == "3"

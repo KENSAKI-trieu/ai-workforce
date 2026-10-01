@@ -344,3 +344,25 @@ def test_the_router_reports_whether_the_text_is_whole_or_a_piece(reply, scope):
     )
 
     assert result.document_scope == scope
+
+
+def test_reading_the_side_never_sends_the_people_in_the_contract():
+    sent = []
+
+    class Reader:
+        enabled = True
+
+        def generate_text(self, messages, **_kwargs):
+            sent.append(messages[-1]["content"])
+            return {"provider": "gemini", "content": json.dumps({"represented_party": "PARTY_A", "decision": "ANSWER"})}
+
+    perspective = extract_represented_party(
+        "Tôi là bên A. Người lao động: Lê Thị Mai, điện thoại 0912 345 678",
+        fallback_party=None,
+        fallback_cancel=False,
+        client=Reader(),
+    )
+
+    assert perspective.represented_party == "PARTY_A"
+    assert "Lê Thị Mai" not in sent[0] and "0912 345 678" not in sent[0]
+    assert "Tôi là bên A" in sent[0]

@@ -20,11 +20,15 @@ class GraphDecision(BaseModel):
     tool_args: dict[str, Any] = Field(default_factory=dict)
     final_answer: str | None = None
     citations: list[dict[str, Any]] = Field(default_factory=list)
+    # False when nothing retrieved or returned by a tool answers the request. The graph
+    # then says so in its own words: the model's own "not found" carried no citation and
+    # was withheld as unverified, or it kept searching until the iteration limit.
+    answerable: bool = True
     reason: str = Field(min_length=1, max_length=1000)
 
     @model_validator(mode="after")
     def require_tool_or_answer(self) -> "GraphDecision":
-        if not self.tool_name and not self.final_answer:
+        if not self.tool_name and not self.final_answer and self.answerable:
             raise ValueError("Decision must contain a tool call or final answer")
         return self
 
@@ -69,6 +73,7 @@ def decision_system_prompt(
     tool_contracts: list[dict[str, Any]],
     tenant_instructions: str = "",
     disabled_tools: list[dict[str, Any]] | None = None,
+    restricted_tools: list[dict[str, Any]] | None = None,
 ) -> str:
     contract_text = json.dumps(tool_contracts, ensure_ascii=False, default=str)
     prompt = (
@@ -76,7 +81,32 @@ def decision_system_prompt(
         "Choose at most one available tool or return a final answer. Never add tenant, "
         "identity, role, ACL, or audit arguments; orchestration injects them. "
         f"Available tool contracts: {contract_text}"
+        "\n\nGrounding: a final answer states only what retrieved_context or "
+        "previous_tool_calls actually say. Never add law, figures, thresholds, "
+        "exceptions, legal conclusions, company rules or reasons that are not in them, "
+        "and never fill a gap from general knowledge. When they cover only part of the "
+        "request, answer that part and say plainly what they do not cover. Cite the "
+        "sources you used. A citation vouches that the source says what you wrote, so "
+        "never cite a document for something it does not say."
+        "\n\nretrieved_context already holds the knowledge search for the user's "
+        "message. Search again only with a clearly different query, and never repeat a "
+        "search listed in previous_tool_calls. When nothing retrieved or returned "
+        "answers the request, set answerable to false with no tool and no final_answer; "
+        "orchestration tells the user the documents do not cover it."
+        "\n\nWhen final_step is true, no tool can run any more: return a final answer "
+        "from what you already have, or answerable false."
     )
+    if restricted_tools:
+        # Filtered out of the contracts by the gateway's role ACL, so the model never saw
+        # them and explained the gap itself with a policy the documents never state.
+        restricted_text = json.dumps(restricted_tools, ensure_ascii=False, default=str)
+        prompt += (
+            "\n\nThese tools belong to this agent, but the current user's role may not use "
+            f"them: {restricted_text}. If carrying out the user's request needs one of them, "
+            "set tool_name to that tool's name with empty tool_args and no final_answer; "
+            "orchestration will tell the user. Never explain the restriction yourself and "
+            "never carry out such a request from general knowledge."
+        )
     if disabled_tools:
         # Listed so the model can recognise a request that needs one; the graph, not the
         # model, then tells the user. Without this the model only saw that the tool was
@@ -114,8 +144,11 @@ class LangChainDecisionProvider:
         runtime_context: AgentRuntimeContext,
         tenant_instructions: str = "",
         disabled_tools: list[dict[str, Any]] | None = None,
+        restricted_tools: list[dict[str, Any]] | None = None,
     ) -> None:
-        system_prompt = decision_system_prompt(tool_contracts, tenant_instructions, disabled_tools)
+        system_prompt = decision_system_prompt(
+            tool_contracts, tenant_instructions, disabled_tools, restricted_tools
+        )
         self.runtime_context = runtime_context
         self.agent = create_governed_agent(
             model=model,
@@ -137,6 +170,7 @@ class LangChainDecisionProvider:
             "retrieved_context": state.get("retrieved_context", []),
             "previous_tool_calls": state.get("tool_calls", []),
             "user_messages": state.get("messages", []),
+            "final_step": bool(state.get("final_step")),
         }
         result = self.agent.invoke(
             {"messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False, default=str)}]},

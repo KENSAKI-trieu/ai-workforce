@@ -78,6 +78,9 @@ class Settings(BaseSettings):
     MINIO_ACCESS_KEY: Optional[str] = None
     MINIO_SECRET_KEY: Optional[str] = None
     KNOWLEDGE_STORAGE_PATH: str = "data/knowledge"
+    # Fernet key(s), comma-separated: the first seals, all open. Seals contract reviews and
+    # chat message content at rest; empty stores them in plain text. See app/core/encryption.py.
+    DATA_ENCRYPTION_KEY: str = ""
     LEGAL_DRAFT_STORAGE_PATH: str = "data/legal-drafts"
     CLOUDINARY_URL: Optional[str] = None
 

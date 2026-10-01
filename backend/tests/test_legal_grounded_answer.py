@@ -116,6 +116,26 @@ def test_the_model_sees_numbered_bounded_excerpts():
     assert "citation_tag" not in sent[0]
 
 
+def test_a_parent_section_is_cut_around_the_passage_search_matched():
+    router = Router({"answerable": False})
+    passage = "Mức phạt không vượt quá 8% giá trị phần nghĩa vụ bị vi phạm."
+    before = "a" * (EVIDENCE_CHARS_PER_EXCERPT * 2)
+    parent = before + passage + "b" * 300
+    excerpt = {
+        **EVIDENCE[0],
+        "content": parent,
+        "matched_span": [len(before), len(before) + len(passage)],
+        "header_path": ["Chương V. XỬ LÝ VI PHẠM", "Điều 12. Phạt vi phạm"],
+    }
+
+    answer_from_legal_evidence("q", [excerpt], client=router)  # type: ignore[arg-type]
+
+    sent = router.answer_calls[0]["evidence"][0]
+    assert len(sent["content"]) == EVIDENCE_CHARS_PER_EXCERPT
+    assert passage in sent["content"]
+    assert sent["heading_path"] == "Chương V. XỬ LÝ VI PHẠM > Điều 12. Phạt vi phạm"
+
+
 def test_the_echo_provider_is_not_an_answer():
     class Echo:
         enabled = True

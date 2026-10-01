@@ -27,6 +27,7 @@ from app.domains.platform.position_service import (
     descendant_ids,
     ensure_tenant_positions,
     position_permissions,
+    resync_position_holders,
     unique_slug,
     user_permissions,
 )
@@ -225,6 +226,10 @@ def update_position(
         changes["is_active"] = payload.is_active
 
     db.flush()
+    if payload.permissions is not None or payload.is_active is not None:
+        # Guards not yet reading permission codes read the role string; without this the
+        # ticked boxes applied only to people assigned after the change.
+        changes["holders_resynced"] = resync_position_holders(db, position)
     add_audit_event(
         db,
         tenant_id=current_user.tenant_id,

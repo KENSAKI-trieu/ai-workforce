@@ -49,7 +49,8 @@ from app.domains.knowledge.document_processing_events import (
     wait_for_processing_event,
     wait_for_subscriber,
 )
-from app.domains.knowledge.document_parser import DocumentParseError, extract_file_text
+from app.domains.knowledge.document_markdown import extract_knowledge_text
+from app.domains.knowledge.document_parser import DocumentParseError
 from app.domains.knowledge.knowledge_storage import (
     delete_original_file,
     read_original_file,
@@ -61,6 +62,7 @@ from app.domains.knowledge.rag_service import (
     CHUNK_SIZE_TOKENS,
     build_configured_chunks,
     hybrid_search_documents,
+    user_search_scope,
     ingest_document,
 )
 from app.domains.platform.notification_service import create_notification
@@ -505,11 +507,11 @@ def _visible_document_reader_source(
 
 def _extract_file_text(filename: str, data: bytes) -> str:
     try:
-        return extract_file_text(filename, data)
+        return extract_knowledge_text(filename, data)
     except DocumentParseError as exc:
         message = str(exc)
         status_code = 415 if message.startswith("Supported file types") else 422
-        if message == "PDF parser is not installed":
+        if message in {"PDF parser is not installed", "DOCX parser is not installed"}:
             status_code = 503
         raise HTTPException(status_code=status_code, detail=message) from exc
 
@@ -958,14 +960,9 @@ def search_rag(
         db=db,
         tenant_id=current_user.tenant_id,
         query_text=req.query,
-        department=(
-            "*" if current_user.role in {"Owner", "Admin", "CEO"}
-            else current_user.department
-        ),
         top_k=req.top_k,
         collections=req.collections,
-        user_role=current_user.role,
-        user_department=current_user.department,
+        **user_search_scope(db, current_user),
     )
     return [DocumentChunkResponse(**result) for result in results]
 

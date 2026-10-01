@@ -100,6 +100,68 @@ def has_permission(db: Session | None, user: User, code: str) -> bool:
     return code in user_permissions(db, user)
 
 
+def users_with_permission(db: Session, tenant_id: uuid.UUID, code: str) -> list[User]:
+    """Active users of a tenant whose position grants ``code`` -- who to notify, who may sign.
+
+    Replaces `User.role.in_({...})` queries, which named a job rather than a power and so
+    kept finding people whose position had the power taken away.
+    """
+    positions = db.query(Position).filter(
+        Position.tenant_id == tenant_id,
+        Position.is_active.is_(True),
+    ).all()
+    granting = [position.id for position in positions if code in position_permissions(position)]
+    if not granting:
+        return []
+    return db.query(User).filter(
+        User.tenant_id == tenant_id,
+        User.is_active.is_(True),
+        User.position_id.in_(granting),
+    ).all()
+
+
+SIGN_APPROVALS = "approvals.sign"
+SIGN_CRITICAL_APPROVALS = "approvals.sign_critical"
+
+
+def can_sign_critical(db: Session | None, user: User) -> bool:
+    """Signs anything, anyone's, any risk -- what the Owner/Admin/CEO roles used to mean."""
+    return has_permission(db, user, SIGN_CRITICAL_APPROVALS)
+
+
+def can_sign_approvals(db: Session | None, user: User) -> bool:
+    """Signs requests within their own management scope, below CRITICAL."""
+    granted = user_permissions(db, user)
+    return SIGN_APPROVALS in granted or SIGN_CRITICAL_APPROVALS in granted
+
+
+def approval_signers(db: Session, tenant_id: uuid.UUID) -> list[User]:
+    """Everyone who can sign at least something: who to consider notifying."""
+    seen: dict[uuid.UUID, User] = {}
+    for code in (SIGN_APPROVALS, SIGN_CRITICAL_APPROVALS):
+        for user in users_with_permission(db, tenant_id, code):
+            seen[user.id] = user
+    return list(seen.values())
+
+
+def resync_position_holders(db: Session, position: Position) -> int:
+    """Rewrite the legacy role string of everyone in ``position`` after its powers changed.
+
+    `assign_position` wrote the role only at assignment, so ticking or unticking a
+    permission on a position that already had people in it changed nothing for the
+    guards still reading `User.role`. Returns how many users changed. Does not commit.
+    """
+    role = legacy_role_for_position(position.slug, position.grants_all, position_permissions(position))
+    changed = 0
+    for user in db.query(User).filter(User.position_id == position.id).all():
+        if user.role != role:
+            user.role = role
+            changed += 1
+    if changed:
+        db.flush()
+    return changed
+
+
 # Powers that only somebody running other people is given. Reading the directory is not
 # among them: ordinary staff hold `hr.directory.view` too.
 _SUPERVISORY_PERMISSIONS: frozenset[str] = frozenset({
@@ -112,6 +174,11 @@ _SUPERVISORY_PERMISSIONS: frozenset[str] = frozenset({
 })
 
 _FALLBACK_SUPERVISORY_ROLES: tuple[str, ...] = ("Admin", "CEO", "Manager")
+
+
+def is_supervisor(db: Session | None, user: User) -> bool:
+    """Whether the user's position runs other people -- who can be someone's manager."""
+    return bool(user_permissions(db, user) & _SUPERVISORY_PERMISSIONS)
 
 
 def supervisory_role_names(db: Session, tenant_id: uuid.UUID) -> tuple[str, ...]:

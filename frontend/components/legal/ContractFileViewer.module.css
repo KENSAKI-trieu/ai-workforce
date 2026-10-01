@@ -1,0 +1,31 @@
+.backdrop { position: fixed; z-index: 520; inset: 0; display: grid; place-items: center; padding: 20px; background: rgba(18, 31, 47, .55); backdrop-filter: blur(2px); }
+.modal { display: flex; width: min(1040px, 100%); height: calc(100vh - 40px); flex-direction: column; overflow: hidden; border-radius: 10px; background: #fff; box-shadow: 0 24px 70px rgba(16, 29, 45, .32); }
+.modal > header { display: flex; align-items: center; gap: 12px; padding: 12px 15px; border-bottom: 1px solid #e3e8ee; }
+.modal > header > div { display: flex; min-width: 0; flex: 1; align-items: center; gap: 9px; }
+.modal > header > div > span { display: grid; width: 34px; height: 34px; flex: 0 0 auto; place-items: center; border-radius: 6px; background: #eaf1f7; color: #315d80; }
+.modal > header > div > div { display: flex; min-width: 0; flex-direction: column; gap: 3px; }
+.modal header strong { overflow: hidden; color: #2f3e52; font-size: .9rem; text-overflow: ellipsis; white-space: nowrap; }
+.modal header small { overflow: hidden; color: #8390a1; font-size: .72rem; text-overflow: ellipsis; white-space: nowrap; }
+.tabs { display: flex; gap: 3px; padding: 3px; border-radius: 7px; background: #eef2f6; }
+.tabs button { padding: 6px 11px; border: 0; border-radius: 5px; background: transparent; color: #5b6b7e; font: 650 .75rem/1 Inter, sans-serif; cursor: pointer; }
+.tabs button.activeTab { background: #fff; color: #21466c; box-shadow: 0 1px 3px rgba(20, 40, 60, .14); }
+.close { display: grid; padding: 5px; border: 0; background: transparent; color: #6e7b8c; cursor: pointer; }
+.body { position: relative; min-height: 0; flex: 1; overflow: auto; background: #e9edf2; }
+.pdf { display: block; width: 100%; height: 100%; border: 0; }
+.docx { min-height: 100%; }
+.docx :global(.docx-wrapper) { padding: 24px 12px; background: #e9edf2; }
+.docx :global(.docx-wrapper > section.docx) { margin-bottom: 18px; box-shadow: 0 4px 18px rgba(20, 40, 60, .16); }
+.state { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; gap: 8px; color: #5d6c80; font-size: .85rem; }
+.error { color: #a33e4d; }
+.spin { animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.modal > footer { display: flex; align-items: center; justify-content: flex-end; gap: 8px; padding: 10px 14px; border-top: 1px solid #e3e8ee; }
+.modal > footer small { margin-right: auto; color: #8a96a5; font-size: .72rem; }
+.modal > footer button { display: inline-flex; min-height: 32px; align-items: center; gap: 5px; padding: 0 12px; border: 1px solid #d4dde6; border-radius: 6px; background: #fff; color: #40566e; font: 650 .75rem/1 Inter, sans-serif; cursor: pointer; }
+.modal > footer button:disabled { opacity: .5; cursor: default; }
+@media (max-width: 640px) {
+  .backdrop { padding: 0; }
+  .modal { height: 100vh; border-radius: 0; }
+  .modal > header { flex-wrap: wrap; }
+  .modal > footer small { display: none; }
+}

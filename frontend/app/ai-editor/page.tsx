@@ -22,7 +22,7 @@ import {
 
 import Sidebar from "@/components/Sidebar";
 import api from "@/lib/api";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useAuthStore, userCan } from "@/store/useAuthStore";
 
 interface Agent {
   id: string;
@@ -131,7 +131,8 @@ export default function AIEditorPage() {
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set());
   const [expandedDocuments, setExpandedDocuments] = useState<Set<string>>(new Set());
 
-  const canConfigure = ["Owner", "Admin", "CEO"].includes(user?.role || "");
+  // "Cấu hình nhân viên AI" in org-structure; the server checks the same code.
+  const canConfigure = userCan(user, "agents.configure");
 
   const loadAgents = useCallback(async () => {
     setLoading(true);

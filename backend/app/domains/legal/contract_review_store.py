@@ -13,18 +13,30 @@ caller owns the transaction. That matters most in the chat path, where
 from __future__ import annotations
 
 import hashlib
+import hmac
 import re
 import uuid
+from datetime import datetime, timezone
+from pathlib import Path
 from typing import Any
 
 from sqlalchemy.orm import Session
 
+from app.core.config import settings
+from app.core.encryption import seal_bytes, unseal_bytes
+from app.domains.legal.contract_document import (
+    decisions_fingerprint,
+    document_format,
+    revised_filename,
+)
+from app.domains.legal.legal_draft_storage import read_legal_artifact, save_legal_artifact
+from app.domains.platform.position_service import has_permission
 from app.models.models import ContractReview, ContractReviewDecision, User
 
 
-# Mirrors specialized.LEGAL_DOCUMENT_APPROVERS. "Owner" is retained alongside
-# "CEO" because the q20d5f7b9e43 migration renamed the role and both may exist.
-LEGAL_REVIEW_APPROVERS = {"Owner", "Admin", "CEO"}
+# Ticked in org-structure as "Xem mọi bản rà soát hợp đồng". It replaced a check on the
+# Owner/Admin/CEO role strings, which no box on a position could grant or take away.
+VIEW_ALL_REVIEWS_PERMISSION = "legal.review.view_all"
 VALID_DECISIONS = {"ACCEPTED", "REJECTED", "EDITED"}
 
 
@@ -56,7 +68,33 @@ def can_access_contract_review(user: User, review: ContractReview) -> bool:
     """
     if review.tenant_id != user.tenant_id:
         return False
-    return user.role in LEGAL_REVIEW_APPROVERS or review.created_by_id == user.id
+    return review.created_by_id == user.id or has_permission(None, user, VIEW_ALL_REVIEWS_PERMISSION)
+
+
+def find_contract_review(
+    db: Session,
+    *,
+    user: User,
+    contract_text: str,
+    represented_party: str,
+    review_version: str,
+) -> ContractReview | None:
+    """The review this person already has of this text, for this side and analyzer version.
+
+    Callers look before a model-assisted review runs: its wording differs from run to
+    run, so a fresh result shown over a stored row would carry finding keys the stored
+    row does not have, and every decision taken on the card would be refused.
+    """
+    key = _idempotency_key(
+        created_by_id=user.id,
+        text_hash=content_hash(contract_text),
+        represented_party=represented_party.upper(),
+        review_version=review_version,
+    )
+    return db.query(ContractReview).filter(
+        ContractReview.tenant_id == user.tenant_id,
+        ContractReview.idempotency_key == key,
+    ).first()
 
 
 def save_contract_review(
@@ -82,10 +120,13 @@ def save_contract_review(
         represented_party=represented_party,
         review_version=review_version,
     )
-    existing = db.query(ContractReview).filter(
-        ContractReview.tenant_id == user.tenant_id,
-        ContractReview.idempotency_key == key,
-    ).first()
+    existing = find_contract_review(
+        db,
+        user=user,
+        contract_text=contract_text,
+        represented_party=represented_party,
+        review_version=review_version,
+    )
     if existing:
         # Late escalation: a review first run below the approval threshold can be
         # linked to a workflow on a later identical run.
@@ -130,6 +171,110 @@ def get_contract_review(
     return review
 
 
+def _marker_signature(review_id: str, tenant_id: str) -> str:
+    message = f"contract-review-marker|{review_id}|{tenant_id}".encode("utf-8")
+    return hmac.new(settings.SECRET_KEY.encode("utf-8"), message, hashlib.sha256).hexdigest()[:32]
+
+
+def review_marker(review: ContractReview) -> str:
+    """The mark a revised file carries back: this review's id, signed by the server.
+
+    Signed so that only a file this server wrote can claim to be the next round of a
+    review; the id alone could be pasted into any document.
+    """
+    return f"{review.id}.{_marker_signature(str(review.id), str(review.tenant_id))}"
+
+
+def review_from_marker(db: Session, *, user: User, marker: str | None) -> ContractReview | None:
+    """The review a revised file names, when the mark is genuine and the user may open it."""
+    review_id, _, signature = str(marker or "").strip().partition(".")
+    if not review_id or not signature:
+        return None
+    expected = _marker_signature(review_id, str(user.tenant_id))
+    if not hmac.compare_digest(signature, expected):
+        return None
+    return get_contract_review(db, user=user, review_id=review_id)
+
+
+def review_round(review: ContractReview) -> int:
+    return int((review.result or {}).get("review_round") or 1)
+
+
+# A finding the new round took over unchanged -- its clause was not touched, or the
+# reviewer had already accepted the risk -- keeps the decision taken on it.
+_KEEPS_DECISION = {"CARRIED", "ACCEPTED_RISK"}
+
+
+def link_to_previous(db: Session, review: ContractReview, previous: ContractReview) -> int:
+    """Record ``previous`` as the round this review follows and carry its decisions over.
+
+    Returns how many decisions were carried. Flushes without committing. A decision is
+    carried only onto a finding taken over as it stood; a finding the change touched is
+    a new question for the reviewer.
+    """
+    if review.parent_review_id is not None or review.id == previous.id:
+        return 0
+    review.parent_review_id = previous.id
+    earlier = {
+        row.finding_key: row
+        for row in db.query(ContractReviewDecision).filter(ContractReviewDecision.review_id == previous.id)
+    }
+    existing = {
+        row.finding_key
+        for row in db.query(ContractReviewDecision).filter(ContractReviewDecision.review_id == review.id)
+    }
+    when = previous.created_at.strftime("%d/%m/%Y") if previous.created_at else "vòng trước"
+    carried = 0
+    for finding in (review.result or {}).get("findings", []):
+        source = earlier.get(str(finding.get("parent_finding_key") or ""))
+        key = str(finding.get("finding_key") or "")
+        if source is None or not key or key in existing or finding.get("round_status") not in _KEEPS_DECISION:
+            continue
+        note = f"Giữ từ bản rà soát {when}"
+        db.add(ContractReviewDecision(
+            review_id=review.id,
+            finding_key=key,
+            finding_ref=str(finding.get("id") or "") or None,
+            decision=source.decision,
+            revised_text=source.revised_text,
+            comment=f"{note}: {source.comment}" if source.comment else note,
+            # The person who decided it, not the one who uploaded the next round.
+            decided_by_id=source.decided_by_id,
+        ))
+        existing.add(key)
+        carried += 1
+    db.flush()
+    _refresh_status(db, review)
+    db.flush()
+    return carried
+
+
+def can_delete_contract_review(user: User, review: ContractReview) -> bool:
+    """Only the person who ran a review deletes it.
+
+    Seeing every review (``legal.review.view_all``) is a right to read, not to remove
+    someone else's record of a contract and the decisions taken on it.
+    """
+    return review.tenant_id == user.tenant_id and review.created_by_id == user.id
+
+
+def delete_contract_review(db: Session, review: ContractReview) -> list[str]:
+    """Delete the review with its decisions; return the storage keys of its files.
+
+    Flushes without committing. The files are the caller's to remove once the delete is
+    committed, so a rolled-back delete does not leave a review pointing at nothing. A later
+    round of this review stays, unlinked from it (``parent_review_id`` is SET NULL).
+    """
+    keys = [
+        key
+        for key in (review.original_storage_key, review.revised_storage_key, review.redline_storage_key)
+        if key
+    ]
+    db.delete(review)
+    db.flush()
+    return keys
+
+
 def list_contract_reviews(
     db: Session,
     *,
@@ -139,7 +284,7 @@ def list_contract_reviews(
     risk_level: str | None = None,
 ) -> list[ContractReview]:
     query = db.query(ContractReview).filter(ContractReview.tenant_id == user.tenant_id)
-    if user.role not in LEGAL_REVIEW_APPROVERS:
+    if not has_permission(db, user, VIEW_ALL_REVIEWS_PERMISSION):
         query = query.filter(ContractReview.created_by_id == user.id)
     if risk_level:
         query = query.filter(ContractReview.risk_level == risk_level.upper())
@@ -226,6 +371,77 @@ def clear_decision(db: Session, *, review: ContractReview, finding_key: str) -> 
     _refresh_status(db, review)
     db.flush()
     return True
+
+
+def attach_original(
+    review: ContractReview,
+    *,
+    filename: str,
+    data: bytes,
+    form: dict[str, Any] | None,
+) -> None:
+    """Keep the uploaded file (sealed) and its form with the review. Flushes nothing.
+
+    The first upload wins: a later identical upload returns this same review, and
+    swapping the file under revisions already written from it would orphan them.
+    """
+    if review.original_storage_key:
+        return
+    fmt = document_format(filename)
+    if fmt is None:
+        return
+    review.original_storage_key = save_legal_artifact(
+        tenant_id=review.tenant_id,
+        artifact_id=f"review-{review.id}",
+        variant="original",
+        filename=filename,
+        content=seal_bytes(data),
+    )
+    review.original_filename = Path(filename).name
+    review.original_format = fmt
+    review.form_snapshot = form
+
+
+def read_original(review: ContractReview) -> bytes:
+    return unseal_bytes(read_legal_artifact(str(review.original_storage_key)))
+
+
+def save_revised(review: ContractReview, *, content: bytes, report: dict[str, Any]) -> None:
+    filename = revised_filename(str(review.original_filename or review.document_name))
+    review.revised_storage_key = save_legal_artifact(
+        tenant_id=review.tenant_id,
+        artifact_id=f"review-{review.id}",
+        variant="revised",
+        filename=filename,
+        content=seal_bytes(content),
+    )
+    review.revised_filename = filename
+    review.revision_report = report
+    review.revised_at = datetime.now(timezone.utc)
+
+
+def read_revised(review: ContractReview) -> bytes:
+    return unseal_bytes(read_legal_artifact(str(review.revised_storage_key)))
+
+
+def document_state(review: ContractReview, decisions: list[dict[str, Any]]) -> dict[str, Any]:
+    """What the client needs to offer editing, viewing and downloading the contract file."""
+    report = review.revision_report or {}
+    ready = bool(review.revised_storage_key)
+    return {
+        "original_available": bool(review.original_storage_key),
+        "original_filename": review.original_filename,
+        "original_format": review.original_format,
+        "editable": bool(review.original_storage_key) and not (review.result or {}).get("translated_for_review"),
+        "revised_ready": ready,
+        # Built from other decisions than the ones on the review now: re-apply to refresh.
+        "revised_stale": ready and report.get("decisions_fingerprint") != decisions_fingerprint(decisions),
+        "revised_filename": review.revised_filename,
+        "revised_at": review.revised_at.isoformat() if review.revised_at else None,
+        "revision_report": report or None,
+        "revised_url": f"/api/v1/legal/contract-reviews/{review.id}/revised-document",
+        "original_url": f"/api/v1/legal/contract-reviews/{review.id}/original-document",
+    }
 
 
 def serialize_decisions(db: Session, review: ContractReview) -> list[dict[str, Any]]:

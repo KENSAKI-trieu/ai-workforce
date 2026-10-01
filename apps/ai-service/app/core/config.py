@@ -39,6 +39,7 @@ class Settings(BaseSettings):
     # Largest text list /v1/token-count accepts in one request.
     TOKEN_COUNT_MAX_TEXTS: int = Field(default=128, ge=1, le=4096)
 
+    RAG_CHUNK_MIN_TOKENS: int = 100
     RAG_CHUNK_TARGET_TOKENS: int = 450
     RAG_CHUNK_MAX_TOKENS: int = 700
     RAG_CHUNK_OVERLAP_TOKENS: int = 80

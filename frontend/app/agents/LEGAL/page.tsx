@@ -34,15 +34,19 @@ import {
   Download,
   ExternalLink,
   Eye,
+  Trash2,
 } from "lucide-react";
 import { FormEvent, RefObject, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 
 import Sidebar from "@/components/Sidebar";
 import ChatMessageContent from "@/components/chat/ChatMessageContent";
 import LegalDocumentGeneratorModal from "@/components/legal/LegalDocumentGeneratorModal";
 import api from "@/lib/api";
-import { useAuthStore } from "@/store/useAuthStore";
+import ContractFileViewer, { ContractFile } from "@/components/legal/ContractFileViewer";
+import { ReviewStageStatus, streamContractReview } from "@/lib/legalReviewStream";
+import { useAuthStore, userCan } from "@/store/useAuthStore";
 import styles from "./legal.module.css";
 
 type View = "overview" | "chat" | "review" | "drafts" | "compliance" | "saved";
@@ -133,6 +137,10 @@ interface SavedReviewSummary {
   created_at?: string | null;
   redline_ready: boolean;
   redline_url: string;
+  review_round?: number;
+  // The creator's, and not while an approval is waiting on it.
+  can_delete?: boolean;
+  approval?: { status: "WAITING" | "APPROVED" | "REJECTED" | "EXPIRED" } | null;
 }
 interface RiskFinding {
   id: string;
@@ -153,6 +161,20 @@ interface RiskFinding {
   perspective: string;
   impact: "ADVERSE" | "BENEFICIAL" | "BALANCED" | "SHARED";
   sources: Array<{ id: string; title: string; type: string; url?: string; note?: string }>;
+  // On the next round of a review: what became of the finding since the round before.
+  round_status?: RoundStatus;
+  round_note?: string | null;
+}
+type RoundStatus = "CARRIED" | "ACCEPTED_RISK" | "PARTIAL" | "UNRESOLVED" | "UNVERIFIED" | "NEW";
+interface ResolvedFinding {
+  parent_finding_key: string;
+  clause: string;
+  clause_title?: string | null;
+  severity: Severity;
+  finding_type: RiskFinding["finding_type"];
+  issue: string;
+  note?: string | null;
+  fix_applied: boolean;
 }
 interface ContractReview {
   review_version: string;
@@ -184,12 +206,60 @@ interface ContractReview {
   category_summary: Array<{ category: string; severity: Severity }>;
   reference_sources: Array<{ id: string; title: string; type: string; url?: string; reader_url?: string; note?: string; citation_tag?: string; section_title?: string }>;
   review_disclaimer: string;
+  requires_legal_approval?: boolean;
   approval_created: boolean;
   workflow_id?: string | null;
   review_id: string;
+  // Set when a revised file came back to be reviewed again.
+  review_round?: number;
+  parent_review_id?: string | null;
+  round_mode?: "VERIFIED" | "FULL";
+  round_summary?: Partial<Record<RoundStatus | "RESOLVED", number>> & { changed_clauses?: number; added_clauses?: number; removed_clauses?: number };
+  resolved_findings?: ResolvedFinding[];
   decisions?: ReviewDecision[];
   redline_url?: string;
+  can_decide?: boolean;
+  document?: ContractDocumentState;
+  approval?: ReviewApproval | null;
 }
+interface RevisionReport {
+  format: "docx" | "pdf";
+  generated_at: string;
+  applied: Array<{ finding_key: string; clause: string; action: "REPLACED" | "INSERTED" | "ANNEXED"; decision: string; location: string; notes: string[] }>;
+  skipped: Array<{ finding_key: string; clause: string; reason: string }>;
+  warnings: string[];
+  checks: Array<{ name: string; ok: boolean; detail: string }>;
+}
+interface ContractDocumentState {
+  original_available: boolean;
+  original_filename?: string | null;
+  original_format?: "docx" | "pdf" | null;
+  editable: boolean;
+  revised_ready: boolean;
+  revised_stale: boolean;
+  revised_filename?: string | null;
+  revised_at?: string | null;
+  revision_report?: RevisionReport | null;
+  revised_url: string;
+  original_url: string;
+}
+interface ReviewApproval {
+  approval_id: string;
+  workflow_id: string;
+  status: "WAITING" | "APPROVED" | "REJECTED" | "EXPIRED";
+  risk_level: string;
+  submitted_manually: boolean;
+  submitted_at?: string | null;
+  decided_at?: string | null;
+  comments?: string | null;
+  approver_name?: string | null;
+  revised_document_attached: boolean;
+  // Who could still decide it; 0 means no one sees it in the approval center.
+  eligible_approver_count?: number | null;
+  warning?: string | null;
+}
+interface StageState { status: ReviewStageStatus; detail?: string | null; startedAt?: number; endedAt?: number }
+type PipelineState = Record<string, StageState>;
 interface PrivacyResult {
   document_name: string;
   contains_sensitive_data: boolean;
@@ -228,6 +298,34 @@ interface DocumentReader {
   source_url?: string | null;
   download_url?: string | null;
 }
+
+// The stages the server reports while it reviews an upload, in the order they run.
+// CACHE appears only when the same file was reviewed before and the stored review is reused;
+// VERIFY only when the file is the revised version of an earlier review.
+const PIPELINE_STAGES: Array<{ id: string; label: string; hint: string }> = [
+  { id: "UPLOAD", label: "Nhận file", hint: "Tải file lên máy chủ" },
+  { id: "FORM", label: "Ghi nhớ bố cục", hint: "Lưu form văn bản trước khi đọc, để sửa không làm hỏng" },
+  { id: "PARSE", label: "Đọc nội dung", hint: "Chuyển PDF/DOCX sang văn bản có cấu trúc" },
+  { id: "CACHE", label: "Dùng bản đã rà soát", hint: "File này đã được rà soát trước đó" },
+  { id: "LINK", label: "Nhận diện vòng trước", hint: "Kiểm tra đây có phải bản sửa tải từ một bản rà soát không" },
+  { id: "LANGUAGE", label: "Kiểm tra ngôn ngữ", hint: "Dịch sang tiếng Việt nếu cần" },
+  { id: "SPLIT", label: "Tách điều khoản", hint: "Chia hợp đồng theo từng Điều" },
+  { id: "VERIFY", label: "AI đối chiếu bản sửa", hint: "Kiểm tra từng vấn đề vòng trước đã được xử lý chưa" },
+  { id: "MAP", label: "AI đọc tổng thể", hint: "Nhận diện loại hợp đồng, các bên, nhóm điều khoản" },
+  { id: "REVIEW", label: "AI rà soát từng điều", hint: "Tìm điều khoản bất lợi hoặc trái luật" },
+  { id: "REVISE", label: "AI viết đề xuất sửa", hint: "Soạn lời văn thay thế cho từng vấn đề" },
+  { id: "SCORE", label: "Chấm điểm rủi ro", hint: "Đối chiếu bộ luật kiểm tra và tính điểm" },
+  { id: "REFERENCES", label: "Tra tài liệu nội bộ", hint: "Tìm policy/mẫu hợp đồng liên quan" },
+  { id: "SAVE", label: "Lưu kết quả", hint: "Lưu bản rà soát; gửi phê duyệt do bạn tự bấm" },
+];
+// Shown only once the server reports them.
+const OPTIONAL_STAGES = new Set(["CACHE", "VERIFY"]);
+const ROUND_LABELS: Record<RoundStatus, string> = {
+  CARRIED: "Giữ từ vòng trước", ACCEPTED_RISK: "Đã chấp nhận rủi ro", PARTIAL: "Sửa chưa hết",
+  UNRESOLVED: "Chưa xử lý", UNVERIFIED: "Chưa đối chiếu được", NEW: "Mới phát sinh",
+};
+// A stage running longer than this is flagged, so a slow model call reads as slow, not stuck.
+const SLOW_STAGE_MS = 45_000;
 
 const REVIEW_MODES: Array<{ id: ReviewMode; label: string; icon: typeof FileSearch; accept: string }> = [
   { id: "contract", label: "Rà soát hợp đồng", icon: FileSearch, accept: ".pdf,.docx,.txt,.md,.csv" },
@@ -275,6 +373,7 @@ export default function LegalAgentPage() {
   const [draftPreview, setDraftPreview] = useState<LegalDraftPreview | null>(null);
   const [draftNotice, setDraftNotice] = useState<string | null>(null);
   const [showGenerator, setShowGenerator] = useState(false);
+  const [pipeline, setPipeline] = useState<PipelineState | null>(null);
   const questionRef = useRef<HTMLInputElement | null>(null);
 
   const loadData = useCallback(async () => {
@@ -309,6 +408,7 @@ export default function LegalAgentPage() {
     const timer = window.setTimeout(() => void loadData(), 0);
     return () => window.clearTimeout(timer);
   }, [hasHydrated, isAuthenticated, loadData, router]);
+  const linkedReview = useRef(false);
 
   const legalDocuments = useMemo(
     () => documents.filter((item) => ["LEGAL", "ALL"].includes(item.department_access)),
@@ -367,6 +467,11 @@ export default function LegalAgentPage() {
     setBusy(true);
     setError(null);
     setReviewResult(null);
+    setPipeline(null);
+    if (reviewMode === "contract") {
+      await reviewContractWithProgress(primaryFile);
+      return;
+    }
     try {
       const form = new FormData();
       let endpoint = "/api/v1/legal/review-document";
@@ -376,7 +481,6 @@ export default function LegalAgentPage() {
         endpoint = "/api/v1/legal/compare-documents";
       } else {
         form.append("file", primaryFile);
-        if (reviewMode === "contract") form.append("represented_party", representedParty);
         if (reviewMode === "privacy") endpoint = "/api/v1/legal/privacy-check";
         if (reviewMode === "license") endpoint = "/api/v1/legal/license-check";
       }
@@ -385,6 +489,73 @@ export default function LegalAgentPage() {
       if ((data as ContractReview).approval_created) await loadData();
     } catch (reason) {
       setError(messageFrom(reason));
+    } finally {
+      setBusy(false);
+    }
+  };
+
+  // The contract review is streamed: each stage the server reaches updates the pipeline,
+  // so a review that takes a minute shows where it is -- and where it stopped, if it does.
+  const reviewContractWithProgress = async (file: File) => {
+    const now = () => Date.now();
+    const initial: PipelineState = {};
+    for (const stage of PIPELINE_STAGES) initial[stage.id] = { status: "pending" };
+    setPipeline(initial);
+    const form = new FormData();
+    form.append("file", file);
+    form.append("represented_party", representedParty);
+    let finished = false;
+    const fail = (message: string) => {
+      setPipeline((current) => {
+        if (!current) return current;
+        const next = { ...current };
+        const running = PIPELINE_STAGES.find((stage) => next[stage.id]?.status === "running")
+          || PIPELINE_STAGES.find((stage) => next[stage.id]?.status === "pending" && !OPTIONAL_STAGES.has(stage.id));
+        if (running) next[running.id] = { ...next[running.id], status: "failed", detail: message, endedAt: now() };
+        return next;
+      });
+      setError(message);
+    };
+    try {
+      await streamContractReview(form, (event) => {
+        if (event.event === "progress") {
+          const { stage, status, detail } = event.data;
+          setPipeline((current) => {
+            const next = { ...(current || initial) };
+            const previous = next[stage] || { status: "pending" };
+            next[stage] = {
+              status,
+              detail: detail ?? previous.detail,
+              startedAt: previous.startedAt ?? now(),
+              endedAt: status === "running" ? undefined : now(),
+            };
+            return next;
+          });
+        } else if (event.event === "complete") {
+          finished = true;
+          setPipeline((current) => {
+            if (!current) return current;
+            const next = { ...current };
+            for (const stage of PIPELINE_STAGES) {
+              const state = next[stage.id];
+              // A stage that only some reviews go through stays hidden when this one did not.
+              if (OPTIONAL_STAGES.has(stage.id) && state.status === "pending") continue;
+              if (state.status === "pending" || state.status === "running") {
+                next[stage.id] = { ...state, status: state.status === "running" ? "done" : "skipped", endedAt: now() };
+              }
+            }
+            return next;
+          });
+          setReviewResult(event.data as unknown as ContractReview);
+        } else {
+          finished = true;
+          fail(event.data.message);
+        }
+      });
+      if (!finished) fail("Kết nối bị ngắt trước khi rà soát xong. Bản rà soát có thể vẫn được lưu — xem mục Rà soát đã lưu.");
+      else await loadData();
+    } catch (reason) {
+      fail(reason instanceof Error ? reason.message : "Không thể rà soát hợp đồng.");
     } finally {
       setBusy(false);
     }
@@ -401,6 +572,7 @@ export default function LegalAgentPage() {
         `/api/v1/legal/contract-reviews/${reviewId}`,
       );
       setReviewMode("contract");
+      setPipeline(null);
       setReviewResult(data);
       setView("review");
     } catch (reason) {
@@ -409,6 +581,41 @@ export default function LegalAgentPage() {
       setBusy(false);
     }
   };
+
+  // One request per review: each is refused or allowed on its own (creator only, nothing
+  // waiting on it), and what went is dropped from the list even when another is refused.
+  const deleteSavedReviews = async (items: SavedReviewSummary[]) => {
+    if (!items.length) return false;
+    const names = items.length === 1 ? `“${items[0].document_name}”` : `${items.length} bản rà soát`;
+    if (!window.confirm(`Xoá ${names}? Quyết định đã ghi và file hợp đồng (bản gốc, bản đã sửa) của bản rà soát cũng bị xoá, không khôi phục được.`)) return false;
+    setBusy(true);
+    setError(null);
+    const deleted: string[] = [];
+    const refused: string[] = [];
+    for (const item of items) {
+      try {
+        await api.delete(`/api/v1/legal/contract-reviews/${item.review_id}`);
+        deleted.push(item.review_id);
+      } catch (reason) {
+        refused.push(`${item.document_name}: ${messageFrom(reason)}`);
+      }
+    }
+    setSavedReviews((current) => current.filter((item) => !deleted.includes(item.review_id)));
+    setReviewResult((current) => current && "review_id" in current && deleted.includes(current.review_id) ? null : current);
+    if (refused.length) setError(`Không xoá được ${refused.length} bản — ${refused.join("; ")}`);
+    setBusy(false);
+    return true;
+  };
+
+  // The approvals center links here with ?review=<id> to open the review behind a card.
+  useEffect(() => {
+    if (!hasHydrated || !isAuthenticated || linkedReview.current) return;
+    const reviewId = new URLSearchParams(window.location.search).get("review");
+    if (!reviewId) return;
+    linkedReview.current = true;
+    const timer = window.setTimeout(() => void openSavedReview(reviewId), 0);
+    return () => window.clearTimeout(timer);
+  });
 
   const downloadDraft = async (draft: LegalDraft) => {
     if (!draft.can_download) return;
@@ -527,14 +734,16 @@ export default function LegalAgentPage() {
                 representedParty={representedParty}
                 setRepresentedParty={setRepresentedParty}
                 result={reviewResult}
+                pipeline={reviewMode === "contract" ? pipeline : null}
+                onReviewChanged={() => void loadData()}
                 busy={busy}
                 analyze={analyzeFiles}
               />
             )}
 
-            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item.review_id)} startReview={() => openTool("contract")} />}
+            {view === "saved" && <SavedReviewWorkspace reviews={savedReviews} busy={busy} open={(item) => void openSavedReview(item.review_id)} remove={deleteSavedReviews} startReview={() => openTool("contract")} />}
 
-            {view === "drafts" && <DraftWorkspace drafts={drafts} role={user?.role || "Employee"} notice={draftNotice} openGenerator={() => { setDraftNotice(null); setShowGenerator(true); }} preview={(draft) => void previewDraft(draft)} download={(draft) => void downloadDraft(draft)} openApprovals={() => router.push("/approvals")} busy={busy} />}
+            {view === "drafts" && <DraftWorkspace drafts={drafts} canReview={userCan(user, "legal.document.approve")} canGenerate={userCan(user, "legal.document.generate")} notice={draftNotice} openGenerator={() => { setDraftNotice(null); setShowGenerator(true); }} preview={(draft) => void previewDraft(draft)} download={(draft) => void downloadDraft(draft)} openApprovals={() => router.push("/approvals")} busy={busy} />}
           </main>
         </div>
       </div>
@@ -628,7 +837,9 @@ function ChatRiskCard({ card, live, onQuickReply, onOpenReview }: {
     <div className={styles.chatSeverities}>
       {(["CRITICAL", "HIGH", "MEDIUM", "LOW"] as Severity[]).map((level) => <span key={level}><b className={riskClass(level)}>{card.severity_counts?.[level] || 0}</b>{level}</span>)}
     </div>
-    {card.approval_created && <p className={styles.chatCardAlert}><ShieldAlert size={13} />Đã tạo approval workflow — Legal phải duyệt trước khi ký.</p>}
+    {card.approval_created
+      ? <p className={styles.chatCardAlert}><ShieldAlert size={13} />Đã tạo approval workflow — Legal phải duyệt trước khi ký.</p>
+      : card.requires_legal_approval && <p className={styles.chatCardAlert}><ShieldAlert size={13} />Rủi ro cao — mở bản rà soát để xử lý đề xuất rồi bấm “Gửi phê duyệt”.</p>}
     <ul className={styles.chatFindings}>
       {preview.map((item) => <li key={item.id}>
         <span className={`${styles.severityDot} ${riskClass(item.severity)}`} />
@@ -646,16 +857,17 @@ function ChatRiskCard({ card, live, onQuickReply, onOpenReview }: {
   </section>;
 }
 
-function DraftWorkspace({ drafts, role, notice, openGenerator, preview, download, openApprovals, busy }: {
-  drafts: LegalDraft[]; role: string; notice: string | null; openGenerator: () => void;
+function DraftWorkspace({ drafts, canReview, canGenerate, notice, openGenerator, preview, download, openApprovals, busy }: {
+  drafts: LegalDraft[]; canReview: boolean; canGenerate: boolean; notice: string | null; openGenerator: () => void;
   preview: (draft: LegalDraft) => void; download: (draft: LegalDraft) => void; openApprovals: () => void; busy: boolean;
 }) {
-  const reviewer = ["Owner", "Admin", "CEO"].includes(role);
+  // From the position's boxes in org-structure; the server checks the same codes.
+  const reviewer = canReview;
   return <>
-    <div className={styles.headingRow}><div><span className={styles.eyebrow}>DOCUMENT APPROVAL WORKFLOW</span><h1>Tạo văn bản</h1><p>Tạo bản nháp, gửi phê duyệt và nhận bản cuối có kiểm soát.</p></div><button className={styles.primaryButton} onClick={openGenerator}><FilePlus2 size={16} />Tạo văn bản mới</button></div>
+    <div className={styles.headingRow}><div><span className={styles.eyebrow}>DOCUMENT APPROVAL WORKFLOW</span><h1>Tạo văn bản</h1><p>Tạo bản nháp, gửi phê duyệt và nhận bản cuối có kiểm soát.</p></div><button className={styles.primaryButton} onClick={openGenerator} disabled={!canGenerate} title={canGenerate ? undefined : "Chức vụ của bạn chưa có quyền \"Soạn văn bản pháp lý\""}><FilePlus2 size={16} />Tạo văn bản mới</button></div>
     {notice && <div className={styles.draftNotice}><CheckCircle2 size={17} /><span>{notice}</span></div>}
     <section className={styles.draftFlow}>
-      {[ [FilePlus2, "1. Tạo bản nháp", "Người dùng nhập dữ liệu"], [Send, "2. Gửi phê duyệt", "Tự động tạo approval"], [ShieldCheck, "3. Executive review", "CEO · Admin · Owner"], [Download, "4. Tải bản cuối", "Mở sau khi APPROVED"] ].map(([Icon, title, text], index) => <div key={String(title)}><span><Icon size={16} /></span><div><strong>{String(title)}</strong><small>{String(text)}</small></div>{index < 3 && <ChevronRight size={14} />}</div>)}
+      {[ [FilePlus2, "1. Tạo bản nháp", "Người dùng nhập dữ liệu"], [Send, "2. Gửi phê duyệt", "Tự động tạo approval"], [ShieldCheck, "3. Phê duyệt", "Chức vụ có quyền duyệt văn bản"], [Download, "4. Tải bản cuối", "Mở sau khi APPROVED"] ].map(([Icon, title, text], index) => <div key={String(title)}><span><Icon size={16} /></span><div><strong>{String(title)}</strong><small>{String(text)}</small></div>{index < 3 && <ChevronRight size={14} />}</div>)}
     </section>
     <section className={styles.draftPanel}>
       <header><div><h2>{reviewer ? "Văn bản trong tenant" : "Văn bản của tôi"}</h2><p>{drafts.length} yêu cầu · quyền tải được kiểm tra ở server</p></div>{reviewer && <button onClick={openApprovals}><ShieldAlert size={14} />Mở Trung tâm phê duyệt</button>}</header>
@@ -669,24 +881,44 @@ function DraftWorkspace({ drafts, role, notice, openGenerator, preview, download
   </>;
 }
 
-function SavedReviewWorkspace({ reviews, busy, open, startReview }: {
+function SavedReviewWorkspace({ reviews, busy, open, remove, startReview }: {
   reviews: SavedReviewSummary[]; busy: boolean;
-  open: (review: SavedReviewSummary) => void; startReview: () => void;
+  open: (review: SavedReviewSummary) => void;
+  remove: (reviews: SavedReviewSummary[]) => Promise<boolean>;
+  startReview: () => void;
 }) {
+  const [selected, setSelected] = useState<string[]>([]);
+  const deletable = reviews.filter((item) => item.can_delete);
+  const chosen = deletable.filter((item) => selected.includes(item.review_id));
+  const toggle = (reviewId: string) => setSelected((current) => current.includes(reviewId) ? current.filter((id) => id !== reviewId) : [...current, reviewId]);
+  const removeAndClear = async (items: SavedReviewSummary[]) => {
+    if (await remove(items)) setSelected((current) => current.filter((id) => !items.some((item) => item.review_id === id)));
+  };
+  const deleteHint = (item: SavedReviewSummary) => item.can_delete ? "Xoá bản rà soát này" : item.approval?.status === "WAITING" ? "Đang chờ phê duyệt nên chưa xoá được" : "Chỉ người tạo mới xoá được";
   return <>
     <div className={styles.headingRow}><div><span className={styles.eyebrow}>CONTRACT REVIEW HISTORY</span><h1>Rà soát đã lưu</h1><p>Mở lại bản rà soát cũ kèm quyết định đã đánh dấu và tải file redline.</p></div><button className={styles.primaryButton} onClick={startReview}><FileSearch size={16} />Rà soát hợp đồng mới</button></div>
     <section className={styles.draftPanel}>
-      <header><div><h2>{reviews.length} bản rà soát</h2><p>Quyền xem được kiểm tra ở server</p></div></header>
-      {reviews.length === 0 ? <div className={styles.draftEmpty}><FileSearch size={30} /><strong>Chưa có bản rà soát nào</strong><p>Kết quả rà soát hợp đồng sẽ được lưu lại tại đây.</p></div> : <div className={styles.draftList}>{reviews.map((item) => <article key={item.review_id}>
+      <header>
+        <div><h2>{reviews.length} bản rà soát</h2><p>Quyền xem được kiểm tra ở server · chỉ người tạo xoá được, trừ bản đang chờ phê duyệt</p></div>
+        {deletable.length > 0 && <div className={styles.bulkActions}>
+          <label><input type="checkbox" checked={chosen.length > 0 && chosen.length === deletable.length} onChange={(event) => setSelected(event.target.checked ? deletable.map((item) => item.review_id) : [])} />Chọn tất cả</label>
+          <button type="button" className={styles.dangerButton} disabled={busy || chosen.length === 0} onClick={() => void removeAndClear(chosen)}><Trash2 size={13} />Xoá{chosen.length ? ` (${chosen.length})` : ""}</button>
+        </div>}
+      </header>
+      {reviews.length === 0 ? <div className={styles.draftEmpty}><FileSearch size={30} /><strong>Chưa có bản rà soát nào</strong><p>Kết quả rà soát hợp đồng sẽ được lưu lại tại đây.</p></div> : <div className={`${styles.draftList} ${styles.reviewList}`}>{reviews.map((item) => <article key={item.review_id}>
+        <input type="checkbox" className={styles.reviewCheck} aria-label={`Chọn ${item.document_name}`} disabled={!item.can_delete} title={item.can_delete ? undefined : deleteHint(item)} checked={selected.includes(item.review_id)} onChange={() => toggle(item.review_id)} />
         <span className={styles.draftFileIcon}><FileSearch size={18} /></span>
         <div className={styles.draftInfo}>
           <strong>{item.document_name}</strong>
-          <small>{item.contract_type_label || item.source} · {item.represented_party_label || "—"} · {item.created_by_name || ""}</small>
+          <small>{item.contract_type_label || item.source} · {item.represented_party_label || "—"}{(item.review_round ?? 1) > 1 ? ` · Vòng ${item.review_round}` : ""} · {item.created_by_name || ""}</small>
           <em>{item.created_at ? new Date(item.created_at).toLocaleString("vi-VN") : ""}</em>
         </div>
         <span className={`${styles.riskBadge} ${riskClass(item.risk_level)}`}>{item.risk_score}/100 {item.risk_level}</span>
         <span className={styles.draftStatus}>{item.decided_count}/{item.total_findings} đã xử lý</span>
-        <div className={styles.draftActions}><button disabled={busy} onClick={() => open(item)}><Eye size={13} />Mở lại</button></div>
+        <div className={styles.draftActions}>
+          <button disabled={busy} onClick={() => open(item)}><Eye size={13} />Mở lại</button>
+          <button disabled={busy || !item.can_delete} title={deleteHint(item)} aria-label={`Xoá ${item.document_name}`} className={styles.deleteButton} onClick={() => void removeAndClear([item])}><Trash2 size={13} /></button>
+        </div>
       </article>)}</div>}
     </section>
   </>;
@@ -700,11 +932,84 @@ function Tool({ icon: Icon, title, meta, tone, onClick }: { icon: typeof FileSea
   return <button className={styles.tool} onClick={onClick}><span className={`${styles.toolIcon} ${styles[tone]}`}><Icon size={20} /></span><span><strong>{title}</strong><small>{meta}</small></span><ChevronRight size={16} /></button>;
 }
 
-function ReviewWorkspace({ mode, setMode, primaryFile, secondaryFile, setPrimaryFile, setSecondaryFile, representedParty, setRepresentedParty, result, busy, analyze }: {
+function formatDuration(ms: number) {
+  const seconds = Math.max(0, Math.round(ms / 1000));
+  return seconds < 60 ? `${seconds}s` : `${Math.floor(seconds / 60)}m${String(seconds % 60).padStart(2, "0")}s`;
+}
+
+// Where the review is, stage by stage: the running stage with its clock, and a stage that
+// runs long or fails says so -- the point is that a user can tell a slow model call from
+// a stuck one, and knows which step to report.
+function ReviewPipeline({ pipeline, collapsedWhenDone }: { pipeline: PipelineState; collapsedWhenDone: boolean }) {
+  const [now, setNow] = useState(() => Date.now());
+  const [expanded, setExpanded] = useState(false);
+  const stages = PIPELINE_STAGES.filter((stage) => !OPTIONAL_STAGES.has(stage.id) || pipeline[stage.id]?.status !== "pending");
+  const running = stages.find((stage) => pipeline[stage.id]?.status === "running");
+  const settled = stages.filter((stage) => ["done", "skipped", "failed"].includes(pipeline[stage.id]?.status));
+  const doneCount = settled.length;
+  // A failed stage is not always the end: when the model cannot read the contract the
+  // review goes on with the fixed rule set. It only stopped if nothing is running and no
+  // result came back.
+  const finished = collapsedWhenDone || doneCount === stages.length;
+  const fallbacks = stages.filter((stage) => pipeline[stage.id]?.status === "failed");
+  const failed = !finished && !running ? fallbacks[fallbacks.length - 1] : undefined;
+  const firstStart = Math.min(...stages.map((stage) => pipeline[stage.id]?.startedAt ?? Infinity));
+  const lastEnd = Math.max(...stages.map((stage) => pipeline[stage.id]?.endedAt ?? 0));
+
+  useEffect(() => {
+    if (!running) return;
+    const timer = window.setInterval(() => setNow(Date.now()), 1000);
+    return () => window.clearInterval(timer);
+  }, [running]);
+
+  if (finished && collapsedWhenDone && !expanded) {
+    return <div className={styles.pipelineSummary}>
+      <CheckCircle2 size={15} />
+      <span><strong>Rà soát hoàn tất</strong><small>{stages.length} bước · {Number.isFinite(firstStart) ? formatDuration(lastEnd - firstStart) : ""}{fallbacks.length ? ` · ${fallbacks.length} bước dùng phương án dự phòng (${fallbacks.map((stage) => stage.label).join(", ")})` : ""}</small></span>
+      <button type="button" onClick={() => setExpanded(true)}>Xem pipeline</button>
+    </div>;
+  }
+  const current = running || failed;
+  const currentState = current ? pipeline[current.id] : null;
+  const currentElapsed = currentState?.startedAt ? (currentState.endedAt ?? now) - currentState.startedAt : 0;
+  return <section className={styles.reviewPipeline} aria-live="polite">
+    <header>
+      <div>
+        <strong>{failed ? `Dừng ở bước: ${failed.label}` : running ? `Đang ở bước: ${running.label}` : finished ? "Rà soát hoàn tất" : "Đang chuẩn bị…"}</strong>
+        <small>{doneCount}/{stages.length} bước{current && currentState?.startedAt ? ` · bước này ${formatDuration(currentElapsed)}` : ""}</small>
+      </div>
+      {finished && collapsedWhenDone && <button type="button" onClick={() => setExpanded(false)}>Thu gọn</button>}
+    </header>
+    <div className={styles.pipelineBar}><span style={{ width: `${Math.round((doneCount / stages.length) * 100)}%` }} className={failed ? styles.pipelineBarFailed : ""} /></div>
+    {running && currentElapsed > SLOW_STAGE_MS && <p className={styles.pipelineSlow}><AlertTriangle size={13} />Bước này đang lâu hơn bình thường (thường do dịch vụ AI phản hồi chậm). Hệ thống vẫn đang chờ; nếu quá 3 phút, hãy thử lại sau.</p>}
+    <ol className={styles.pipelineList}>
+      {stages.map((stage) => {
+        const state = pipeline[stage.id] || { status: "pending" as const };
+        const elapsed = state.startedAt ? (state.endedAt ?? now) - state.startedAt : null;
+        return <li key={stage.id} className={styles[`stage_${state.status}`]}>
+          <span className={styles.stageIcon}>
+            {state.status === "running" ? <Loader2 className={styles.spin} size={13} />
+              : state.status === "done" ? <Check size={13} />
+              : state.status === "failed" ? <X size={13} />
+              : state.status === "skipped" ? <ChevronRight size={13} /> : null}
+          </span>
+          <div>
+            <strong>{stage.label}</strong>
+            <small>{state.detail || (state.status === "skipped" ? "Bỏ qua" : stage.hint)}</small>
+          </div>
+          {elapsed !== null && state.status !== "skipped" && <em>{formatDuration(elapsed)}</em>}
+        </li>;
+      })}
+    </ol>
+  </section>;
+}
+
+function ReviewWorkspace({ mode, setMode, primaryFile, secondaryFile, setPrimaryFile, setSecondaryFile, representedParty, setRepresentedParty, result, pipeline, onReviewChanged, busy, analyze }: {
   mode: ReviewMode; setMode: (mode: ReviewMode) => void; primaryFile: File | null; secondaryFile: File | null;
   setPrimaryFile: (file: File | null) => void; setSecondaryFile: (file: File | null) => void;
   representedParty: RepresentedParty; setRepresentedParty: (party: RepresentedParty) => void;
-  result: ContractReview | PrivacyResult | CompareResult | LicenseResult | null; busy: boolean; analyze: () => void;
+  result: ContractReview | PrivacyResult | CompareResult | LicenseResult | null;
+  pipeline: PipelineState | null; onReviewChanged: () => void; busy: boolean; analyze: () => void;
 }) {
   const config = REVIEW_MODES.find((item) => item.id === mode)!;
   return <>
@@ -728,8 +1033,9 @@ function ReviewWorkspace({ mode, setMode, primaryFile, secondaryFile, setPrimary
         <div className={styles.securityNote}><LockKeyhole size={15} /><span><strong>Xử lý trong tenant của doanh nghiệp</strong><small>Không gửi nội dung sang dịch vụ ngoài workflow được phê duyệt.</small></span></div>
       </section>
       <section className={styles.resultPanel}>
-        {!result && <div className={styles.resultEmpty}><FileSearch size={35} /><h3>Chưa có kết quả phân tích</h3><p>Kết quả, evidence, mức rủi ro và hành động đề xuất sẽ xuất hiện tại đây.</p></div>}
-        {result && <ResultView result={result} />}
+        {pipeline && <ReviewPipeline pipeline={pipeline} collapsedWhenDone={Boolean(result)} />}
+        {!result && !pipeline && <div className={styles.resultEmpty}><FileSearch size={35} /><h3>Chưa có kết quả phân tích</h3><p>Kết quả, evidence, mức rủi ro và hành động đề xuất sẽ xuất hiện tại đây.</p></div>}
+        {result && <ResultView result={result} onReviewChanged={onReviewChanged} />}
       </section>
     </div>
   </>;
@@ -745,14 +1051,58 @@ function FilePicker({ label, file, setFile, accept }: { label: string; file: Fil
   </div>;
 }
 
-function ResultView({ result }: { result: ContractReview | PrivacyResult | CompareResult | LicenseResult }) {
-  if ("risk_score" in result) return <ContractReviewResult review={result} />;
+function ResultView({ result, onReviewChanged }: { result: ContractReview | PrivacyResult | CompareResult | LicenseResult; onReviewChanged: () => void }) {
+  if ("risk_score" in result) return <ContractReviewResult key={result.review_id} review={result} onReviewChanged={onReviewChanged} />;
   if ("similarity_percent" in result) return <div className={styles.compareResult}><header><span><FileDiff size={20} /></span><div><h2>{result.total_changes} thay đổi</h2><p>Tương đồng {result.similarity_percent}% · {result.old_document} → {result.new_document}</p></div></header><div className={styles.changes}>{result.changes.map((change, index) => <article key={index}><span className={styles.changeType}>{change.type}</span>{change.old.map((line, i) => <p className={styles.oldLine} key={`old-${i}`}>− {line}</p>)}{change.new.map((line, i) => <p className={styles.newLine} key={`new-${i}`}>+ {line}</p>)}</article>)}</div></div>;
   if ("contains_sensitive_data" in result) return <div className={styles.privacyResult}><header><span className={result.requires_legal_approval ? styles.dangerMark : styles.safeMark}>{result.requires_legal_approval ? <ShieldAlert size={22} /> : <ShieldCheck size={22} />}</span><div><span className={`${styles.riskBadge} ${riskClass(result.risk_level)}`}>{result.risk_level}</span><h2>{result.requires_legal_approval ? "Cần Legal phê duyệt" : "Không phát hiện dữ liệu nhạy cảm"}</h2><p>{result.document_name}</p></div></header>{result.approval_created && <div className={styles.workflowAlert}><ShieldAlert size={17} /><span><strong>Đã tạo approval workflow</strong><small>Employee → Manager → Legal Team</small></span></div>}<div className={styles.piiGrid}>{result.findings.map((item) => <div key={item.type}><Fingerprint size={15} /><span><strong>{item.type}</strong><small>{item.count == null ? "Phát hiện theo cột" : `${item.count} giá trị`}</small></span></div>)}</div><div className={styles.actionNote}><strong>Hành động đề xuất</strong><p>{result.suggested_action}</p></div></div>;
   return <div className={styles.licenseResult}><header><span><Code2 size={21} /></span><div><span className={`${styles.riskBadge} ${riskClass(result.risk_level)}`}>{result.risk_level}</span><h2>{result.dependencies_scanned} dependency đã quét</h2><p>{result.manifest}</p></div></header>{result.commercial_use_requires_review && <div className={styles.workflowAlert}><AlertTriangle size={17} /><span><strong>{result.approval_created ? "Đã tạo approval workflow" : "Cần kiểm tra license thương mại"}</strong><small>Không phát hành trước khi Legal xác nhận.</small></span></div>}<div className={styles.licenseList}>{result.findings.map((item) => <article key={`${item.package}-${item.license}`}><span className={`${styles.licenseTag} ${riskClass(item.severity)}`}>{item.license}</span><div><strong>{item.package}</strong><small>{item.action}</small></div></article>)}</div></div>;
 }
 
-function ContractReviewResult({ review }: { review: ContractReview }) {
+const APPROVAL_LABELS: Record<ReviewApproval["status"], string> = {
+  WAITING: "Đang chờ phê duyệt", APPROVED: "Đã được phê duyệt", REJECTED: "Bị từ chối", EXPIRED: "Đã hết hạn",
+};
+const APPLY_LABELS: Record<RevisionReport["applied"][number]["action"], string> = {
+  REPLACED: "Đã sửa tại chỗ", INSERTED: "Đã thêm điều khoản", ANNEXED: "Đưa vào Phụ lục sửa đổi",
+};
+
+// A revised file reviewed again is checked against the round it came from: what the changes
+// settled, what they left, and what they brought in.
+function RoundComparison({ review }: { review: ContractReview }) {
+  const summary = review.round_summary || {};
+  const resolved = review.resolved_findings || [];
+  const chips: Array<{ key: RoundStatus | "RESOLVED"; label: string }> = [
+    { key: "RESOLVED", label: "Đã xử lý" },
+    { key: "PARTIAL", label: ROUND_LABELS.PARTIAL },
+    { key: "UNRESOLVED", label: ROUND_LABELS.UNRESOLVED },
+    { key: "NEW", label: ROUND_LABELS.NEW },
+    { key: "CARRIED", label: ROUND_LABELS.CARRIED },
+    { key: "ACCEPTED_RISK", label: ROUND_LABELS.ACCEPTED_RISK },
+    { key: "UNVERIFIED", label: ROUND_LABELS.UNVERIFIED },
+  ];
+  return <section className={styles.reviewSection}>
+    <div className={styles.reviewSectionTitle}>
+      <div>
+        <strong>Đối chiếu với vòng {(review.review_round ?? 2) - 1}</strong>
+        <small>{summary.changed_clauses ?? 0} điều sửa · {summary.added_clauses ?? 0} điều thêm · {summary.removed_clauses ?? 0} điều bỏ · điều không đổi giữ nguyên kết quả và quyết định vòng trước</small>
+      </div>
+    </div>
+    <div className={styles.roundSummary}>
+      {chips.filter((chip) => summary[chip.key]).map((chip) => <span key={chip.key} className={styles[`round_${chip.key}`]}><b>{summary[chip.key]}</b>{chip.label}</span>)}
+    </div>
+    {resolved.length > 0 && <details className={styles.resolvedList}>
+      <summary>{resolved.length} vấn đề của vòng trước đã được xử lý</summary>
+      {resolved.map((item) => <div key={item.parent_finding_key} className={styles.reportApplied}>
+        <CheckCircle2 size={13} />
+        <span>
+          <strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong>
+          <small>{item.severity}{item.fix_applied ? " · theo đề xuất bạn đã chấp nhận" : ""}{item.note ? ` · ${item.note}` : ""}</small>
+        </span>
+      </div>)}
+    </details>}
+  </section>;
+}
+
+function ContractReviewResult({ review, onReviewChanged }: { review: ContractReview; onReviewChanged: () => void }) {
   // Keyed by finding_key, not by the positional id, and seeded from what the server
   // already has so reopening a review shows the decisions taken earlier.
   const savedDecisions = useMemo(() => {
@@ -773,6 +1123,15 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
   const [reader, setReader] = useState<DocumentReader | null>(null);
   const [readerLoading, setReaderLoading] = useState(false);
   const [readerError, setReaderError] = useState<string | null>(null);
+  const [docState, setDocState] = useState<ContractDocumentState | undefined>(review.document);
+  const [approval, setApproval] = useState<ReviewApproval | null>(review.approval ?? null);
+  const [applying, setApplying] = useState(false);
+  const [submitting, setSubmitting] = useState(false);
+  const [note, setNote] = useState("");
+  const [fileNotice, setFileNotice] = useState<string | null>(null);
+  const [approvalNotice, setApprovalNotice] = useState<string | null>(null);
+  const [viewer, setViewer] = useState<string | null>(null);
+  const canDecide = review.can_decide !== false;
   const metadata = review.metadata;
   const acceptedCount = Object.values(decisions).filter(
     (value) => value === "ACCEPTED" || value === "EDITED",
@@ -795,10 +1154,11 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
     setSaving(findingKey);
     setSaveError(null);
     try {
-      await api.put(
+      const { data } = await api.put<{ document?: ContractDocumentState }>(
         `/api/v1/legal/contract-reviews/${review.review_id}/decisions/${findingKey}`,
         { decision, revised_text: revisedText ?? null },
       );
+      if (data.document) setDocState(data.document);
     } catch (reason) {
       setDecisions((current) => {
         const rolledBack = { ...current };
@@ -834,6 +1194,86 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
       setSaveError(messageFrom(reason));
     }
   };
+
+  // Writes every accepted or edited suggestion into the uploaded file itself.
+  const applyToFile = async () => {
+    setApplying(true);
+    setFileNotice(null);
+    try {
+      const { data } = await api.post<ContractDocumentState>(`/api/v1/legal/contract-reviews/${review.review_id}/revised-document`);
+      setDocState(data);
+      setViewer("revised");
+    } catch (reason) {
+      setFileNotice(messageFrom(reason));
+    } finally {
+      setApplying(false);
+    }
+  };
+
+  const submitForApproval = async () => {
+    setSubmitting(true);
+    setApprovalNotice(null);
+    try {
+      const { data } = await api.post<{ status: "CREATED" | "UPDATED"; warnings: string[]; approval: ReviewApproval | null; document: ContractDocumentState }>(
+        `/api/v1/legal/contract-reviews/${review.review_id}/submit-approval`,
+        { note: note.trim() || null },
+      );
+      setApproval(data.approval);
+      setDocState(data.document);
+      setNote("");
+      setApprovalNotice([
+        data.status === "UPDATED" ? "Đã cập nhật hồ sơ đang chờ duyệt." : "Đã gửi tới Trung tâm phê duyệt.",
+        ...data.warnings,
+      ].join(" "));
+      onReviewChanged();
+    } catch (reason) {
+      setApprovalNotice(messageFrom(reason));
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const viewerFiles: ContractFile[] = [];
+  if (docState?.revised_ready) viewerFiles.push({ key: "revised", label: "Bản đã sửa", url: docState.revised_url, filename: docState.revised_filename || "hop-dong-da-sua", format: docState.original_format || "docx" });
+  if (docState?.original_available) viewerFiles.push({ key: "original", label: "Bản gốc", url: docState.original_url, filename: docState.original_filename || "hop-dong", format: docState.original_format || "docx" });
+
+  const downloadContractFile = async (key: string) => {
+    const file = viewerFiles.find((item) => item.key === key);
+    if (!file) return;
+    setFileNotice(null);
+    try {
+      const response = await api.get<Blob>(file.url, { responseType: "blob" });
+      const objectUrl = URL.createObjectURL(response.data);
+      const link = document.createElement("a");
+      link.href = objectUrl;
+      link.download = file.filename;
+      link.click();
+      URL.revokeObjectURL(objectUrl);
+    } catch (reason) {
+      setFileNotice(messageFrom(reason));
+    }
+  };
+
+  const decidedCount = Object.keys(decisions).length;
+  const lifecycle: Array<{ label: string; detail: string; state: "done" | "active" | "warn" | "failed" | "idle" }> = [
+    { label: "Rà soát", detail: `${review.findings.length} phát hiện`, state: "done" },
+    { label: "Quyết định", detail: `${decidedCount}/${review.findings.length} đề xuất`, state: decidedCount === 0 ? "active" : decidedCount >= review.findings.length ? "done" : "active" },
+    {
+      label: "Ghi vào file",
+      detail: !docState?.original_available ? "Không có file gốc" : docState.revised_stale ? "Cần cập nhật" : docState.revised_ready ? `${docState.revision_report?.applied.length ?? 0} điều đã ghi` : "Chưa ghi",
+      state: !docState?.original_available ? "idle" : docState.revised_stale ? "warn" : docState.revised_ready ? "done" : acceptedCount > 0 ? "active" : "idle",
+    },
+    {
+      label: "Gửi phê duyệt",
+      detail: approval ? (approval.submitted_manually ? "Đã gửi" : "Tự động (rủi ro cao)") : review.requires_legal_approval ? "Chưa gửi · rủi ro cao" : "Chưa gửi",
+      state: approval ? "done" : review.requires_legal_approval ? "warn" : "idle",
+    },
+    {
+      label: "Kết quả duyệt",
+      detail: approval ? APPROVAL_LABELS[approval.status] : "—",
+      state: !approval ? "idle" : approval.status === "APPROVED" ? "done" : approval.status === "WAITING" ? "active" : "failed",
+    },
+  ];
 
   const openReference = async (source: ContractReview["reference_sources"][number]) => {
     if (source.url) {
@@ -878,10 +1318,80 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
   };
 
   return <div className={styles.contractResult}>
-    <header><div className={`${styles.scoreRing} ${riskClass(review.risk_level)}`}><strong>{review.risk_score}</strong><small>/100</small></div><div><span className={`${styles.riskBadge} ${riskClass(review.risk_level)}`}>{review.risk_level} RISK</span><h2>{review.document_name}</h2><p>{review.contract_type_label} · {review.represented_party_label} · {review.total_risks_found} phát hiện</p></div></header>
+    <header><div className={`${styles.scoreRing} ${riskClass(review.risk_level)}`}><strong>{review.risk_score}</strong><small>/100</small></div><div><span className={`${styles.riskBadge} ${riskClass(review.risk_level)}`}>{review.risk_level} RISK</span><h2>{review.document_name}</h2><p>{review.contract_type_label} · {review.represented_party_label} · {review.total_risks_found} phát hiện{(review.review_round ?? 1) > 1 ? ` · Vòng ${review.review_round}` : ""}</p></div></header>
     <div className={styles.contractScroll}>
-      {review.approval_created && <div className={styles.workflowAlert}><ShieldAlert size={17} /><span><strong>Đã tạo approval workflow</strong><small>Employee → Manager → Legal Team</small></span></div>}
       {saveError && <div className={styles.workflowAlert}><AlertTriangle size={17} /><span><strong>Không lưu được quyết định</strong><small>{saveError}</small></span></div>}
+
+      <ol className={styles.lifecycle} aria-label="Tiến trình hợp đồng">
+        {lifecycle.map((step, index) => <li key={step.label} className={styles[`life_${step.state}`]}>
+          <span>{step.state === "done" ? <Check size={12} /> : step.state === "failed" ? <X size={12} /> : step.state === "warn" ? <AlertTriangle size={12} /> : index + 1}</span>
+          <div><strong>{step.label}</strong><small>{step.detail}</small></div>
+        </li>)}
+      </ol>
+
+      <section className={styles.reviewSection}>
+        <div className={styles.reviewSectionTitle}>
+          <div>
+            <strong>File hợp đồng</strong>
+            <small>{docState?.original_available
+              ? `${docState.original_filename} · đề xuất đã chấp nhận được ghi thẳng vào file, giữ nguyên bố cục`
+              : "Không có file gốc để sửa trực tiếp"}</small>
+          </div>
+        </div>
+        <div className={styles.fileBox}>
+          {!docState?.original_available ? <p className={styles.fileHint}>Hợp đồng dán vào chat, file TXT/MD hoặc được rà soát trước khi có tính năng này không lưu file gốc. Tải file <b>DOCX</b> hoặc <b>PDF</b> lên mục Tài liệu & hợp đồng để hệ thống sửa thẳng vào văn bản.</p>
+          : !docState.editable ? <p className={styles.fileHint}>Hợp đồng gốc không phải tiếng Việt và được dịch để rà soát; đề xuất tiếng Việt không được ghi thẳng vào bản gốc. Hãy dùng file redline để thương lượng.</p>
+          : <>
+            {docState.revised_stale && <p className={styles.fileWarn}><AlertTriangle size={13} />Quyết định đã thay đổi sau lần ghi file gần nhất — bấm “Cập nhật file” để bản sửa khớp với quyết định hiện tại.</p>}
+            <div className={styles.fileActions}>
+              {canDecide && <button type="button" className={styles.primaryButton} disabled={applying || acceptedCount === 0} title={acceptedCount === 0 ? "Chấp nhận hoặc chỉnh sửa ít nhất một đề xuất" : undefined} onClick={() => void applyToFile()}>
+                {applying ? <Loader2 className={styles.spin} size={14} /> : <WandSparkles size={14} />}
+                {docState.revised_ready ? (docState.revised_stale ? "Cập nhật file" : "Ghi lại vào file") : `Ghi đề xuất vào file ${(docState.original_format || "").toUpperCase()}`}
+              </button>}
+              <button type="button" className={styles.secondaryButton} disabled={!docState.revised_ready} onClick={() => setViewer("revised")}><Eye size={14} />Xem bản đã sửa</button>
+              <button type="button" className={styles.secondaryButton} onClick={() => void downloadContractFile(docState.revised_ready ? "revised" : "original")}><Download size={14} />{docState.revised_ready ? "Tải bản đã sửa" : "Tải bản gốc"}</button>
+              <button type="button" className={styles.secondaryButton} onClick={() => setViewer("original")}><FileText size={14} />Xem bản gốc</button>
+            </div>
+            {fileNotice && <p className={styles.fileError}><AlertTriangle size={13} />{fileNotice}</p>}
+            {docState.revision_report && <div className={styles.revisionReport}>
+              <small>Lần ghi gần nhất: {docState.revised_at ? new Date(docState.revised_at).toLocaleString("vi-VN") : "—"}</small>
+              {docState.revision_report.applied.map((item) => <div key={item.finding_key} className={styles.reportApplied}><CheckCircle2 size={13} /><span><strong>{item.clause}</strong><small>{APPLY_LABELS[item.action]} · {item.location}{item.decision === "EDITED" ? " · theo bản bạn chỉnh" : ""}</small>{item.notes.map((text) => <em key={text}>{text}</em>)}</span></div>)}
+              {docState.revision_report.skipped.map((item) => <div key={item.finding_key} className={styles.reportSkipped}><AlertTriangle size={13} /><span><strong>{item.clause} · chưa ghi</strong><small>{item.reason}</small></span></div>)}
+              {docState.revision_report.warnings.map((text) => <p key={text} className={styles.fileWarn}><AlertTriangle size={13} />{text}</p>)}
+              {docState.revision_report.checks.length > 0 && <div className={styles.formChecks}><strong>Kiểm tra giữ nguyên form</strong>{docState.revision_report.checks.map((check) => <span key={check.name}>{check.ok ? <Check size={12} /> : <X size={12} />}{check.name}<small>{check.detail}</small></span>)}</div>}
+            </div>}
+          </>}
+        </div>
+      </section>
+
+      <section className={styles.reviewSection}>
+        <div className={styles.reviewSectionTitle}>
+          <div>
+            <strong>Phê duyệt</strong>
+            <small>{approval
+              ? `${APPROVAL_LABELS[approval.status]}${approval.submitted_at ? ` · gửi lúc ${new Date(approval.submitted_at).toLocaleString("vi-VN")}` : ""}${approval.approver_name ? ` · ${approval.approver_name}` : ""}`
+              : "Gửi kết quả rà soát và bản đã sửa tới Trung tâm phê duyệt"}</small>
+          </div>
+        </div>
+        <div className={styles.fileBox}>
+          {approval?.status === "REJECTED" && approval.comments && <p className={styles.fileError}><X size={13} />Lý do từ chối: {approval.comments}</p>}
+          {approval?.status === "WAITING" && approval.warning && <p className={styles.fileError}><ShieldAlert size={13} />{approval.warning}</p>}
+          {approval?.status === "WAITING" && !approval.warning && !!approval.eligible_approver_count && <small className={styles.fileHintSmall}>Đang chờ {approval.eligible_approver_count} người có quyền duyệt. Yêu cầu bạn đã gửi nằm ở mục “Tôi đã gửi” của Trung tâm phê duyệt.</small>}
+          {approval?.status === "APPROVED" && <p className={styles.fileOk}><CheckCircle2 size={13} />Hợp đồng đã được phê duyệt{approval.comments ? ` — ${approval.comments}` : ""}.</p>}
+          {canDecide && approval?.status !== "APPROVED" && <>
+            <textarea className={styles.approvalNote} value={note} maxLength={2000} onChange={(event) => setNote(event.target.value)} placeholder="Ghi chú cho người duyệt (không bắt buộc)" rows={2} />
+            {docState?.editable && acceptedCount > 0 && (!docState.revised_ready || docState.revised_stale) && <small className={styles.fileHintSmall}>Khi gửi, hệ thống sẽ tự ghi các đề xuất đã chấp nhận vào file để người duyệt xem bản mới nhất.</small>}
+            <div className={styles.fileActions}>
+              <button type="button" className={styles.primaryButton} disabled={submitting} onClick={() => void submitForApproval()}>
+                {submitting ? <Loader2 className={styles.spin} size={14} /> : <Send size={14} />}
+                {approval?.status === "WAITING" ? "Cập nhật hồ sơ phê duyệt" : approval ? "Gửi phê duyệt lại" : "Gửi phê duyệt"}
+              </button>
+              <Link className={styles.secondaryButton} href="/approvals"><ShieldCheck size={14} />Mở Trung tâm phê duyệt</Link>
+            </div>
+          </>}
+          {approvalNotice && <p className={styles.fileHintSmall}>{approvalNotice}</p>}
+        </div>
+      </section>
 
       <section className={styles.reviewSection}>
         <div className={styles.reviewSectionTitle}>
@@ -936,20 +1446,22 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
         <div className={styles.checklist}>{review.checklist.map((item) => <div key={item.category} className={item.status === "MISSING" ? styles.missingItem : ""}>{item.status === "PRESENT" ? <CheckCircle2 size={14} /> : <AlertTriangle size={14} />}<span>{item.label}</span><small>{item.status === "PRESENT" ? "Có" : item.status === "NOT_IN_EXCERPT" ? "Ngoài đoạn trích" : `Thiếu · ${item.severity_if_missing}`}</small></div>)}</div>
       </section>
 
+      {review.round_mode === "VERIFIED" && <RoundComparison review={review} />}
+
       <section className={`${styles.reviewSection} ${styles.findingSection}`}>
-        <div className={styles.reviewSectionTitle}><div><strong>Phát hiện & đề xuất sửa</strong><small>AI không thay đổi file gốc; mỗi đề xuất cần được xác nhận</small></div></div>
+        <div className={styles.reviewSectionTitle}><div><strong>Phát hiện & đề xuất sửa</strong><small>File gốc luôn được giữ nguyên; chỉ đề xuất bạn chấp nhận hoặc chỉnh sửa mới được ghi vào bản sửa</small></div></div>
         <div className={styles.findings}>{review.findings.map((item) => {
           const decision = decisions[item.finding_key];
           const draft = drafts[item.finding_key] ?? item.suggested_revision;
           return <article key={item.id}>
-            <div className={styles.findingHeader}><span className={`${styles.severityDot} ${riskClass(item.severity)}`} /><strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong><span className={`${styles.impactBadge} ${styles[item.impact.toLowerCase()]}`}>{item.impact === "ADVERSE" ? "Bất lợi" : item.impact === "BENEFICIAL" ? "Có lợi" : item.impact === "BALANCED" ? "Cân bằng" : "Chung"}</span><span className={styles.findingType}>{findingTypeLabels[item.finding_type]}</span><span className={`${styles.riskBadge} ${riskClass(item.severity)}`}>{item.severity}</span></div>
-            <div className={styles.findingExplanation}><p><b>Lý do:</b> {item.reason}</p><p><b>Khuyến nghị:</b> {item.recommendation}</p></div>
+            <div className={styles.findingHeader}><span className={`${styles.severityDot} ${riskClass(item.severity)}`} /><strong>{item.clause === "MISSING" ? item.issue : `Điều ${item.clause} · ${item.issue}`}</strong><span className={`${styles.impactBadge} ${styles[item.impact.toLowerCase()]}`}>{item.impact === "ADVERSE" ? "Bất lợi" : item.impact === "BENEFICIAL" ? "Có lợi" : item.impact === "BALANCED" ? "Cân bằng" : "Chung"}</span><span className={styles.findingType}>{findingTypeLabels[item.finding_type]}</span>{item.round_status && <span className={`${styles.roundBadge} ${styles[`round_${item.round_status}`]}`}>{ROUND_LABELS[item.round_status]}</span>}<span className={`${styles.riskBadge} ${riskClass(item.severity)}`}>{item.severity}</span></div>
+            <div className={styles.findingExplanation}>{item.round_note && <p className={styles.roundNote}><b>So với vòng trước:</b> {item.round_note}</p>}<p><b>Lý do:</b> {item.reason}</p><p><b>Khuyến nghị:</b> {item.recommendation}</p></div>
             <div className={styles.redlineGrid}>
               <div><small>ORIGINAL</small><blockquote>{item.original_text}</blockquote></div>
               <div><small>AI RECOMMENDATION</small>{editingId === item.id ? <textarea value={draft} onChange={(event) => setDrafts((current) => ({ ...current, [item.finding_key]: event.target.value }))} /> : <blockquote>{draft}</blockquote>}</div>
             </div>
             {item.sources.length > 0 && <div className={styles.findingSources}>{item.sources.map((source) => source.url ? <a key={source.id} href={source.url} target="_blank" rel="noreferrer">{source.title}</a> : <span key={source.id}>{source.title}</span>)}</div>}
-            <div className={styles.findingActions}>
+            {canDecide && <div className={styles.findingActions}>
               <button disabled={saving === item.finding_key} className={decision === "ACCEPTED" ? styles.accepted : ""} onClick={() => setDecision(item.finding_key, "ACCEPTED")}><Check size={13} />Accept</button>
               <button disabled={saving === item.finding_key} className={decision === "REJECTED" ? styles.rejected : ""} onClick={() => setDecision(item.finding_key, "REJECTED")}><X size={13} />Reject</button>
               <button disabled={saving === item.finding_key} className={decision === "EDITED" ? styles.edited : ""} onClick={() => {
@@ -959,7 +1471,7 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
               {saving === item.finding_key
                 ? <small>Đang lưu…</small>
                 : decision && <small>{decision === "ACCEPTED" ? "Đã chấp nhận đề xuất" : decision === "REJECTED" ? "Đã từ chối" : "Đã lưu bản chỉnh sửa"}</small>}
-            </div>
+            </div>}
           </article>;
         })}</div>
       </section>
@@ -967,6 +1479,7 @@ function ContractReviewResult({ review }: { review: ContractReview }) {
       {review.reference_sources.length > 0 && <section className={styles.reviewSection}><div className={styles.reviewSectionTitle}><div><strong>Nguồn tham chiếu</strong><small>Click vào tên nguồn để mở và đọc nội dung</small></div></div><div className={styles.referenceList}>{review.reference_sources.map((source) => <div key={`${source.id}-${source.type}`}><span>{source.type}</span><button type="button" onClick={() => void openReference(source)} disabled={readerLoading}><span>{source.title}</span>{source.url ? <ExternalLink size={12} /> : <Eye size={12} />}</button><small>{source.note}</small></div>)}</div></section>}
       <p className={styles.reviewDisclaimer}>{review.review_disclaimer}</p>
     </div>
+    {viewer && viewerFiles.length > 0 && <ContractFileViewer title={review.document_name} files={viewerFiles} initialKey={viewer} onClose={() => setViewer(null)} />}
     {(reader || readerLoading || readerError) && <div className={styles.readerBackdrop} role="presentation" onMouseDown={(event) => { if (event.target === event.currentTarget) { setReader(null); setReaderError(null); } }}>
       <section className={styles.readerModal} role="dialog" aria-modal="true" aria-label="Trình đọc tài liệu tham chiếu">
         <header><div><span><FileText size={19} /></span><div><strong>{reader?.document_title || "Đang mở tài liệu…"}</strong><small>{reader ? `${reader.document_name}${reader.version ? ` · v${reader.version}` : ""}` : "Đang tải nội dung theo quyền truy cập"}</small></div></div><button type="button" onClick={() => { setReader(null); setReaderError(null); }} aria-label="Đóng trình đọc"><X size={17} /></button></header>

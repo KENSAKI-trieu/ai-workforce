@@ -1,6 +1,7 @@
 """Durability tests for checkpointed knowledge-document ingestion."""
 
 import contextlib
+import io
 import json
 import threading
 import uuid
@@ -439,7 +440,7 @@ def test_interrupted_chunking_resumes_without_parsing_again(
     def parsing_must_not_run(_filename, _data):
         raise AssertionError("parser ran after the parsed checkpoint")
 
-    monkeypatch.setattr(document_ingestion, "extract_file_text", parsing_must_not_run)
+    monkeypatch.setattr(document_ingestion, "extract_knowledge_text", parsing_must_not_run)
     resumed = client.post(
         f"/api/v1/documents/{document_id}/retry",
         params={"version": "1.0"},
@@ -450,3 +451,41 @@ def test_interrupted_chunking_resumes_without_parsing_again(
     transactional_db_session.refresh(record)
     assert record.processing_checkpoint == "ready"
     assert record.processing_status == "ready"
+
+
+def test_a_scanned_pdf_is_refused_as_having_no_text(client, ceo_token_headers):
+    from PIL import Image
+
+    scan = io.BytesIO()
+    Image.new("RGB", (400, 200), "white").save(scan, format="PDF")
+    response = client.post(
+        "/api/v1/documents/upload",
+        headers=ceo_token_headers,
+        data={"document_id": f"scan-{uuid.uuid4().hex}", "version": "1.0"},
+        files={"file": ("scan.pdf", scan.getvalue(), "application/pdf")},
+    )
+
+    assert response.status_code == 422
+    assert response.json()["detail"] == "No readable text found in the file"
+
+
+def test_text_of_only_page_markers_fails_at_chunking_with_a_clear_reason(
+    client, ceo_token_headers, transactional_db_session, monkeypatch
+):
+    # A document parsed before the Markdown reader kept only its scan's page markers.
+    document_id = f"markers-only-{uuid.uuid4().hex}"
+    monkeypatch.setattr(
+        document_ingestion,
+        "extract_knowledge_text",
+        lambda _filename, _data: "[[PAGE:1]]\n\n[[PAGE:2]]",
+    )
+
+    with pytest.raises(ValueError, match="No readable text found in the file"):
+        _upload(client, ceo_token_headers, document_id)
+
+    record = transactional_db_session.query(KnowledgeDocument).filter(
+        KnowledgeDocument.document_id == document_id,
+    ).one()
+    assert record.processing_status == "failed"
+    assert record.processing_checkpoint == "parsed"
+    assert record.error_message == "No readable text found in the file"

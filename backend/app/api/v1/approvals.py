@@ -7,6 +7,7 @@ from uuid import UUID
 
 from fastapi import APIRouter, Depends, HTTPException
 from pydantic import BaseModel
+from sqlalchemy import or_
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -21,54 +22,24 @@ from app.models.models import (
     WorkflowApproval,
 )
 from app.domains.platform.notification_service import create_notification
-from app.domains.hr.hr_service import can_approve_hr_request, finalize_leave_approval
+from app.domains.hr.hr_service import finalize_leave_approval
+from app.domains.platform.approval_access import (
+    can_approve as _can_approve,
+    eligible_approvers,
+    no_approver_warning,
+)
 from app.domains.platform.work_queue import enqueue_job
 from app.agents.langgraph.engine import LangGraphEngine
 from app.clients.ai_service_client import AIServiceError
 from app.agents.langgraph.approvals import GRAPH_APPROVAL_KIND
 
 router = APIRouter(prefix="/approvals", tags=["Workflow Approvals"])
-APPROVER_ROLES = {"Owner", "Admin", "CEO", "Manager"}
-EXECUTIVE_APPROVER_ROLES = {"Owner", "Admin", "CEO"}
 
 
 class ApprovalActionRequest(BaseModel):
     action: Literal["APPROVE", "REJECT", "EDIT_AND_APPROVE"]
     comments: Optional[str] = None
     edited_payload: Optional[dict[str, Any]] = None
-
-
-def _can_approve(db: Session, current_user: User, approval: WorkflowApproval) -> bool:
-    payload = approval.payload or {}
-    if payload.get("kind") == GRAPH_APPROVAL_KIND:
-        if current_user.role in EXECUTIVE_APPROVER_ROLES:
-            return True
-        if current_user.role != "Manager" or approval.risk_level == "CRITICAL":
-            return False
-        initiator = approval.workflow.initiator
-        if initiator.id == current_user.id:
-            return False
-        return (
-            initiator.manager_id == current_user.id
-            or initiator.department == current_user.department
-        )
-    if approval.action_type == "LEAVE_REQUEST":
-        return can_approve_hr_request(db, current_user, approval)
-    if approval.action_type == "LEGAL_DOCUMENT_APPROVAL":
-        return current_user.role in EXECUTIVE_APPROVER_ROLES
-    if str(payload.get("requester_id") or "") == str(current_user.id):
-        # Blocking a requester who named themselves approver was only half of it: with
-        # `approver_id` left empty this branch fell through to `return True` for anyone
-        # holding an approver role, so a Manager could open a gate and walk through it.
-        # `requester_id` is written by the server, never by the caller, so it is the one
-        # field that reliably says whose request this is. The graph branch above already
-        # refuses the initiator this way.
-        return False
-    if current_user.role not in APPROVER_ROLES:
-        return approval.approver_id == current_user.id
-    if approval.approver_id and approval.approver_id != current_user.id:
-        return current_user.role in {"Owner", "Admin", "CEO"}
-    return True
 
 
 def _resume_langgraph_approval(
@@ -107,6 +78,31 @@ def _resume_langgraph_approval(
     }
 
 
+def _public_payload(approval: WorkflowApproval) -> dict[str, Any]:
+    payload = dict(approval.payload or {})
+    if approval.action_type == "LEGAL_DOCUMENT_APPROVAL":
+        payload.pop("draft_storage_key", None)
+        payload.pop("approved_storage_key", None)
+    return payload
+
+
+def _approval_item(approval: WorkflowApproval) -> dict[str, Any]:
+    return {
+        "id": str(approval.id),
+        "workflow_id": str(approval.workflow_id),
+        "workflow_title": approval.workflow.title,
+        "action_type": approval.action_type,
+        "risk_level": approval.risk_level,
+        "payload": _public_payload(approval),
+        "reason": (approval.payload or {}).get("reason"),
+        "requester": (approval.payload or {}).get("requester_name"),
+        "data_sources": (approval.payload or {}).get("data_sources", []),
+        "status": approval.status,
+        "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
+        "comments": approval.comments,
+    }
+
+
 @router.get("/pending", summary="List pending approvals visible to the current approver")
 def get_pending_approvals(
     db: Session = Depends(get_db),
@@ -116,31 +112,44 @@ def get_pending_approvals(
         AgentWorkflow.tenant_id == current_user.tenant_id,
         WorkflowApproval.status == "WAITING",
     ).order_by(WorkflowApproval.updated_at.desc()).all()
-    def public_payload(approval: WorkflowApproval) -> dict[str, Any]:
-        payload = dict(approval.payload or {})
-        if approval.action_type == "LEGAL_DOCUMENT_APPROVAL":
-            payload.pop("draft_storage_key", None)
-            payload.pop("approved_storage_key", None)
-        return payload
-
     return [
-        {
-            "id": str(approval.id),
-            "workflow_id": str(approval.workflow_id),
-            "workflow_title": approval.workflow.title,
-            "action_type": approval.action_type,
-            "risk_level": approval.risk_level,
-            "payload": public_payload(approval),
-            "reason": (approval.payload or {}).get("reason"),
-            "requester": (approval.payload or {}).get("requester_name"),
-            "data_sources": (approval.payload or {}).get("data_sources", []),
-            "status": approval.status,
-            "expires_at": approval.expires_at.isoformat() if approval.expires_at else None,
-            "comments": approval.comments,
-        }
+        _approval_item(approval)
         for approval in approvals
         if _can_approve(db, current_user, approval)
     ]
+
+
+@router.get("/submitted", summary="List the approvals the current user asked for")
+def get_submitted_approvals(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+) -> list[dict[str, Any]]:
+    """The requester's side of the approvals: read-only, with who can still decide each.
+
+    `/pending` lists only what the viewer may sign, and a requester may never sign their
+    own request, so what they had just sent never appeared anywhere they could see.
+    """
+    approvals = db.query(WorkflowApproval).join(AgentWorkflow).filter(
+        AgentWorkflow.tenant_id == current_user.tenant_id,
+        or_(
+            AgentWorkflow.initiator_id == current_user.id,
+            WorkflowApproval.payload["requester_id"].astext == str(current_user.id),
+        ),
+    ).order_by(WorkflowApproval.updated_at.desc()).limit(50).all()
+    items: list[dict[str, Any]] = []
+    for approval in approvals:
+        item = _approval_item(approval)
+        item["decided_at"] = (
+            approval.updated_at.isoformat()
+            if approval.status != "WAITING" and approval.updated_at else None
+        )
+        item["approver_name"] = approval.approver.full_name if approval.approver else None
+        if approval.status == "WAITING":
+            count = len(eligible_approvers(db, approval))
+            item["eligible_approver_count"] = count
+            item["warning"] = None if count else no_approver_warning(approval)
+        items.append(item)
+    return items
 
 
 @router.post("/{approval_id}/action", summary="Approve, reject or edit-and-approve")

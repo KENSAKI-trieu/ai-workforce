@@ -60,3 +60,21 @@ def read_legal_artifact(storage_key: str) -> bytes:
     if root not in target.parents:
         raise ValueError("Invalid legal artifact key")
     return target.read_bytes()
+
+
+def delete_legal_artifact(storage_key: str) -> None:
+    """Remove a stored artifact, and the folders it leaves empty. A missing file is no error."""
+    root = _root()
+    target = (root / storage_key).resolve()
+    if root not in target.parents:
+        raise ValueError("Invalid legal artifact key")
+    target.unlink(missing_ok=True)
+    # <tenant>/<artifact>/<variant>/<file>: the variant and artifact folders go when empty,
+    # the tenant folder stays.
+    for folder in list(target.parents)[:2]:
+        if root not in folder.parents or folder.parent == root:
+            break
+        try:
+            folder.rmdir()
+        except OSError:  # not empty: another variant of the same artifact is still there
+            break

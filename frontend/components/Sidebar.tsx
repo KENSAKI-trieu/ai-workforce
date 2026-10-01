@@ -4,7 +4,7 @@ import { useRouter, usePathname } from "next/navigation";
 import Link from "next/link";
 import Image from "next/image";
 import { useCallback, useEffect, useState } from "react";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useAuthStore, userCan } from "@/store/useAuthStore";
 import { useLanguageStore } from "@/store/useLanguageStore";
 import type { AppLocale } from "@/store/useLanguageStore";
 import api from "@/lib/api";
@@ -446,7 +446,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           {text.aiEmployees}
         </div>
 
-        {(["Owner", "Admin", "CEO"].includes(user?.role || "")) && (
+        {userCan(user, "agents.configure") && (
           <NavItem
             icon={<SlidersHorizontal size={18} />}
             label={text.configureAgents}

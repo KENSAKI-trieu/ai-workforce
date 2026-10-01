@@ -24,6 +24,7 @@ _METADATA_KEYS = (
     "retry_policy",
     "audit_action",
     "terminal",
+    "opens_approval",
 )
 
 
@@ -45,6 +46,7 @@ def tool_from_contract(contract: dict[str, Any], gateway: ToolGatewayClient) -> 
 
     metadata = {key: contract.get(key) for key in _METADATA_KEYS}
     metadata["terminal"] = bool(contract.get("terminal"))
+    metadata["opens_approval"] = bool(contract.get("opens_approval"))
     metadata["gateway_only"] = True
     return StructuredTool.from_function(
         func=invoke_gateway,

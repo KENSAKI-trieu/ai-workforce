@@ -12,13 +12,26 @@ from app.domains.legal.contract_review.clause_parser import (
     extract_review_metadata,
     split_contract_clauses,
 )
-from app.domains.legal.contract_review.schemas import LAW_SOURCES, get_review_schema
+from app.domains.legal.contract_review.schemas import (
+    CONTRACT_REVIEW_SCHEMAS,
+    LAW_SOURCES,
+    get_review_schema,
+)
 
 
 SEVERITY_WEIGHT = {"CRITICAL": 35, "HIGH": 22, "MEDIUM": 10, "LOW": 4}
 SEVERITY_FLOOR = {"CRITICAL": 90, "HIGH": 70, "MEDIUM": 40, "LOW": 15}
 SEVERITY_ORDER = {"LOW": 1, "MEDIUM": 2, "HIGH": 3, "CRITICAL": 4}
 VALID_PERSPECTIVES = {"PARTY_A", "PARTY_B", "NEUTRAL"}
+# The shape of a review changes with how it was made, and a stored review is reused only
+# for the same version (see contract_review_store): a rules-only review saved while the
+# model was down must not stand in for the model's reading on the next run.
+# 3.1: a revised file is checked against the round it came from; a 3.0 review of the same
+# text was made without it and is not reused for it.
+RULES_REVIEW_VERSION = "2.0"
+ASSESSED_REVIEW_VERSION = "3.1"
+ROUND_FIELDS = ("round_status", "round_note", "parent_finding_key")
+AI_BASIS_NOTE = "Căn cứ do AI nêu, chưa được đối chiếu với văn bản luật; Legal cần xác nhận trước khi dựa vào."
 
 
 def _compact(value: str, limit: int = 600) -> str:
@@ -131,8 +144,16 @@ def _finding(
     perspective: str,
     source_ids: list[str] | None = None,
     impact: str = "SHARED",
+    evidence: str | None = None,
+    sources: list[dict[str, Any]] | None = None,
+    confidence: float | None = None,
+    favors: str | None = None,
+    round_fields: dict[str, Any] | None = None,
 ) -> None:
     findings.append({
+        # Set on the next round of a review (``rereview``): what became of the finding
+        # since the round before, and which finding of that round it was.
+        **(round_fields or {}),
         "id": f"finding-{len(findings) + 1}",
         "finding_key": _finding_key(
             contract_type=contract_type,
@@ -150,12 +171,16 @@ def _finding(
         "issue": issue,
         "reason": reason,
         "recommendation": recommendation,
-        "evidence": _compact(original_text, 700),
+        "evidence": _compact(evidence or original_text, 700),
         "original_text": _compact(original_text, 1200),
         "suggested_revision": suggested_revision,
         "perspective": _perspective_label(perspective),
         "impact": impact,
-        "sources": _sources(source_ids or [], contract_type),
+        "sources": sources if sources is not None else _sources(source_ids or [], contract_type),
+        # Set by the model's reading: how sure it is, and which party the clause favours.
+        # A rule finding is certain of its wording and says nothing of who it favours.
+        "confidence": confidence,
+        "favors": favors,
         "decision": "PENDING",
     })
 
@@ -377,6 +402,105 @@ def _review_conflicts(
             _finding(findings, contract_type=contract_type, clause=clause, category="PAYMENT", finding_type="INTERNAL_CONFLICT", severity="MEDIUM", issue=f"Tổng tỷ lệ thanh toán là {total}%", reason="Lịch thanh toán theo tỷ lệ không cộng thành 100%, có thể gây thiếu hoặc trùng nghĩa vụ.", recommendation="Điều chỉnh milestone để tổng tỷ lệ bằng 100% và gắn với deliverable/nghiệm thu.", original_text=clause["text"], suggested_revision="Lịch thanh toán: [30]% khi ký, [40]% khi hoàn thành milestone, [30]% sau nghiệm thu; tổng cộng 100%.", perspective=perspective)
 
 
+def _apply_parties(metadata: dict[str, Any], parties: dict[str, dict[str, Any]]) -> None:
+    """Name and label each side as the contract does, not by the Bên A = Công ty convention."""
+    for key, prefix, slot in (("PARTY_A", "Bên A", "party_a"), ("PARTY_B", "Bên B", "party_b")):
+        party = parties.get(key) or {}
+        if party.get("name"):
+            metadata[slot] = party["name"]
+            metadata[f"{slot}_source"] = "DOCUMENT"
+        if party.get("role"):
+            metadata[f"{slot}_label"] = f"{prefix} · {party['role']}"
+    # The warnings compared the document with that convention; the roles now come from
+    # the document itself.
+    metadata["party_mapping_warnings"] = []
+
+
+def _assessment_sources(item: dict[str, Any]) -> list[dict[str, Any]]:
+    basis = item.get("legal_basis")
+    if not basis:
+        return []
+    return [{
+        "id": f"AI_BASIS_{hashlib.sha256(basis.casefold().encode('utf-8')).hexdigest()[:12]}",
+        "type": "AI_LEGAL_BASIS",
+        "title": basis,
+        "url": "",
+        "note": AI_BASIS_NOTE,
+    }]
+
+
+def _merge_assessment(
+    assessment: dict[str, Any],
+    clauses: list[dict[str, Any]],
+    checklist: list[dict[str, Any]],
+    rule_findings: list[dict[str, Any]],
+    contract_type: str,
+    perspective: str,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """The model's findings, plus each rule finding the model did not already make.
+
+    The rules are the floor: a wording they know is never lost to a model that skipped
+    it or rated it lower. A rule finding goes when the model raised the same category on
+    the same clause at least as severely -- live, the model called a 15% penalty
+    "unbalanced" at MEDIUM and the rule's point, that it exceeds the 8% cap, was lost --
+    and a "missing clause" goes when the model found that group in a clause.
+    """
+    by_id = {clause["id"]: clause for clause in clauses}
+    findings: list[dict[str, Any]] = []
+    for item in assessment["findings"]:
+        clause = by_id.get(item["clause_id"]) if item["clause_id"] else None
+        _finding(
+            findings,
+            contract_type=contract_type,
+            clause=clause,
+            category=item["category"],
+            finding_type=item["finding_type"],
+            severity=item["severity"],
+            issue=item["issue"],
+            reason=item["reason"],
+            recommendation=item["recommendation"],
+            original_text=clause["text"] if clause else "Không tìm thấy trong nội dung hợp đồng.",
+            evidence=item["evidence"] or None,
+            suggested_revision=item["suggested_revision"],
+            perspective=perspective,
+            impact=item["impact"],
+            # A finding taken over from an earlier round keeps the sources it was shown with.
+            sources=item["sources"] if item.get("sources") is not None else _assessment_sources(item),
+            confidence=item.get("confidence"),
+            favors=item.get("favors"),
+            round_fields={key: item[key] for key in ROUND_FIELDS if item.get(key) is not None},
+        )
+    raised: dict[tuple[str, str], int] = {}
+    for finding in findings:
+        if finding["clause_id"]:
+            key = (finding["clause_id"], finding["category"])
+            raised[key] = max(raised.get(key, 0), SEVERITY_ORDER[finding["severity"]])
+    found_in_clause: dict[str, list[str]] = {}
+    for finding in findings:
+        if finding["clause_id"]:
+            found_in_clause.setdefault(finding["category"], []).append(finding["clause_id"])
+    for row in assessment["checklist"]:
+        if row["status"] == "PRESENT" and row["clause_ids"]:
+            found_in_clause.setdefault(row["category"], []).extend(row["clause_ids"])
+    missing_by_model = {finding["category"] for finding in findings if finding["finding_type"] == "MISSING_CLAUSE"}
+
+    for row in checklist:
+        if row["status"] == "MISSING" and found_in_clause.get(row["category"]):
+            row["status"] = "PRESENT"
+            row["clause_ids"] = list(dict.fromkeys(found_in_clause[row["category"]]))[:5]
+    status = {row["category"]: row["status"] for row in checklist}
+    for finding in rule_findings:
+        if finding["finding_type"] == "MISSING_CLAUSE":
+            if status.get(finding["category"]) != "MISSING" or finding["category"] in missing_by_model:
+                continue
+        elif raised.get((finding["clause_id"], finding["category"]), 0) >= SEVERITY_ORDER[finding["severity"]]:
+            continue
+        findings.append(finding)
+    # A type the rule pack has no checklist for -- a lease, a sale of goods -- is checked
+    # against the groups the model says that type needs.
+    return findings, checklist or assessment["checklist"]
+
+
 def _risk_summary(findings: list[dict[str, Any]]) -> tuple[int, str, dict[str, int]]:
     counts = Counter(finding["severity"] for finding in findings)
     raw_score = min(100, sum(SEVERITY_WEIGHT[finding["severity"]] for finding in findings))
@@ -402,32 +526,63 @@ def review_contract(
     represented_party: str = "NEUTRAL",
     knowledge_references: list[dict[str, Any]] | None = None,
     document_scope: str = "FULL",
+    assessment: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Review contract text; ``document_scope`` is FULL or EXCERPT.
 
     An EXCERPT is judged only on what it says. Faulting a single pasted clause for lacking
     governing law, payment and confidentiality terms scored it CRITICAL and raised a legal
     approval for text that was never meant to be a whole contract.
+
+    ``assessment`` is the model's reading of the same clauses (``llm_assessment``). With
+    it, the model decides the contract type, the parties' roles and what each clause
+    means, and the rules are the floor under it. The heuristics for vague scope and for
+    "conflicting" payment days and percentages are left out then: on real contracts they
+    read an advance in 3 days and a balance in 5 as a conflict, and a 0,1%/day interest
+    rate as a payment share.
     """
     perspective = represented_party.upper()
     if perspective not in VALID_PERSPECTIVES:
         raise ValueError("represented_party phải là PARTY_A, PARTY_B hoặc NEUTRAL")
     text = contract_text.strip()
     clauses = split_contract_clauses(text)
-    detection = detect_contract_type(text)
+    if assessment is None:
+        detection = detect_contract_type(text)
+    else:
+        detection = {
+            "contract_type": assessment["contract_type"],
+            "contract_type_label": assessment["contract_type_label"],
+            "confidence": assessment["contract_type_confidence"],
+        }
     contract_type = detection["contract_type"]
-    schema = get_review_schema(contract_type)
+    # A type the model named that the rule pack does not know has no checklist of its own;
+    # borrowing the service agreement's is what faulted a lease for lacking an SLA.
+    schema = get_review_schema(contract_type) if assessment is None else CONTRACT_REVIEW_SCHEMAS.get(contract_type)
     metadata = extract_review_metadata(text, clauses)
     findings: list[dict[str, Any]] = []
+    party_label = _perspective_label(perspective)
 
-    _review_party_mapping(metadata, findings, contract_type, perspective)
     is_excerpt = document_scope.upper() == "EXCERPT"
+    if assessment is None:
+        _review_party_mapping(metadata, findings, contract_type, perspective)
     checklist = _review_checklist(
         clauses, schema, findings, contract_type, perspective, assess_missing=not is_excerpt
-    )
+    ) if schema else []
     _review_material_terms(text, clauses, findings, contract_type, perspective)
-    _review_ambiguity(clauses, findings, contract_type, perspective)
-    _review_conflicts(clauses, findings, contract_type, perspective)
+    if assessment is None:
+        _review_ambiguity(clauses, findings, contract_type, perspective)
+        _review_conflicts(clauses, findings, contract_type, perspective)
+    else:
+        _apply_parties(metadata, assessment["parties"])
+        findings, checklist = _merge_assessment(
+            assessment, clauses, checklist, findings, contract_type, perspective
+        )
+        if perspective != "NEUTRAL":
+            represented = metadata[f"party_{perspective[-1].lower()}_label"]
+            for finding in findings:
+                finding["perspective"] = represented
+                finding["reason"] = finding["reason"].replace(party_label, represented)
+            party_label = represented
 
     findings.sort(key=lambda item: (-SEVERITY_ORDER[item["severity"]], item["category"], item["clause"]))
     for index, finding in enumerate(findings, 1):
@@ -460,14 +615,18 @@ def review_contract(
         used_sources[str(source.get("id") or source.get("citation_tag") or len(used_sources))] = source
 
     return {
-        "review_version": "2.0",
+        "review_version": RULES_REVIEW_VERSION if assessment is None else ASSESSED_REVIEW_VERSION,
+        "review_engine": "RULES" if assessment is None else "LLM_ASSISTED",
         "document_name": document_name,
         "represented_party": perspective,
-        "represented_party_label": _perspective_label(perspective),
+        "represented_party_label": party_label,
         "document_scope": "EXCERPT" if is_excerpt else "FULL",
         "contract_type": contract_type,
         "contract_type_label": detection["contract_type_label"],
         "contract_type_confidence": detection["confidence"],
+        # The parties as the model read them, kept so the next round of this review can be
+        # read with the same roles.
+        "parties": assessment["parties"] if assessment is not None else None,
         "metadata": metadata,
         "clauses": clauses,
         "checklist": checklist,

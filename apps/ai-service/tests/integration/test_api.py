@@ -100,7 +100,8 @@ def test_business_boundary_chunking() -> None:
         "# Chính sách nghỉ phép\n"
         "Điều 1. Phạm vi\nÁp dụng toàn công ty.\n"
         "Khoản 1. Điều kiện\nNhân viên còn ngày phép.\n"
-        "Bước 1: Gửi yêu cầu\nNhân viên tạo đơn."
+        "Bước 1: Gửi yêu cầu\nNhân viên tạo đơn.",
+        min_chunk_size=0,  # each section on its own: these are one-liners that would merge
     )
     assert [chunk["section_type"] for chunk in chunks] == [
         "heading", "article", "clause", "step"
@@ -112,7 +113,8 @@ def test_chunk_endpoint_contract() -> None:
     assert response.status_code == 200
     chunk = response.json()["chunks"][0]
     assert chunk["section_title"] == "Quy trình"
-    assert chunk["token_count"] == 5
+    # "##" 1, "Quy" 1, "trình" 2, "Nội" 1, "dung." 2: estimated tokens, not words.
+    assert chunk["token_count"] == 7
 
 
 def test_chunk_stream_reports_remaining_segments_and_created_chunks() -> None:
@@ -191,7 +193,7 @@ def test_browser_pipeline_stream_replays_chunk_and_embedding_progress() -> None:
 def test_token_count_endpoint_contract() -> None:
     response = client.post("/v1/token-count", json={"texts": ["one two", "three"]})
     assert response.status_code == 200
-    assert response.json()["token_counts"] == [2, 1]
+    assert response.json()["token_counts"] == [2, 2]  # "three" is five characters: 2 tokens
 
 
 def test_llm_generate_local_contract() -> None:

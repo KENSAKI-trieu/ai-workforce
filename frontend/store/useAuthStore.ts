@@ -23,6 +23,13 @@ interface UserInfo {
   department: string;
   tenant_id: string;
   avatar_url?: string | null;
+  /** Mã quyền chức vụ đang giữ (tick ở org-structure). Chỉ để ẩn/hiện nút; server vẫn kiểm. */
+  permissions?: string[];
+}
+
+/** Whether the signed-in user's position grants `code`. */
+export function userCan(user: { permissions?: string[] } | null | undefined, code: string): boolean {
+  return Boolean(user?.permissions?.includes(code));
 }
 
 interface AuthState {

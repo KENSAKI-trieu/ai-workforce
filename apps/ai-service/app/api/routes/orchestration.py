@@ -50,6 +50,7 @@ def _context_for(request: OrchestrationRequest, authorization: str | None):
         tool_jwt=tool_jwt(authorization),
         tenant_instructions=request.tenant_instructions,
         disabled_tools={item.name: item.label for item in request.disabled_tools},
+        restricted_tools={item.name: item.label for item in request.restricted_tools},
     )
 
 
@@ -143,6 +144,7 @@ def resume_orchestration(
             tool_jwt=tool_jwt(x_internal_tool_authorization),
             tenant_instructions=request.tenant_instructions,
             disabled_tools={item.name: item.label for item in request.disabled_tools},
+            restricted_tools={item.name: item.label for item in request.restricted_tools},
         )
         result = orchestration_engines.get().resume(
             request.resume,

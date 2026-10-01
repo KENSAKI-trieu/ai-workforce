@@ -9,7 +9,7 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import RoleRequired, get_current_active_user
+from app.core.security import PermissionRequired, get_current_active_user
 from app.models.models import User
 from app.plugins.authoring import (
     MAX_MANIFEST_BYTES,
@@ -43,7 +43,8 @@ router = APIRouter(prefix="/plugins", tags=["Plugins"])
 
 # Same set that already guards AI Employee configuration. Installing a package changes
 # how an agent answers for the whole tenant, so it belongs behind the same door.
-PLUGIN_ADMIN_ROLES = ("Owner", "Admin", "CEO")
+# Plugins change what an agent is told and may use: the same power as configuring it.
+PLUGIN_ADMIN_PERMISSION = "agents.configure"
 
 
 class InstalledPluginResponse(BaseModel):
@@ -81,7 +82,7 @@ def list_catalogue(
 @router.post(
     "/validate",
     summary="Check a manifest without saving it",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def validate_source(req: PluginSourceRequest) -> dict[str, Any]:
     """Report what a manifest would do, or why it is rejected.
@@ -99,7 +100,7 @@ def validate_source(req: PluginSourceRequest) -> dict[str, Any]:
 @router.get(
     "/authored",
     summary="List the packages this workspace wrote",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def list_authored(
     db: Session = Depends(get_db),
@@ -120,7 +121,7 @@ def list_authored(
 @router.get(
     "/authored/{plugin_name}",
     summary="Read one authored package for editing",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def read_authored(
     plugin_name: str,
@@ -142,7 +143,7 @@ def read_authored(
 @router.post(
     "/authored",
     summary="Create a package for this workspace",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def create_authored(
     req: PluginSourceRequest,
@@ -170,7 +171,7 @@ def create_authored(
 @router.put(
     "/authored/{plugin_name}",
     summary="Rewrite a package this workspace wrote",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def update_authored(
     plugin_name: str,
@@ -199,7 +200,7 @@ def update_authored(
 @router.delete(
     "/authored/{plugin_name}",
     summary="Delete a package this workspace wrote",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def delete_authored(
     plugin_name: str,
@@ -253,7 +254,7 @@ def preview_prompt(
     role_code: str,
     slot: str,
     db: Session = Depends(get_db),
-    current_user: User = Depends(RoleRequired(*PLUGIN_ADMIN_ROLES)),
+    current_user: User = Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION)),
 ) -> dict[str, Any]:
     """Show exactly the text the model will receive, defaults included.
 
@@ -328,7 +329,7 @@ def preview_prompt(
 @router.post(
     "/{plugin_name}/install",
     summary="Install a plugin package for this tenant",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def install(
     plugin_name: str,
@@ -361,7 +362,7 @@ def install(
 @router.delete(
     "/{plugin_name}",
     summary="Uninstall a plugin package from this tenant",
-    dependencies=[Depends(RoleRequired(*PLUGIN_ADMIN_ROLES))],
+    dependencies=[Depends(PermissionRequired(PLUGIN_ADMIN_PERMISSION))],
 )
 def uninstall(
     plugin_name: str,

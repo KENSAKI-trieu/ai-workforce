@@ -93,6 +93,81 @@ def test_internal_registration_creates_one_idempotent_approval(client, transacti
     ).count() == 1
 
 
+def test_the_graph_result_reuses_the_approval_the_gateway_registered(
+    client, transactional_db_session
+) -> None:
+    """One interrupt, one approval, whichever side records it first.
+
+    The graph registers its approval through the gateway under the tool call id, then
+    suspends and reports the interrupt under LangGraph's own id. Keyed on that second id,
+    the backend opened a duplicate approval for every governed action.
+    """
+    db = transactional_db_session
+    user, agent, workflow, payload, registration = _register(client, db)
+    graph_interrupt = {
+        "id": uuid.uuid4().hex,
+        "value": {
+            "type": "ACTION_TOOL_APPROVAL",
+            "conversation_id": payload["conversation_id"],
+            "workflow_id": payload["workflow_id"],
+            "tool_call_id": payload["interrupt_id"],
+            "tool_name": payload["tool_name"],
+            "action": payload["action"],
+            "reason": payload["reason"],
+            "arguments": payload["arguments"],
+            "approval_id": registration["approval_id"],
+        },
+    }
+
+    approval = LangGraphEngine._sync_result(
+        db,
+        result={"status": "AWAITING_APPROVAL", "interrupts": [graph_interrupt]},
+        workflow=workflow,
+        user=user,
+        agent=agent,
+    )
+
+    assert approval is not None
+    assert str(approval.id) == registration["approval_id"]
+    assert db.query(WorkflowApproval).filter(
+        WorkflowApproval.workflow_id == workflow.id
+    ).count() == 1
+
+
+def test_the_graph_is_told_which_granted_tools_the_users_role_may_not_use(
+    transactional_db_session,
+) -> None:
+    """Without this the model never saw the drafting tool, and made up a reason."""
+    db = transactional_db_session
+    employee = db.query(User).filter(User.email == "employee@company.com").one()
+    ceo = db.query(User).filter(
+        User.tenant_id == employee.tenant_id, User.role == "CEO"
+    ).first()
+    assert ceo is not None
+    agent = db.query(AIAgent).filter(
+        AIAgent.tenant_id == employee.tenant_id, AIAgent.role_code == "LEGAL"
+    ).one()
+    # Set here rather than read from the seed, so the test does not depend on the row.
+    agent.tools_access = ["rag_search", "audit_contract_risk", "generate_legal_document"]
+    agent.allowed_actions = []
+    agent.disallowed_actions = []
+    db.flush()
+
+    def restricted(user: User) -> list[str]:
+        payload = LangGraphEngine._payload(
+            db=db,
+            user=user,
+            agent=agent,
+            conversation_id=str(uuid.uuid4()),
+            workflow_id=str(uuid.uuid4()),
+        )
+        return [item["name"] for item in payload["restricted_tools"]]
+
+    assert employee.department.upper() != "LEGAL"
+    assert restricted(employee) == ["generate_legal_document"]
+    assert restricted(ceo) == []
+
+
 def test_backend_run_binds_thread_to_conversation_and_workflow(transactional_db_session) -> None:
     db = transactional_db_session
     user = db.query(User).filter(User.email == "employee@company.com").one()

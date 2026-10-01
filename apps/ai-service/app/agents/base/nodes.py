@@ -38,6 +38,9 @@ class OrchestrationRuntimeContext:
     # Tools the agent's role has but the organisation turned off, name -> label. Never
     # bound or run; the model may only name one so the graph can say it is off.
     disabled_tools: dict[str, str] = field(default_factory=dict)
+    # Tools the agent has but the user's role may not use, name -> label. Same treatment:
+    # never bound, only named so the graph can say why the request cannot be done.
+    restricted_tools: dict[str, str] = field(default_factory=dict)
 
 
 def _latest_user_text(state: WorkforceAgentState) -> str:
@@ -71,6 +74,9 @@ def input_guard(state: WorkforceAgentState, runtime: Runtime[OrchestrationRuntim
         "citations": list(state.get("citations") or []),
         "available_tools": sorted(security.allowed_tools - security.denied_tools),
         "model_iterations": 0,
+        # A thread's state outlives its turn in the checkpointer; these belong to one turn.
+        "final_step": False,
+        "unanswered": False,
         "execution_trace": _trace(state, "input_guard"),
     }
 
@@ -128,16 +134,14 @@ def model_decision(
     runtime: Runtime[OrchestrationRuntimeContext],
 ) -> dict[str, Any]:
     iteration = int(state.get("model_iterations") or 0) + 1
-    if iteration > runtime.context.max_model_iterations:
-        return {
-            "pending_tool_call": None,
-            "final_answer": notices.ITERATION_LIMIT,
-            "errors": [*(state.get("errors") or []), {"node": "model_decision", "error": "MODEL_ITERATION_LIMIT"}],
-            "model_iterations": iteration,
-            "execution_trace": _trace(state, "model_decision", "LIMITED"),
-        }
+    limit = runtime.context.max_model_iterations
+    if iteration > limit:
+        return _iteration_limit(state, iteration)
+    # The last decision is told no tool can follow it, so a search that keeps coming up
+    # empty ends in an answer rather than in the limit notice.
+    final_step = iteration == limit
     try:
-        decision = runtime.context.decision_provider.decide(state)
+        decision = runtime.context.decision_provider.decide({**state, "final_step": final_step})
     except Exception as exc:
         return {
             "pending_tool_call": None,
@@ -162,6 +166,17 @@ def model_decision(
                 "model_iterations": iteration,
                 "execution_trace": _trace(state, "model_decision", "DENIED"),
             }
+        restricted_label = runtime.context.restricted_tools.get(name)
+        if restricted_label is not None and name not in runtime.context.tools:
+            # Filed under tool_policy for the same reason as a disabled tool above.
+            return {
+                "pending_tool_call": None,
+                "final_answer": notices.tool_restricted(restricted_label),
+                "citations": [],
+                "errors": [*(state.get("errors") or []), {"node": "tool_policy", "error": "TOOL_RESTRICTED_BY_ROLE", "tool": name}],
+                "model_iterations": iteration,
+                "execution_trace": _trace(state, "model_decision", "DENIED"),
+            }
         if name not in set(state.get("available_tools") or []) or name not in runtime.context.tools:
             return {
                 "pending_tool_call": None,
@@ -170,6 +185,9 @@ def model_decision(
                 "model_iterations": iteration,
                 "execution_trace": _trace(state, "model_decision", "DENIED"),
             }
+        if final_step:
+            # Told no tool could run, it chose one anyway; nothing it chose will run.
+            return _iteration_limit(state, iteration)
         # Generated here so it is checkpointed before an approval node starts.
         # The UUID remains stable when that node restarts, while separate user
         # turns in the same conversation cannot collide with an older approval.
@@ -181,7 +199,19 @@ def model_decision(
             "args": redact_sensitive_data(decision.tool_args),
             "action": str((tool.metadata or {}).get("action", "READ_ONLY")),
             "terminal": bool((tool.metadata or {}).get("terminal")),
+            "opens_approval": bool((tool.metadata or {}).get("opens_approval")),
             "reason": decision.reason,
+        }
+    elif not decision.answerable:
+        # The model's call, the graph's words: whatever it would have written here is not
+        # grounded in anything, so none of it reaches the user.
+        return {
+            "pending_tool_call": None,
+            "final_answer": notices.NOT_IN_DOCUMENTS,
+            "citations": [],
+            "unanswered": True,
+            "model_iterations": iteration,
+            "execution_trace": _trace(state, "model_decision"),
         }
     return {
         "pending_tool_call": pending,
@@ -192,11 +222,28 @@ def model_decision(
     }
 
 
+def _iteration_limit(state: WorkforceAgentState, iteration: int) -> dict[str, Any]:
+    return {
+        "pending_tool_call": None,
+        "final_answer": notices.ITERATION_LIMIT,
+        # Citations picked up along the way belong to searches that did not answer; left
+        # here they were shown under the limit notice as if they supported it.
+        "citations": [],
+        "errors": [*(state.get("errors") or []), {"node": "model_decision", "error": "MODEL_ITERATION_LIMIT"}],
+        "model_iterations": iteration,
+        "execution_trace": _trace(state, "model_decision", "LIMITED"),
+    }
+
+
 def after_decision(state: WorkforceAgentState) -> str:
     pending = state.get("pending_tool_call")
     if not pending:
         return "output_validation"
-    return "execute_read_tool" if pending.get("action") == "READ_ONLY" else "approval_interrupt"
+    # A tool whose effect is an approval of its own -- a draft waiting for sign-off -- runs
+    # without stopping here first; stopping as well had the same thing approved twice.
+    if pending.get("action") == "READ_ONLY" or pending.get("opens_approval"):
+        return "execute_read_tool"
+    return "approval_interrupt"
 
 
 def _execute_tool(
@@ -398,16 +445,55 @@ def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
     }
 
 
+def _answered_by_tool(state: WorkforceAgentState) -> bool:
+    """Whether the reply is a tool's own output rather than something the model wrote.
+
+    A terminal tool's reply and an action's result are the tool speaking; there is no
+    model prose to hold to a source. An answer the model wrote after a search is not.
+    """
+    calls = state.get("tool_calls") or []
+    if not calls:
+        return False
+    latest = calls[-1]
+    return bool(latest.get("terminal")) or latest.get("action") != "READ_ONLY"
+
+
+def _searched_documents(state: WorkforceAgentState) -> list[dict[str, Any]]:
+    """Retrieval results the model was shown: the graph's own search and any it asked for."""
+    documents = list(state.get("retrieved_context") or [])
+    for call in state.get("tool_calls") or []:
+        result = call.get("result")
+        if call.get("name") == "rag_search" and call.get("status") == "SUCCESS" and isinstance(result, list):
+            documents.extend(item for item in result if isinstance(item, dict))
+    return documents
+
+
+def _used_non_document_tool(state: WorkforceAgentState) -> bool:
+    """Whether the answer could rest on a tool's data -- a leave balance -- not a document."""
+    return any(
+        call.get("status") == "SUCCESS" and call.get("name") != "rag_search"
+        for call in state.get("tool_calls") or []
+    )
+
+
 def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
-    if state.get("tool_calls") or not state.get("citation_required"):
+    # Any tool call used to skip this whole check, so an answer the model wrote after a
+    # second search reached the user with citations nobody had checked.
+    if _answered_by_tool(state) or not state.get("citation_required") or state.get("unanswered"):
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
     if any(item.get("node") in {"model_decision", "tool_policy"} for item in state.get("errors") or []):
         # The answer is the engine's own notice, not model output, so there is nothing to
         # verify. Checking it anyway replaced the real cause -- a provider outage, a denied
         # or disabled tool -- with "citations could not be verified".
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
-    context = state.get("retrieved_context") or []
+    context = _searched_documents(state)
     supplied = _supplied_citations(state)
+    if _used_non_document_tool(state):
+        # An answer from a tool's data needs no document behind it, but any document it
+        # does name must be one that was retrieved.
+        if supplied and not all(_citation_is_verified(citation, context) for citation in supplied):
+            return _withhold_answer(state, "UNVERIFIED_CITATION")
+        return {"execution_trace": _trace(state, "citation_verification")}
     if not context:
         # Retrieval found nothing, so there is no source any citation could be checked
         # against. Letting the answer through unread was the safe half of that; letting it

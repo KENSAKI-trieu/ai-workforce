@@ -10,12 +10,15 @@ from sqlalchemy.orm import Session
 
 from app.models.models import AIAgent, AgentWorkflow, User, WorkflowApproval
 from app.domains.platform.notification_service import create_notification
+from app.domains.platform.position_service import (
+    approval_signers,
+    can_sign_approvals,
+    can_sign_critical,
+)
 
 
 GRAPH_WORKFLOW_KIND = "LANGGRAPH_CONVERSATION"
 GRAPH_APPROVAL_KIND = "LANGGRAPH_INTERRUPT"
-GRAPH_APPROVER_ROLES = ("Owner", "Admin", "CEO", "Manager")
-GRAPH_EXECUTIVE_ROLES = ("Owner", "Admin", "CEO")
 
 
 def _risk(value: dict[str, Any]) -> str:
@@ -27,10 +30,12 @@ def _risk(value: dict[str, Any]) -> str:
 
 
 def _should_notify_approver(approver: User, requester: User) -> bool:
-    if approver.role in GRAPH_EXECUTIVE_ROLES:
+    # Read from the approver's position ("Phê duyệt yêu cầu" and "... tối quan trọng"),
+    # not from role strings a ticked box could not change.
+    if can_sign_critical(None, approver):
         return True
     return (
-        approver.role == "Manager"
+        can_sign_approvals(None, approver)
         and approver.id != requester.id
         and (
             requester.manager_id == approver.id
@@ -86,12 +91,7 @@ def ensure_graph_approval(
     )
     db.add(approval)
     db.flush()
-    approvers = db.query(User).filter(
-        User.tenant_id == user.tenant_id,
-        User.role.in_(GRAPH_APPROVER_ROLES),
-        User.is_active.is_(True),
-    ).all()
-    for approver in approvers:
+    for approver in approval_signers(db, user.tenant_id):
         if not _should_notify_approver(approver, user):
             continue
         create_notification(

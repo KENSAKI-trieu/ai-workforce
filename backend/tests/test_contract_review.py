@@ -158,7 +158,10 @@ def test_review_endpoint_requires_and_uses_represented_party(client, employee_to
     payload = response.json()
     assert payload["represented_party"] == "PARTY_B"
     assert payload["contract_type"] == "SOFTWARE_DEVELOPMENT_CONTRACT"
-    assert payload["approval_created"] is True
+    # High risk, but nothing goes for approval until the reviewer sends it.
+    assert payload["requires_legal_approval"] is True
+    assert not payload.get("approval_created")
+    assert payload["approval"] is None and payload["workflow_id"] is None
     assert payload["findings"][0]["issue"]
     assert payload["findings"][0]["reason"]
     assert payload["findings"][0]["suggested_revision"]
@@ -310,6 +313,7 @@ def test_review_references_deduplicate_chunks_and_expose_reader_url(monkeypatch)
         tenant_id="tenant",
         role="CEO",
         department="BOARD",
+        position_id=None,
     )
 
     references = specialized._retrieve_contract_review_references(

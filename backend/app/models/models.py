@@ -27,6 +27,7 @@ from sqlalchemy.sql import func
 from pgvector.sqlalchemy import Vector
 
 from app.core.database import Base
+from app.core.encryption import EncryptedJSONB, EncryptedText
 
 
 def utcnow():
@@ -216,6 +217,22 @@ class User(Base):
         position name is whatever the tenant renamed it to.
         """
         return self.position.name if self.position else None
+
+    @property
+    def permissions(self) -> list[str]:
+        """The codes this person's position grants, for the client to show or hide controls.
+
+        Mirrors `position_service.position_permissions`, which the server's guards use;
+        this copy only decides what the UI offers, never what the server allows.
+        """
+        from app.core.permissions import PERMISSION_CODES, normalize_permissions
+
+        position = self.position
+        if position is None or not position.is_active:
+            return []
+        if position.grants_all:
+            return sorted(PERMISSION_CODES)
+        return normalize_permissions(position.permissions)
 
 
 class RefreshToken(Base):
@@ -635,12 +652,30 @@ class ContractReview(Base):
     risk_score: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
     risk_level: Mapped[str] = mapped_column(String(20), nullable=False, default="LOW")
     total_findings: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
-    contract_text: Mapped[str] = mapped_column(Text, nullable=False)
-    result: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    contract_text: Mapped[str] = mapped_column(EncryptedText, nullable=False)
+    result: Mapped[dict] = mapped_column(EncryptedJSONB, nullable=False, default=dict)
     status: Mapped[str] = mapped_column(String(30), nullable=False, default="OPEN")
     redline_artifact_id: Mapped[str | None] = mapped_column(String(64))
     redline_storage_key: Mapped[str | None] = mapped_column(Text)
     redline_filename: Mapped[str | None] = mapped_column(String(255))
+    # The uploaded file itself (sealed on disk) and its form -- layout, styles, positions --
+    # recorded before it was parsed, so accepted revisions can be written back into it
+    # without breaking it. Absent for a contract pasted into chat.
+    original_storage_key: Mapped[str | None] = mapped_column(Text)
+    original_filename: Mapped[str | None] = mapped_column(String(255))
+    original_format: Mapped[str | None] = mapped_column(String(10))
+    form_snapshot: Mapped[dict | None] = mapped_column(EncryptedJSONB)
+    # The latest file with the accepted revisions written in, and what was written where.
+    revised_storage_key: Mapped[str | None] = mapped_column(Text)
+    revised_filename: Mapped[str | None] = mapped_column(String(255))
+    revision_report: Mapped[dict | None] = mapped_column(EncryptedJSONB)
+    revised_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    # The review this one is the next round of: its revised file came back to be reviewed
+    # again, and was checked against what that review found. SET NULL: deleting an earlier
+    # round must not take the later ones with it.
+    parent_review_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("contract_reviews.id", ondelete="SET NULL")
+    )
     created_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now()
     )
@@ -1102,7 +1137,9 @@ class ChatMessage(Base):
         nullable=False,
     )
     sender: Mapped[str] = mapped_column(String(20), nullable=False)
-    content: Mapped[str] = mapped_column(Text, nullable=False)
+    # Sealed for every agent: a column cannot tell a Legal message from another, and HR
+    # chat carries salaries.
+    content: Mapped[str] = mapped_column(EncryptedText, nullable=False)
     citations: Mapped[dict] = mapped_column(JSONB, default=list)
     tools_executed: Mapped[dict] = mapped_column(JSONB, default=list)
     attachments: Mapped[dict] = mapped_column(JSONB, default=list)

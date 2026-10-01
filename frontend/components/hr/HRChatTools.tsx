@@ -175,6 +175,20 @@ function formatDate(value: unknown) {
   return Number.isNaN(parsed.getTime()) ? String(value) : parsed.toLocaleDateString("vi-VN");
 }
 
+const LEAVE_STATUS_LABEL: Record<string, string> = {
+  WAITING: "Chờ duyệt",
+  APPROVED: "Đã duyệt",
+  REJECTED: "Bị từ chối",
+  CANCELLED: "Đã rút",
+};
+
+const LEAVE_STATUS_CLASS: Record<string, string> = {
+  WAITING: "waiting",
+  APPROVED: "approved",
+  REJECTED: "rejected",
+  CANCELLED: "rejected",
+};
+
 function ApprovalList({ items }: { items: AnyRecord[] }) {
   const [rows, setRows] = useState(items);
   const [acting, setActing] = useState<string | null>(null);
@@ -440,6 +454,45 @@ export function HRMessageCard({ attachment }: { attachment: ChatAttachment }) {
         <div className="hr-onboarding-summary">
           <strong>{display(payload.employee_name)}</strong>
           <span>{display(payload.task_count, "0")} task · Bắt đầu {formatDate(payload.start_date)}</span>
+        </div>
+      </section>
+    );
+  }
+  if (type === "LEAVE_CALENDAR" || type === "LEAVE_REQUESTS") {
+    const items = (payload.items || []) as AnyRecord[];
+    const isCalendar = type === "LEAVE_CALENDAR";
+    const showNames = isCalendar || payload.whose === "TEAM";
+    const period = payload.start_date === payload.end_date
+      ? formatDate(payload.start_date)
+      : `${formatDate(payload.start_date)} – ${formatDate(payload.end_date)}`;
+    return (
+      <section className="hr-message-card">
+        <header>
+          <CalendarDays size={17} />
+          <strong>{isCalendar ? `Lịch nghỉ ${period}` : showNames ? "Đơn nghỉ của nhân viên" : "Đơn nghỉ của tôi"}</strong>
+          <span>
+            {isCalendar ? `${display(payload.on_leave_count, "0")} người nghỉ` : `${display(payload.total_count, "0")} đơn`} · {display(payload.scope)}
+          </span>
+        </header>
+        <div className="hr-card-list">
+          {items.length === 0 && <p className="hr-card-empty">Không có đơn nghỉ trong phạm vi được phép.</p>}
+          {items.map((item) => {
+            const employee = (item.employee || {}) as AnyRecord;
+            const status = String(item.status || "");
+            return (
+              <div className="hr-contract-row" key={String(item.id)}>
+                <div>
+                  <strong>{showNames ? display(employee.name) : `${formatDate(item.start_date)} – ${formatDate(item.end_date)}`}</strong>
+                  <span>{showNames ? `${formatDate(item.start_date)} – ${formatDate(item.end_date)}` : display(item.reason, "")}</span>
+                </div>
+                <div><small>Số ngày</small><strong>{display(item.requested_days, "?")}</strong></div>
+                <div>
+                  <small>Trạng thái</small>
+                  <span className={`hr-card-status ${LEAVE_STATUS_CLASS[status] || "waiting"}`}>{LEAVE_STATUS_LABEL[status] || status}</span>
+                </div>
+              </div>
+            );
+          })}
         </div>
       </section>
     );

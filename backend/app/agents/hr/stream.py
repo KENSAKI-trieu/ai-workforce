@@ -55,6 +55,7 @@ def stream_hr_chat_events(
         and not leave_cancel_request
         and _is_leave_draft_continuation(message, leave_draft)
     )
+    draft_turn_read_by_model = False
     if leave_draft:
         # The keyword rules above only recognise dates, weekday words and four fixed
         # cancel phrases. The router reads the sentence instead, and their answer is
@@ -73,47 +74,57 @@ def stream_hr_chat_events(
         # Cancelling is the outcome that writes nothing, so either reading of it wins.
         leave_cancel_request = leave_cancel_request or draft_turn.turn == "CANCEL"
         leave_continuation = not leave_cancel_request and draft_turn.turn == "CONTINUE"
+        draft_turn_read_by_model = draft_turn.source == "llm"
     stateful_leave_action = leave_cancel_request or leave_continuation
     if stateful_leave_action:
         detailed_intent = "ACTION_LEAVE_REQUEST"
 
-    classification = classify_hr_request(
-        message,
-        detailed_intent=detailed_intent,
-        on_usage=record_usage,
-        prompts=prompt_overlay,
-    )
+    if stateful_leave_action and draft_turn_read_by_model:
+        # The draft router read this message next to the draft it answers, and it had
+        # UNRELATED for a question. The general router sees only the bare sentence --
+        # "Lý do là đi khám bệnh", "Ngày 4/1/2027" -- and files it as a question, so
+        # letting it overrule CONTINUE meant no draft could be finished across turns.
+        request_kind = "ACTION"
+        routed_intent = detailed_intent
+    else:
+        classification = classify_hr_request(
+            message,
+            detailed_intent=detailed_intent,
+            on_usage=record_usage,
+            prompts=prompt_overlay,
+        )
 
-    # A slot-filling turn stays an action, but the router still gets to say that this
-    # particular turn is a question. Cancelling a draft is never ambiguous, so only a
-    # continuation may be reinterpreted this way.
-    if (
-        leave_continuation
-        and classification.source == "llm"
-        and classification.kind == "QUESTION"
-        and classification.intent is not None
-        and classification.intent not in ACTION_INTENTS
-    ):
-        stateful_leave_action = False
+        # Only a keyword reading of the draft reaches here as a continuation. Those
+        # rules take any date-like token for an answer, so the router still gets to say
+        # this turn is a question. Cancelling is never ambiguous and is not reopened.
+        if (
+            leave_continuation
+            and classification.source == "llm"
+            and classification.kind == "QUESTION"
+            and classification.intent is not None
+            and classification.intent not in ACTION_INTENTS
+        ):
+            stateful_leave_action = False
 
-    request_kind = "ACTION" if stateful_leave_action else classification.kind
+        request_kind = "ACTION" if stateful_leave_action else classification.kind
 
-    routed_intent = detailed_intent
-    if classification.source == "llm" and not stateful_leave_action:
-        # The router understands paraphrases the keyword rules cannot cover. Its label
-        # is already restricted to HR_INTENT_LABELS, and the branch it selects still
-        # enforces tool permissions and purpose limitation.
-        if classification.intent:
-            routed_intent = classification.intent
-        if request_kind == "QUESTION" and routed_intent in ACTION_INTENTS:
-            # A question about an operation must not execute that operation.
-            routed_intent = "POLICY_QUERY"
-        elif request_kind == "QUESTION" and routed_intent == "UNKNOWN":
-            # The HR agent was explicitly selected, so retrieve governed HR context.
-            routed_intent = "POLICY_QUERY"
-        elif request_kind == "ACTION" and routed_intent not in ACTION_INTENTS:
-            # The model cannot invent a tool name or arguments. Unknown actions fail closed.
-            routed_intent = "UNKNOWN"
+        routed_intent = detailed_intent
+        if classification.source == "llm" and not stateful_leave_action:
+            # The router understands paraphrases the keyword rules cannot cover. Its
+            # label is already restricted to HR_INTENT_LABELS, and the branch it selects
+            # still enforces tool permissions and purpose limitation.
+            if classification.intent:
+                routed_intent = classification.intent
+            if request_kind == "QUESTION" and routed_intent in ACTION_INTENTS:
+                # A question about an operation must not execute that operation.
+                routed_intent = "POLICY_QUERY"
+            elif request_kind == "QUESTION" and routed_intent == "UNKNOWN":
+                # The HR agent was explicitly selected, so retrieve governed HR context.
+                routed_intent = "POLICY_QUERY"
+            elif request_kind == "ACTION" and routed_intent not in ACTION_INTENTS:
+                # The model cannot invent a tool name or arguments. Unknown actions
+                # fail closed.
+                routed_intent = "UNKNOWN"
 
     yield {"event": "status", "phase": "SEARCHING"}
     response = _execute_agent_chat_core(

@@ -581,6 +581,148 @@ def serialize_leave_request(item: LeaveRequest) -> dict[str, Any]:
     }
 
 
+LEAVE_VIEW_PERMISSION = "hr.leave.view"
+
+
+def leave_scope(db: Session, actor: User) -> tuple[set[uuid.UUID], str]:
+    """Whose leave requests ``actor`` may read, and the scope label.
+
+    `/hr/leave-requests` and `/hr/calendar-events` filter by reach alone. The profile path
+    asks for `hr.leave.view` before it shows anyone else's leave, so the chat follows that
+    rule: without the grant, the requester sees their own requests and nobody else's.
+    """
+    if has_permission(db, actor, LEAVE_VIEW_PERMISSION):
+        return set(authorized_employee_ids(db, actor)), hr_scope_label(actor)
+    return {actor.id}, "SELF"
+
+
+def list_leave_requests_in_scope(
+    db: Session,
+    actor: User,
+    *,
+    employee_ids: set[uuid.UUID],
+    statuses: set[str] | None = None,
+    start_date: date | None = None,
+    end_date: date | None = None,
+    departments: tuple[str, ...] = (),
+    limit: int = 20,
+) -> dict[str, Any]:
+    """Leave requests of ``employee_ids`` overlapping the period, newest first.
+
+    ``employee_ids`` must already be narrowed to what ``actor`` may read; this only
+    filters further. Another person's reason for leave stays out of the result -- it can
+    be health or family information that the approver has, and a colleague listing who is
+    off today does not.
+    """
+    if not employee_ids:
+        return {"items": [], "total_count": 0}
+    query = db.query(LeaveRequest).join(User, User.id == LeaveRequest.employee_id).filter(
+        LeaveRequest.tenant_id == actor.tenant_id,
+        LeaveRequest.employee_id.in_(employee_ids),
+    )
+    if statuses:
+        query = query.filter(LeaveRequest.status.in_(statuses))
+    if start_date:
+        query = query.filter(LeaveRequest.end_date >= start_date)
+    if end_date:
+        query = query.filter(LeaveRequest.start_date <= end_date)
+    if departments:
+        query = query.filter(User.department.in_(departments))
+    total_count = query.count()
+    rows = query.order_by(
+        LeaveRequest.start_date.desc(), LeaveRequest.created_at.desc()
+    ).limit(limit).all()
+    items = []
+    for row in rows:
+        item = serialize_leave_request(row)
+        if row.employee_id != actor.id:
+            item.pop("reason", None)
+            item.pop("decision_comment", None)
+        items.append(item)
+    return {"items": items, "total_count": total_count}
+
+
+def withdraw_leave_request(
+    db: Session, user: User, leave_request_id: uuid.UUID
+) -> LeaveRequest:
+    """Withdraw the requester's own leave request while it still awaits approval.
+
+    An approved request is not withdrawn here: its days are already spent and it is on the
+    calendar, so undoing it is a decision for the approver, not a self-service action.
+    """
+    record = db.query(LeaveRequest).filter(
+        LeaveRequest.tenant_id == user.tenant_id,
+        LeaveRequest.id == leave_request_id,
+        LeaveRequest.employee_id == user.id,
+    ).with_for_update().first()
+    if not record:
+        raise HTTPException(status_code=404, detail="Leave request not found")
+    if record.status != "WAITING":
+        raise HTTPException(status_code=409, detail="Only a leave request awaiting approval can be withdrawn")
+
+    requested_days = Decimal(record.requested_days)
+    if record.leave_type in LEAVE_TYPES_WITH_BALANCE:
+        balance = get_or_create_leave_balance(db, user, record.start_date.year, lock=True)
+        balance.reserved_days = max(
+            Decimal("0.00"), Decimal(balance.reserved_days) - requested_days
+        )
+        db.add(LeaveLedger(
+            id=uuid.uuid4(),
+            tenant_id=user.tenant_id,
+            balance_id=balance.id,
+            leave_request_id=record.id,
+            entry_type="RELEASE",
+            amount_days=requested_days,
+            balance_after=(
+                Decimal(balance.allocated_days)
+                + Decimal(balance.carried_over_days)
+                - Decimal(balance.used_days)
+                - Decimal(balance.reserved_days)
+            ),
+            note="Withdrawn by employee",
+            actor_user_id=user.id,
+        ))
+        _sync_legacy_balance(db, user, balance)
+
+    record.status = "CANCELLED"
+    record.decided_by_id = user.id
+    record.decided_at = datetime.now(timezone.utc)
+    approval = db.get(WorkflowApproval, record.approval_id) if record.approval_id else None
+    if approval and approval.status == "WAITING":
+        # The approver's card must stop offering a decision on a request that is gone.
+        approval.status = "CANCELLED"
+        approval.workflow.status = "CANCELLED"
+        if approval.approver:
+            create_notification(
+                db,
+                user=approval.approver,
+                event_type="APPROVAL_DECIDED",
+                title="Đơn nghỉ phép đã được rút",
+                message=(
+                    f"{user.full_name} đã rút đơn nghỉ từ {record.start_date:%d/%m/%Y} "
+                    f"đến {record.end_date:%d/%m/%Y}"
+                ),
+                entity_type="LEAVE_REQUEST",
+                entity_id=str(record.id),
+                dedup_key=f"leave-withdrawn:{record.id}",
+            )
+    add_audit_event(
+        db,
+        tenant_id=user.tenant_id,
+        actor_user=user,
+        agent_role="HR",
+        action="hr.leave_request.withdrawn",
+        tool_name="cancel_leave_request",
+        resource_type="LEAVE_REQUEST",
+        resource_id=str(record.id),
+        workflow_id=record.workflow_id,
+        before_data={"status": "WAITING"},
+        after_data={"status": "CANCELLED", "released_days": float(requested_days)},
+    )
+    db.commit()
+    return record
+
+
 def serialize_contract(contract: EmploymentContract) -> dict[str, Any]:
     return {
         "id": str(contract.id),

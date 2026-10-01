@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 import re
-from datetime import date
+import uuid
+from datetime import date, timedelta
 from typing import Dict, Any
 
 from fastapi import HTTPException
@@ -14,18 +15,22 @@ from app.domains.hr.hr_service import (
     can_approve_hr_request,
     create_onboarding_case,
     hr_scope_label,
+    leave_scope,
+    list_leave_requests_in_scope,
     query_leave_balance,
     request_leave,
+    withdraw_leave_request,
 )
 from app.domains.hr.hr_employee_tools import (
     list_contract_status_summaries,
+    list_tenant_departments,
     query_company_users_sql,
 )
 from app.domains.platform.position_service import supervisory_role_names
 from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.domains.platform.audit_service import log_audit_action
 from app.plugins.resolver import resolve_prompt_overlay
-from app.agents.hr.llm_flow import UsageReporter
+from app.agents.hr.llm_flow import LookupArguments, UsageReporter, extract_lookup_arguments
 from app.agents.access import _can_use_tool, _require_tool
 from app.agents.hr.intent import (
     _classify_hr_intent,
@@ -65,6 +70,57 @@ PENDING_APPROVAL_SCAN_LIMIT = 1000
 
 
 PENDING_APPROVAL_CARD_SIZE = 20
+
+
+# A "who is off" question about a longer stretch than this is answered for its first
+# LEAVE_CALENDAR_MAX_DAYS days, so one sentence cannot pull a year of everybody's leave.
+LEAVE_CALENDAR_MAX_DAYS = 62
+
+
+LEAVE_STATUS_LABELS = {
+    "WAITING": "Chờ duyệt",
+    "APPROVED": "Đã duyệt",
+    "REJECTED": "Bị từ chối",
+    "CANCELLED": "Đã rút",
+}
+
+
+def _read_lookup_arguments(
+    db: Session,
+    user: User,
+    *,
+    role_code_upper: str,
+    message: str,
+    intent: str,
+    on_llm_usage: UsageReporter | None,
+) -> LookupArguments | None:
+    """The lookup's arguments as the model read them; None leaves the keyword rules on."""
+    reference_date, timezone_name = _leave_date_context(db, user)
+    return extract_lookup_arguments(
+        message,
+        intent=intent,
+        departments=list_tenant_departments(db, actor=user),
+        reference_date=reference_date,
+        timezone_name=timezone_name,
+        on_usage=on_llm_usage or _hr_llm_usage_recorder(db, user),
+        prompts=resolve_prompt_overlay(db, user.tenant_id, role_code_upper),
+    )
+
+
+def _period_label(start: date, end: date, today: date) -> str:
+    if start == end:
+        prefix = "hôm nay" if start == today else "ngày"
+        return f"{prefix} **{start:%d/%m/%Y}**"
+    return f"từ **{start:%d/%m/%Y}** đến **{end:%d/%m/%Y}**"
+
+
+def _leave_request_line(item: dict[str, Any], *, with_name: bool) -> str:
+    start = date.fromisoformat(item["start_date"])
+    end = date.fromisoformat(item["end_date"])
+    period = f"{start:%d/%m/%Y}" if start == end else f"{start:%d/%m/%Y} – {end:%d/%m/%Y}"
+    who = f"**{item['employee']['name']}** · " if with_name else ""
+    status = LEAVE_STATUS_LABELS.get(item["status"], item["status"])
+    return f"- {who}{period} ({item['requested_days']:g} ngày): **{status}**"
 
 
 def run_hr_turn(
@@ -339,9 +395,19 @@ def run_hr_turn(
         _require_tool(agent, "query_company_users_sql")
         managers_only = hr_intent == "MANAGER_DIRECTORY"
         entity_label = "quản lý" if managers_only else "nhân viên"
-        departments, named_a_department = _resolve_requested_departments(
-            db, user, message
+        arguments = _read_lookup_arguments(
+            db, user, role_code_upper=role_code_upper, message=message,
+            intent=hr_intent, on_llm_usage=on_llm_usage,
         )
+        if arguments is not None:
+            departments = arguments.departments
+            named_a_department = (
+                bool(departments) or arguments.unmatched_department is not None
+            )
+        else:
+            departments, named_a_department = _resolve_requested_departments(
+                db, user, message
+            )
         # Listing everybody under a heading that says "phòng kế toán" is worse than
         # answering nothing, so an unrecognised department stops here.
         if named_a_department and not departments:
@@ -393,7 +459,16 @@ def run_hr_turn(
 
     if hr_intent == "EMPLOYEE_SEARCH":
         _require_tool(agent, "query_company_users_sql")
-        search_term = _extract_employee_search_term(message)
+        arguments = _read_lookup_arguments(
+            db, user, role_code_upper=role_code_upper, message=message,
+            intent=hr_intent, on_llm_usage=on_llm_usage,
+        )
+        # The keyword extractor only finds a name after a fixed opening phrase, so
+        # "Phạm Văn Tech là ai?" searched for nobody. It stays as the fallback only.
+        search_term = (
+            (arguments.person or "") if arguments is not None
+            else _extract_employee_search_term(message)
+        )
         if not search_term:
             response_data["reply"] = "Vui lòng cung cấp tên hoặc email nhân viên cần tra cứu."
             return response_data
@@ -661,17 +736,245 @@ def run_hr_turn(
         response_data["hr_card"] = {"type": "LEAVE_BALANCE", "balance": bal}
         return response_data
 
-    policy_notice = ""
     if hr_intent == "EMPLOYEE_LEAVE_STATUS_COUNT":
-        # There is no day-by-day leave calendar tool yet. Say so, then still search the
-        # governed HR knowledge base rather than ending the turn with nothing: both the
-        # keyword rules and the router can land here, and neither has an alternative.
-        policy_notice = (
-            "HR Agent chưa có tool lịch nghỉ theo ngày nên chưa thể đếm chính xác số "
-            "nhân viên đang nghỉ. Dưới đây là thông tin liên quan trong kho tài liệu HR:"
-            "\n\n"
+        _require_tool(agent, "list_leave_requests")
+        arguments = _read_lookup_arguments(
+            db, user, role_code_upper=role_code_upper, message=message,
+            intent=hr_intent, on_llm_usage=on_llm_usage,
         )
-        hr_intent = "POLICY_QUERY"
+        today, _timezone = _leave_date_context(db, user)
+        start = (
+            date.fromisoformat(arguments.start_date)
+            if arguments and arguments.start_date else today
+        )
+        end = (
+            date.fromisoformat(arguments.end_date)
+            if arguments and arguments.end_date else start
+        )
+        end = min(end, start + timedelta(days=LEAVE_CALENDAR_MAX_DAYS - 1))
+        departments = arguments.departments if arguments else ()
+        if arguments and arguments.unmatched_department and not departments:
+            response_data["reply"] = _unknown_department_reply(db, user)
+            return response_data
+        visible, scope = leave_scope(db, user)
+        result = list_leave_requests_in_scope(
+            db,
+            user,
+            employee_ids=visible,
+            statuses={"APPROVED", "WAITING"},
+            start_date=start,
+            end_date=end,
+            departments=departments,
+            limit=100,
+        )
+        items = result["items"]
+        on_leave = {item["employee"]["id"] for item in items if item["status"] == "APPROVED"}
+        waiting = [item for item in items if item["status"] == "WAITING"]
+        tool_input = {
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "departments": list(departments),
+            "scope": scope,
+        }
+        response_data["tools_executed"].append({
+            "tool_name": "list_leave_requests",
+            "input": tool_input,
+            "result_count": len(items),
+        })
+        log_audit_action(
+            db, user.tenant_id, "HR", "list_leave_requests", tool_input,
+            {"count": result["total_count"]},
+        )
+        department_clause = (
+            f" ở phòng {_department_filter_label(db, user, departments)}" if departments else ""
+        )
+        count_prefix = "ít nhất " if result["total_count"] > len(items) else ""
+        period = _period_label(start, end, today)
+        reply = (
+            f"{period[0].upper()}{period[1:]}{department_clause} có "
+            f"{count_prefix}**{len(on_leave)} người nghỉ** (đơn đã duyệt)"
+        )
+        if waiting:
+            reply += f" và **{len(waiting)} đơn** đang chờ duyệt"
+        reply += f", trong phạm vi **{scope}** bạn được phép xem."
+        if scope == "SELF":
+            reply += (
+                " Chức vụ của bạn chưa được cấp quyền xem dữ liệu nghỉ phép của người "
+                "khác, nên kết quả chỉ gồm đơn của chính bạn."
+            )
+        response_data["reply"] = reply
+        response_data["hr_card"] = {
+            "type": "LEAVE_CALENDAR",
+            "scope": scope,
+            "start_date": start.isoformat(),
+            "end_date": end.isoformat(),
+            "department_filter": list(departments),
+            "on_leave_count": len(on_leave),
+            "total_count": result["total_count"],
+            "items": items,
+        }
+        return response_data
+
+    if hr_intent == "LEAVE_REQUEST_STATUS":
+        _require_tool(agent, "list_leave_requests")
+        arguments = _read_lookup_arguments(
+            db, user, role_code_upper=role_code_upper, message=message,
+            intent=hr_intent, on_llm_usage=on_llm_usage,
+        )
+        whose = (arguments.whose if arguments else None) or "SELF"
+        team = whose == "TEAM"
+        departments = arguments.departments if arguments and team else ()
+        if team:
+            visible, scope = leave_scope(db, user)
+            visible = visible - {user.id}
+            if not visible:
+                response_data["reply"] = (
+                    "Chức vụ của bạn chưa được cấp quyền xem đơn nghỉ của người khác."
+                    if scope == "SELF" else
+                    "Hiện chưa có nhân viên nào thuộc phạm vi quản lý của bạn."
+                )
+                return response_data
+        else:
+            visible, scope = {user.id}, "SELF"
+        start = (
+            date.fromisoformat(arguments.start_date)
+            if arguments and arguments.start_date else None
+        )
+        end = (
+            date.fromisoformat(arguments.end_date)
+            if arguments and arguments.end_date else None
+        )
+        result = list_leave_requests_in_scope(
+            db,
+            user,
+            employee_ids=visible,
+            start_date=start,
+            end_date=end,
+            departments=departments,
+            limit=10,
+        )
+        items = result["items"]
+        tool_input = {
+            "whose": whose,
+            "start_date": start.isoformat() if start else None,
+            "end_date": end.isoformat() if end else None,
+            "departments": list(departments),
+            "scope": scope,
+        }
+        response_data["tools_executed"].append({
+            "tool_name": "list_leave_requests",
+            "input": tool_input,
+            "result_count": len(items),
+        })
+        log_audit_action(
+            db, user.tenant_id, "HR", "list_leave_requests", tool_input,
+            {"count": result["total_count"]},
+        )
+        if not items:
+            response_data["reply"] = (
+                "Không có đơn nghỉ nào của nhân viên trong phạm vi bạn quản lý."
+                if team else "Bạn chưa có đơn nghỉ nào."
+            )
+        else:
+            shown = (
+                f" (hiển thị {len(items)} đơn gần nhất)"
+                if result["total_count"] > len(items) else ""
+            )
+            heading = (
+                f"Có **{result['total_count']} đơn nghỉ** của nhân viên trong phạm vi "
+                f"**{scope}**{shown}:"
+                if team else f"Bạn có **{result['total_count']} đơn nghỉ**{shown}:"
+            )
+            response_data["reply"] = heading + "\n" + "\n".join(
+                _leave_request_line(item, with_name=team) for item in items
+            )
+        response_data["hr_card"] = {
+            "type": "LEAVE_REQUESTS",
+            "whose": whose,
+            "scope": scope,
+            "total_count": result["total_count"],
+            "items": items,
+        }
+        return response_data
+
+    if hr_intent == "ACTION_LEAVE_CANCEL":
+        _require_tool(agent, "cancel_leave_request")
+        arguments = _read_lookup_arguments(
+            db, user, role_code_upper=role_code_upper, message=message,
+            intent=hr_intent, on_llm_usage=on_llm_usage,
+        )
+        today, _timezone = _leave_date_context(db, user)
+        # Without a date, the candidates are the requests that have not ended yet.
+        start = (
+            date.fromisoformat(arguments.start_date)
+            if arguments and arguments.start_date else today
+        )
+        end = (
+            date.fromisoformat(arguments.end_date)
+            if arguments and arguments.end_date else None
+        )
+        own = list_leave_requests_in_scope(
+            db,
+            user,
+            employee_ids={user.id},
+            statuses={"WAITING", "APPROVED"},
+            start_date=start,
+            end_date=end,
+            limit=20,
+        )["items"]
+        waiting = [item for item in own if item["status"] == "WAITING"]
+        if not waiting:
+            approved = [item for item in own if item["status"] == "APPROVED"]
+            response_data["reply"] = (
+                "Đơn nghỉ này đã được duyệt nên tôi không tự rút được: ngày phép đã được "
+                "trừ và đã lên lịch. Vui lòng liên hệ người duyệt hoặc HR để hủy."
+                if approved else
+                "Tôi không tìm thấy đơn nghỉ nào của bạn đang chờ duyệt để rút."
+            )
+            if approved:
+                response_data["hr_card"] = {
+                    "type": "LEAVE_REQUESTS", "whose": "SELF", "scope": "SELF",
+                    "total_count": len(approved), "items": approved,
+                }
+            return response_data
+        if len(waiting) > 1:
+            # Withdrawing is not undone by asking again, so an ambiguous turn asks
+            # which request it means instead of picking one.
+            response_data["reply"] = (
+                f"Bạn có **{len(waiting)} đơn** đang chờ duyệt. Bạn muốn rút đơn nào? "
+                "Hãy cho tôi biết ngày nghỉ của đơn đó.\n"
+                + "\n".join(_leave_request_line(item, with_name=False) for item in waiting)
+            )
+            response_data["hr_card"] = {
+                "type": "LEAVE_REQUESTS", "whose": "SELF", "scope": "SELF",
+                "total_count": len(waiting), "items": waiting,
+            }
+            return response_data
+
+        target = waiting[0]
+        try:
+            record = withdraw_leave_request(db, user, uuid.UUID(target["id"]))
+        except HTTPException as exc:
+            response_data["reply"] = (
+                "Đơn này vừa được xử lý nên không rút được nữa."
+                if exc.status_code == 409 else "Không tìm thấy đơn nghỉ cần rút."
+            )
+            return response_data
+        response_data["tools_executed"].append({
+            "tool_name": "cancel_leave_request",
+            "input": {"leave_request_id": target["id"]},
+            "result": {"status": record.status},
+        })
+        response_data["reply"] = (
+            f"Đã rút đơn nghỉ {_period_label(record.start_date, record.end_date, today)} "
+            f"({float(record.requested_days):g} ngày). Số ngày phép giữ chỗ cho đơn này đã "
+            "được trả lại và người duyệt đã được báo."
+        )
+        response_data["hr_card"] = {
+            "type": "LEAVE_REQUESTS", "whose": "SELF", "scope": "SELF",
+            "total_count": 1, "items": [{**target, "status": record.status}],
+        }
+        return response_data
 
     if hr_intent == "UNKNOWN":
         response_data["reply"] = (
@@ -730,7 +1033,6 @@ def run_hr_turn(
                 if policy_dates else ""
             )
             response_data["reply"] = (
-                f"{policy_notice}"
                 f"Dựa trên quy định HR của công ty:\n\n"
                 f"{top_result['content']}\n\n"
                 f"{top_result['citation_tag']}"
@@ -738,7 +1040,6 @@ def run_hr_turn(
             )
         else:
             response_data["reply"] = (
-                f"{policy_notice}"
                 "Tôi chưa tìm thấy chính sách còn hiệu lực và phù hợp trong kho tài liệu HR. "
                 "Tôi sẽ không tự suy diễn quy định; vui lòng liên hệ HR để được xác nhận."
             )

@@ -207,24 +207,22 @@ def test_hr_unknown_query_does_not_fall_back_to_policy(
     assert "chưa xác định rõ" in unknown.json()["reply"].lower()
 
 
-def test_hr_unsupported_leave_statistics_states_the_gap_then_still_searches(
+def test_hr_leave_statistics_are_answered_from_the_leave_requests(
     client,
     ceo_token_headers,
 ):
-    """There is no day-by-day leave calendar tool, but the question is still answerable.
-
-    Both the keyword rules and the LLM router can land on this intent, and neither has
-    an alternative label to fall back to, so the branch must not end the turn empty.
-    """
-    unsupported = client.post(
+    """This used to admit there was no leave calendar and fall back to policy search."""
+    response = client.post(
         "/api/v1/agent/chat",
         json={"agent_role": "HR", "message": "có bao nhiêu nhân viên đang nghỉ phép"},
         headers=ceo_token_headers,
     )
-    assert unsupported.status_code == 200, unsupported.text
-    data = unsupported.json()
-    assert "chưa có tool" in data["reply"].lower()
-    assert [item["tool_name"] for item in data["tools_executed"]] == ["rag_search"]
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert [item["tool_name"] for item in data["tools_executed"]] == ["list_leave_requests"]
+    assert data["hr_card"]["type"] == "LEAVE_CALENDAR"
+    assert data["hr_card"]["scope"] == "COMPANY"
+    assert "người nghỉ" in data["reply"]
 
 
 def test_hr_export_intent_requires_scope_and_format(
@@ -486,3 +484,22 @@ def test_hr_leave_balance_refuses_a_possessive_question_about_a_colleague(
 
     assert data["tools_executed"] == []
     assert "chính bạn" in data["reply"]
+
+
+def test_version_nine_adds_only_the_leave_tools_and_keeps_operator_choices():
+    """A row at version 8 carries an operator's choices: the bump adds its two tools and
+    nothing else, and an explicit denial of one of them still wins."""
+    class _Agent:
+        role_code = "HR"
+        configuration_version = 8
+        tools_access = ["query_leave_balance"]
+        allowed_actions = ["query_leave_balance"]
+        disallowed_actions = ["cancel_leave_request"]
+
+    agent = _Agent()
+    _repair_hr_agent_capabilities(agent)
+
+    assert agent.tools_access == ["list_leave_requests", "query_leave_balance"]
+    assert "cancel_leave_request" not in agent.allowed_actions
+    assert agent.disallowed_actions == ["cancel_leave_request"]
+    assert agent.configuration_version == HR_CONFIGURATION_VERSION

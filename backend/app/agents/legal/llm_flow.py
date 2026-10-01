@@ -240,6 +240,22 @@ def _evidence_ref(index: int) -> str:
     return f"S{index + 1}"
 
 
+def _evidence_excerpt(item: Mapping[str, Any]) -> str:
+    """The excerpt's text cut to the per-excerpt budget, around the part search matched.
+
+    A parent_child result carries a whole parent section; cutting it from the top would
+    drop the passage the search found whenever that sits past the budget.
+    """
+    content = str(item.get("content") or "")
+    limit = EVIDENCE_CHARS_PER_EXCERPT
+    span = item.get("matched_span")
+    if len(content) <= limit or not span:
+        return content[:limit]
+    start, end = int(span[0]), int(span[1])
+    start = max(0, min(start - max(limit - (end - start), 0) // 2, len(content) - limit))
+    return content[start:start + limit]
+
+
 def answer_from_legal_evidence(
     question: str,
     evidence: list[dict[str, Any]],
@@ -267,10 +283,13 @@ def answer_from_legal_evidence(
             "ref": _evidence_ref(index),
             "document": item.get("document_title") or item.get("document_name"),
             "section": item.get("section_title"),
+            # Where the excerpt sits, e.g. "Chương II > Điều 4", which the section title
+            # alone does not say.
+            "heading_path": " > ".join(item.get("header_path") or []) or None,
             "version": item.get("version"),
             "effective_date": item.get("effective_date"),
             "expiration_date": item.get("expiration_date"),
-            "content": str(item.get("content") or "")[:EVIDENCE_CHARS_PER_EXCERPT],
+            "content": _evidence_excerpt(item),
         }
         for index, item in enumerate(evidence)
     ]

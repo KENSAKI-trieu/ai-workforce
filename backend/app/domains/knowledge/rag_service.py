@@ -239,6 +239,87 @@ def _rank_sparse_bm25(
     return sorted(scores, key=lambda item: item[1], reverse=True)[:limit]
 
 
+def _with_parent_context(
+    results: list[dict[str, Any]],
+    chunk_by_id: dict[uuid.UUID, DocumentChunk],
+) -> list[dict[str, Any]]:
+    """Hand a parent_child match to the reader as its parent section, once per parent.
+
+    Children are small so the search can match them precisely; the parent is the text a
+    reader needs to make sense of the match. Several children of one parent keep only the
+    best-scoring one, so the same section is not sent twice. The child's position inside
+    the parent stays in ``matched_span`` for a caller that must cut the parent down.
+    """
+    families: dict[tuple[Any, ...], list[DocumentChunk]] | None = None
+    seen_parents: set[tuple[Any, ...]] = set()
+    expanded_results: list[dict[str, Any]] = []
+    for item in results:
+        parent_index = item.get("parent_chunk_index")
+        chunk = chunk_by_id.get(uuid.UUID(item["id"]))
+        parent_content = (chunk.metadata_ or {}).get("parent_content") if chunk else None
+        if parent_index is None or not parent_content:
+            expanded_results.append(item)
+            continue
+        key = (item["document_id"], item["version"], parent_index)
+        if key in seen_parents:
+            continue
+        seen_parents.add(key)
+        if families is None:
+            families = {}
+            for candidate in chunk_by_id.values():
+                candidate_parent = (candidate.metadata_ or {}).get("parent_chunk_index")
+                if candidate_parent is None:
+                    continue
+                families.setdefault((
+                    candidate.document_id or candidate.document_name,
+                    candidate.version,
+                    candidate_parent,
+                ), []).append(candidate)
+        child_content = item["content"]
+        start = parent_content.find(child_content.strip()[:80])
+        family = families.get(key, [])
+        starts = [c.page_start or c.page for c in family if (c.page_start or c.page) is not None]
+        ends = [
+            c.page_end or c.page_start or c.page
+            for c in family
+            if (c.page_end or c.page_start or c.page) is not None
+        ]
+        expanded_results.append({
+            **item,
+            "content": parent_content,
+            "matched_span": (
+                [start, min(start + len(child_content), len(parent_content))]
+                if start >= 0
+                else None
+            ),
+            "page_start": min(starts) if starts else item.get("page_start"),
+            "page_end": max(ends) if ends else item.get("page_end"),
+        })
+    return expanded_results
+
+
+def in_reading_order(results: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Reorder search results for a model to read: by document, each in its text order.
+
+    Search ranks by score, so two pieces of one article can arrive back to front with
+    another document between them. Documents keep the order of their best result, so
+    the strongest source still comes first.
+    """
+    by_document: dict[tuple[Any, Any], list[dict[str, Any]]] = {}
+    for item in results:
+        by_document.setdefault((item.get("document_id"), item.get("version")), []).append(item)
+    return [
+        item
+        for group in by_document.values()
+        for item in sorted(
+            group,
+            key=lambda entry: (
+                entry["chunk_index"] if entry.get("chunk_index") is not None else math.inf
+            ),
+        )
+    ]
+
+
 def user_search_scope(db: Session, user: Any) -> Dict[str, Any]:
     """How far a person's knowledge search reaches, from the permissions of their position.
 
@@ -449,13 +530,10 @@ def hybrid_search_documents(
     scored_chunks: list[dict[str, Any]] = []
     for chunk_id, rrf_score in rrf_scores.items():
         chunk = chunk_by_id[chunk_id]
+        chunk_metadata = chunk.metadata_ or {}
         section_title = (
             chunk.section_title
-            or (
-                chunk.metadata_.get("section_title")
-                if chunk.metadata_
-                else None
-            )
+            or chunk_metadata.get("section_title")
             or f"Chunk {chunk.chunk_index}"
         )
         document_title = chunk.document_title or chunk.document_name
@@ -475,6 +553,10 @@ def hybrid_search_documents(
             "document_title": document_title,
             "document_name": chunk.document_name,
             "section_title": section_title,
+            "chunk_index": chunk.chunk_index,
+            "section_index": chunk_metadata.get("section_index"),
+            "header_path": chunk_metadata.get("header_path") or [],
+            "parent_chunk_index": chunk_metadata.get("parent_chunk_index"),
             "content": chunk.content,
             "version": chunk.version,
             "effective_date": (
@@ -505,7 +587,12 @@ def hybrid_search_documents(
         })
 
     scored_chunks.sort(key=lambda x: x["score"], reverse=True)
-    return rerank_chunks(query_text, scored_chunks[:30], top_k=top_k)
+    # Reranking scores the child a parent_child search matched, not its parent. Every
+    # candidate is kept through it because folding siblings into one parent can leave
+    # fewer than top_k results.
+    candidates = scored_chunks[:30]
+    reranked = rerank_chunks(query_text, candidates, top_k=len(candidates))
+    return _with_parent_context(reranked, chunk_by_id)[:top_k]
 
 
 def ingest_document(

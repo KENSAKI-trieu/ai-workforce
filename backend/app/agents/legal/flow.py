@@ -7,7 +7,11 @@ from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
-from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
+from app.domains.knowledge.rag_service import (
+    hybrid_search_documents,
+    in_reading_order,
+    user_search_scope,
+)
 from app.domains.platform.audit_service import log_audit_action
 from app.plugins.resolver import resolve_prompt_overlay
 from app.domains.legal.chat_contract_review import review_reply, run_chat_contract_review
@@ -319,14 +323,15 @@ def run_legal_turn(
     # so the model decides which, if any, answer it. The four hardcoded glossary
     # definitions this replaces answered any question containing "bồi thường" with
     # the same text, whatever was asked.
+    evidence = in_reading_order(search_results)
     grounded = answer_from_legal_evidence(
         message,
-        search_results,
+        evidence,
         on_usage=record_legal_usage,
         prompts=legal_prompt_overlay,
     )
     if grounded is not None and grounded.answerable:
-        used = [search_results[index] for index in grounded.used_evidence]
+        used = [evidence[index] for index in grounded.used_evidence]
         response_data["citations"] = used
         response_data["reply"] = (
             f"{grounded.answer}\n\n"

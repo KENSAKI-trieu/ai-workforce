@@ -13,6 +13,8 @@ from app.domains.knowledge.rag_service import (
     build_configured_chunks,
     chunk_document_content,
     _rank_sparse_bm25,
+    _with_parent_context,
+    in_reading_order,
 )
 from app.domains.knowledge.rag_chunking import clean_document_text, estimate_text_tokens
 from app.models.models import DocumentChunk, KnowledgeDocument
@@ -127,6 +129,67 @@ def test_parent_child_chunking_keeps_parent_context_on_children():
     assert all(chunk["chunking_mode"] == "parent_child" for chunk in chunks)
     assert all(chunk["parent_content"] for chunk in chunks)
     assert len({chunk["parent_chunk_index"] for chunk in chunks}) > 1
+
+
+def test_reading_order_groups_documents_and_follows_their_text():
+    ranked = [
+        {"document_id": "noi-quy", "version": "1.0", "chunk_index": 7},
+        {"document_id": "nghi-phep", "version": "1.0", "chunk_index": 2},
+        {"document_id": "noi-quy", "version": "1.0", "chunk_index": 3},
+        {"document_id": "noi-quy", "version": "1.0", "chunk_index": 4},
+    ]
+
+    ordered = in_reading_order(ranked)
+
+    assert [(item["document_id"], item["chunk_index"]) for item in ordered] == [
+        ("noi-quy", 3),
+        ("noi-quy", 4),
+        ("noi-quy", 7),
+        ("nghi-phep", 2),
+    ]
+
+
+def test_parent_child_matches_are_returned_once_as_their_parent():
+    import uuid
+
+    parent = "Điều 4. Thời giờ nghỉ ngơi. Nghỉ trưa 60 phút. Nghỉ phép năm 12 ngày."
+    children = ["Điều 4. Thời giờ nghỉ ngơi. Nghỉ trưa 60 phút.", "Nghỉ phép năm 12 ngày."]
+    chunk_by_id = {}
+    results = []
+    for index, (text, page) in enumerate(zip(children, (3, 4))):
+        chunk_id = uuid.uuid4()
+        chunk_by_id[chunk_id] = SimpleNamespace(
+            document_id="noi-quy",
+            document_name="NoiQuy.docx",
+            version="1.0",
+            page=page,
+            page_start=page,
+            page_end=page,
+            metadata_={"parent_chunk_index": 0, "parent_content": parent},
+        )
+        results.append({
+            "id": str(chunk_id),
+            "document_id": "noi-quy",
+            "version": "1.0",
+            "chunk_index": index,
+            "parent_chunk_index": 0,
+            "content": text,
+            "page_start": page,
+            "page_end": page,
+        })
+    standard = {"id": str(uuid.uuid4()), "document_id": "khac", "version": "1.0", "content": "x"}
+
+    # The second child scored best, so it stands for the parent.
+    expanded = _with_parent_context([results[1], standard, results[0]], chunk_by_id)
+
+    assert len(expanded) == 2
+    assert expanded[0]["id"] == results[1]["id"]
+    assert expanded[0]["content"] == parent
+    start, end = expanded[0]["matched_span"]
+    assert parent[start:end] == children[1]
+    # The parent spans both children's pages.
+    assert (expanded[0]["page_start"], expanded[0]["page_end"]) == (3, 4)
+    assert expanded[1] is standard
 
 
 def test_embedding_gpu_alias_uses_pytorch_cuda_device():

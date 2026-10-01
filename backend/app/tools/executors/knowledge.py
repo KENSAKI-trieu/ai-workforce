@@ -4,7 +4,11 @@ from __future__ import annotations
 
 from typing import Any
 
-from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
+from app.domains.knowledge.rag_service import (
+    hybrid_search_documents,
+    in_reading_order,
+    user_search_scope,
+)
 from app.tools.registry import ToolContext
 from app.tools.schemas import RAGSearchInput
 
@@ -12,7 +16,8 @@ from app.tools.schemas import RAGSearchInput
 def search_rag(context: ToolContext, request: RAGSearchInput) -> list[dict[str, Any]]:
     actor = context.actor
     agent = context.agent
-    return hybrid_search_documents(
+    # The result goes to a model, which reads it top to bottom.
+    return in_reading_order(hybrid_search_documents(
         db=context.db,
         tenant_id=actor.tenant_id,
         query_text=request.query,
@@ -23,4 +28,4 @@ def search_rag(context: ToolContext, request: RAGSearchInput) -> list[dict[str, 
         # had set for it -- the deterministic executors have always passed this.
         agent_access=(agent.knowledge_access or None) if agent else None,
         **user_search_scope(context.db, actor),
-    )
+    ))

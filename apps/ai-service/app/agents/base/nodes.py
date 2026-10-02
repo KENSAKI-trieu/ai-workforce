@@ -469,6 +469,23 @@ def _searched_documents(state: WorkforceAgentState) -> list[dict[str, Any]]:
     return documents
 
 
+def _tool_sources(state: WorkforceAgentState) -> set[str]:
+    """Names of the data tools that succeeded this turn, and the `source` each result gave."""
+    sources: set[str] = set()
+    for call in state.get("tool_calls") or []:
+        if call.get("status") != "SUCCESS" or call.get("name") == "rag_search":
+            continue
+        sources.add(str(call.get("name") or "").casefold())
+        result = call.get("result")
+        if isinstance(result, dict) and result.get("source"):
+            sources.add(str(result["source"]).casefold())
+    return {source for source in sources if len(source) >= 4}
+
+
+def _names_tool_source(citation: str, sources: set[str]) -> bool:
+    return len(citation) >= 3 and any(source in citation or citation in source for source in sources)
+
+
 def _used_non_document_tool(state: WorkforceAgentState) -> bool:
     """Whether the answer could rest on a tool's data -- a leave balance -- not a document."""
     return any(
@@ -521,8 +538,14 @@ def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     supplied = _supplied_citations(state)
     if _used_non_document_tool(state):
         # An answer from a tool's data needs no document behind it, but any document it
-        # does name must be one that was retrieved.
-        if supplied and not all(_citation_is_verified(citation, context) for citation in supplied):
+        # does name must be one that was retrieved. Citing the tool itself -- its name, or
+        # the `source` its result names, as the Finance tools do -- is citing data it
+        # really returned, and used to withhold every correctly sourced balance.
+        tool_sources = _tool_sources(state)
+        if supplied and not all(
+            _citation_is_verified(citation, context) or _names_tool_source(citation, tool_sources)
+            for citation in supplied
+        ):
             return _withhold_answer(state, "UNVERIFIED_CITATION")
         return {"execution_trace": _trace(state, "citation_verification")}
     if not context:

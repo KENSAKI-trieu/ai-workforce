@@ -237,6 +237,11 @@ _TEMPLATES = {
 }
 
 
+def _vn_date(iso: str) -> str:
+    """2026-07-29 -> 29/07/2026, as a letter to a Vietnamese customer writes it."""
+    return date.fromisoformat(iso).strftime("%d/%m/%Y")
+
+
 def draft_payment_reminder(
     db: Session, actor: User, party: FinParty, level: int, *, company_name: str, as_of: date
 ) -> WorkflowApproval:
@@ -255,7 +260,7 @@ def draft_payment_reminder(
     if pending is not None:
         raise DraftRefused(f"Đã có thư nhắc nợ cho {party.name} đang chờ duyệt")
     lines = "\n".join(
-        f"- Hoá đơn {item['series']} số {item['number']}, hạn {item['due_date']}, "
+        f"- Hoá đơn {item['series']} số {item['number']}, hạn {_vn_date(item['due_date'])}, "
         f"còn {format_vnd(Decimal(item['remaining']))} (quá hạn {item['days_overdue']} ngày)"
         for item in report["invoices"]
     )

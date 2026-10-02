@@ -133,6 +133,7 @@ def test_a_reminder_is_only_sent_once_approved_and_keeps_its_figures(
     assert result["created"], result
     approval = db.get(WorkflowApproval, uuid.UUID(result["approval_id"]))
     assert "12.000.000 ₫" in approval.payload["body"]
+    assert f"hạn {(date.today() - timedelta(days=40)).strftime('%d/%m/%Y')}" in approval.payload["body"]
     assert "delivery" not in approval.payload
     edited = client.post(
         f"/api/v1/approvals/{approval.id}/action",

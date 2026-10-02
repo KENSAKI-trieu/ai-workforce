@@ -67,3 +67,12 @@ def test_the_graph_withholds_a_finance_reply_with_an_invented_figure():
     assert withheld["errors"][-1]["error"] == "UNSUPPORTED_FIGURES"
     no_data = citation_verification(_state("Số dư cuối kỳ là 152.000.000 ₫.", []))
     assert "không có dữ liệu sổ sách" in no_data["final_answer"]
+
+
+def test_a_reply_citing_the_tool_it_read_is_not_withheld():
+    # The domain prompt asks for sources; a Finance reply cites the ledger the tool read.
+    state = _state("Số dư cuối kỳ TK 331 là 125.000.000 ₫ (dư Có).", [{**BALANCE, "source": "fin_ledger_lines account 331* through 2026-09"}])
+    for citation in ("get_account_balance", "fin_ledger_lines account 331* through 2026-09"):
+        assert "final_answer" not in citation_verification({**state, "citations": [{"source": citation}]})
+    invented = citation_verification({**state, "citations": [{"source": "Quy_che_tai_chinh.pdf"}]})
+    assert invented["errors"][-1]["error"] == "UNVERIFIED_CITATION"

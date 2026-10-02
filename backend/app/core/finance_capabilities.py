@@ -20,6 +20,15 @@ from typing import Any
 FINANCE_TOOL_INTRODUCTIONS: dict[int, tuple[str, ...]] = {
     101: ("rag_search",),
     102: ("lookup_invoices",),
+    103: ("propose_journal_entry",),
+    104: (
+        "get_account_balance",
+        "get_trial_balance",
+        "get_ledger_detail",
+        "budget_vs_actual",
+        "ar_ap_aging",
+        "payment_schedule",
+    ),
 }
 
 FINANCE_CONFIGURATION_VERSION: int = max(FINANCE_TOOL_INTRODUCTIONS)

@@ -39,6 +39,13 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     # review on or off in the deterministic chat and through LangGraph alike.
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
     "lookup_invoices": "Tra cứu hoá đơn mua vào/bán ra, trạng thái đối chiếu và ngoại lệ.",
+    "propose_journal_entry": "Đề xuất bút toán nháp cho hoá đơn và gửi duyệt theo ngưỡng tiền.",
+    "get_account_balance": "Tra số dư đầu kỳ, phát sinh, cuối kỳ của một tài khoản.",
+    "get_trial_balance": "Lập bảng cân đối số phát sinh của một kỳ.",
+    "get_ledger_detail": "Xem sổ chi tiết tài khoản theo khoảng ngày, theo đối tượng.",
+    "budget_vs_actual": "So sánh ngân sách với thực tế; người chỉ có quyền phòng mình chỉ xem phòng mình.",
+    "ar_ap_aging": "Báo cáo tuổi nợ phải thu, phải trả.",
+    "payment_schedule": "Lịch hoá đơn mua vào đến hạn thanh toán.",
 }
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
@@ -56,6 +63,13 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "submit_approval_request": "gửi yêu cầu phê duyệt",
     "audit_contract_risk": "rà soát rủi ro hợp đồng",
     "lookup_invoices": "tra cứu hoá đơn",
+    "propose_journal_entry": "đề xuất bút toán",
+    "get_account_balance": "tra số dư tài khoản",
+    "get_trial_balance": "lập bảng cân đối phát sinh",
+    "get_ledger_detail": "xem sổ chi tiết",
+    "budget_vs_actual": "so sánh ngân sách",
+    "ar_ap_aging": "xem tuổi nợ",
+    "payment_schedule": "xem lịch thanh toán",
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
 

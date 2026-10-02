@@ -20,7 +20,7 @@ from app.core.database import get_db
 from app.core.security import PermissionRequired
 from app.domains.finance import excel_import
 from app.domains.finance.charts import CHARTS
-from app.domains.finance.money import normalize_tax_code, plain
+from app.domains.finance.money import normalize_period, normalize_tax_code, plain
 from app.domains.finance.settings import (
     get_settings,
     seed_chart,
@@ -30,9 +30,11 @@ from app.domains.finance.settings import (
 from app.agents.usage import _llm_usage_recorder
 from app.domains.finance.einvoice_xml import InvoiceNotReadable
 from app.domains.finance.invoice_intake import intake_invoice, serialize_invoice
+from app.domains.finance.journal_proposal import ProposalRefused, propose_for_invoice, serialize_entry
+from app.domains.finance.reports import journal_workbook, period_bounds
 from app.domains.finance.storage import read_invoice_file
 from app.domains.platform.audit_events import add_audit_event
-from app.models.models import FinAccount, FinImportBatch, FinInvoice, FinParty, User
+from app.models.models import FinAccount, FinImportBatch, FinInvoice, FinJournalEntry, FinParty, User
 from app.plugins.resolver import resolve_prompt_overlay
 
 router = APIRouter(prefix="/finance", tags=["Finance"])
@@ -455,3 +457,89 @@ def review_invoice(
     )
     db.commit()
     return serialize_invoice(invoice, with_lines=True)
+
+
+# --------------------------------------------------------------------------- journal entries
+
+
+class ProposeEntry(BaseModel):
+    main_account: str | None = Field(default=None, pattern=r"^\d{3,10}$")
+
+
+@router.post("/invoices/{invoice_id}/propose-entry", summary="Draft the journal entry for an invoice")
+def propose_entry(
+    invoice_id: uuid.UUID,
+    body: ProposeEntry,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.journal.draft")),
+):
+    try:
+        entry, created = propose_for_invoice(
+            db, current_user, invoice_id,
+            main_account=body.main_account,
+            prompts=resolve_prompt_overlay(db, current_user.tenant_id, "FINANCE"),
+            on_usage=_llm_usage_recorder(db, current_user, "FINANCE"),
+        )
+    except ProposalRefused as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    add_audit_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        actor_user=current_user,
+        agent_role="FINANCE",
+        action="finance.journal.proposed" if created else "finance.journal.existing",
+        resource_type="FIN_JOURNAL_ENTRY",
+        resource_id=str(entry.id),
+        output_result={"status": entry.status, "confidence": entry.confidence},
+        request=request,
+    )
+    db.commit()
+    return {"created": created, "entry": serialize_entry(entry)}
+
+
+@router.get("/journal-entries", summary="Journal entries drafted or posted here")
+def list_journal_entries(
+    status: str | None = None,
+    period: str | None = None,
+    limit: int = 100,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.journal.draft", "finance.ledger.view")),
+):
+    query = db.query(FinJournalEntry).filter(FinJournalEntry.tenant_id == current_user.tenant_id)
+    if status:
+        query = query.filter(FinJournalEntry.status == status.upper())
+    if period:
+        try:
+            start, end = period_bounds(normalize_period(period))
+        except ValueError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+        query = query.filter(FinJournalEntry.entry_date >= start, FinJournalEntry.entry_date < end)
+    rows = query.order_by(FinJournalEntry.created_at.desc()).limit(max(1, min(limit, 500))).all()
+    return [serialize_entry(row) for row in rows]
+
+
+@router.get("/export/journal.xlsx", summary="Posted entries of a period, to import into the accounting software")
+def export_journal(
+    period: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view")),
+):
+    try:
+        normalized = normalize_period(period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    start, end = period_bounds(normalized)
+    entries = db.query(FinJournalEntry).filter(
+        FinJournalEntry.tenant_id == current_user.tenant_id,
+        FinJournalEntry.status == "POSTED",
+        FinJournalEntry.entry_date >= start,
+        FinJournalEntry.entry_date < end,
+    ).order_by(FinJournalEntry.entry_date, FinJournalEntry.created_at).all()
+    content = journal_workbook(entries)
+    return Response(
+        content=content,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="but-toan-{normalized}.xlsx"'},
+    )

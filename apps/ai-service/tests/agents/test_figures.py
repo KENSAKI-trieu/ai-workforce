@@ -1,0 +1,69 @@
+"""A Finance reply's figures must be the tools' figures."""
+
+from __future__ import annotations
+
+from app.agents.base.figures import figures_in, render_results, unsupported_figures
+from app.agents.base.nodes import citation_verification
+from app.agents.finance.agent import POLICY as FINANCE_POLICY
+
+BALANCE = {
+    "account": "331",
+    "period": "2026-09",
+    "opening": {"debit": "0.00", "credit": "114000000.00"},
+    "period_debit": "0.00",
+    "period_credit": "11000000.00",
+    "closing": {"debit": "0.00", "credit": "125000000.00"},
+}
+
+
+def test_figures_quoted_from_the_tool_pass_whatever_their_format():
+    for answer in (
+        "Số dư cuối kỳ TK 331 tháng 09/2026 là 125.000.000 ₫, dư Có.",
+        "Phát sinh Có 11,000,000 VND; cuối kỳ khoảng 125 triệu.",
+        "Dư Có 0,125 tỷ.",
+    ):
+        assert unsupported_figures(answer, [BALANCE]) == [], answer
+
+
+def test_a_figure_the_model_worked_out_itself_is_caught():
+    assert unsupported_figures("Tổng phải trả là 239.000.000 ₫", [BALANCE]) == ["239.000.000 ₫"]
+    assert unsupported_figures("Tăng 9,6% so với đầu kỳ", [BALANCE]) == ["9,6%"]
+
+
+def test_accounts_years_and_dates_are_not_figures():
+    assert figures_in("TK 33311, TK 1331, năm 2026, ngày 15/09/2026, 30 ngày") == []
+
+
+def test_the_users_own_figures_may_be_repeated():
+    assert unsupported_figures("Có, chi phí đã vượt 50 triệu.", [BALANCE], ["Chi phí có vượt 50 triệu không?"]) == []
+
+
+def test_the_withheld_answer_shows_the_tools_own_figures():
+    rendered = render_results([BALANCE])
+    assert "closing.credit: 125000000.00" in rendered
+
+
+def _state(answer: str, results):
+    return {
+        "final_answer": answer,
+        "citation_required": True,
+        "numbers_from_tools": True,
+        "messages": [{"role": "user", "content": "Số dư 331 tháng 9?"}],
+        "tool_calls": [
+            {"name": "get_account_balance", "status": "SUCCESS", "action": "READ_ONLY", "result": result}
+            for result in results
+        ],
+        "errors": [],
+        "execution_trace": [],
+    }
+
+
+def test_the_graph_withholds_a_finance_reply_with_an_invented_figure():
+    assert FINANCE_POLICY.numbers_from_tools
+    passed = citation_verification(_state("Số dư cuối kỳ là 125.000.000 ₫.", [BALANCE]))
+    assert "final_answer" not in passed
+    withheld = citation_verification(_state("Số dư cuối kỳ là 152.000.000 ₫.", [BALANCE]))
+    assert "125000000.00" in withheld["final_answer"]
+    assert withheld["errors"][-1]["error"] == "UNSUPPORTED_FIGURES"
+    no_data = citation_verification(_state("Số dư cuối kỳ là 152.000.000 ₫.", []))
+    assert "không có dữ liệu sổ sách" in no_data["final_answer"]

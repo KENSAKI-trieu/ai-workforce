@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from typing import Any, Literal
 from uuid import UUID
 
@@ -161,3 +161,64 @@ class InvoiceLookupInput(TenantToolInput):
     number: str | None = Field(default=None, max_length=20, description="Invoice number.")
     period: str | None = FinancePeriod
     limit: int = Field(default=20, ge=1, le=50)
+
+
+class ProposeJournalEntryInput(IdempotentToolInput):
+    invoice_id: UUID = Field(description="The invoice's id, as lookup_invoices returned it.")
+    main_account: str | None = Field(
+        default=None, pattern=r"^\d{3,10}$",
+        description=(
+            "Only when the user named the account for the amount before tax (for example "
+            "6422). Otherwise omit it: the backend applies the approved rule for this "
+            "party or chooses from the company's chart."
+        ),
+    )
+
+
+FinanceAccount = Field(pattern=r"^\d{3,10}$", description="Account number of the chart, e.g. 331 or 6422.")
+
+
+class AccountBalanceInput(TenantToolInput):
+    account: str = FinanceAccount
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
+
+
+class TrialBalanceInput(TenantToolInput):
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
+    level: Literal[3, 4] = Field(default=3, description="3 for level-1 accounts, 4 for their sub-accounts.")
+
+
+class LedgerDetailInput(TenantToolInput):
+    account: str = FinanceAccount
+    date_from: date
+    date_to: date
+    party: str | None = Field(default=None, max_length=255, description="Tax code or name of a vendor or customer.")
+    limit: int = Field(default=50, ge=1, le=200)
+
+    @model_validator(mode="after")
+    def ordered(self) -> "LedgerDetailInput":
+        if self.date_to < self.date_from:
+            raise ValueError("date_to must not be before date_from")
+        return self
+
+
+class BudgetVsActualInput(TenantToolInput):
+    period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
+    department: str | None = Field(
+        default=None, max_length=50,
+        description="Department code. Omit for every department the user may see.",
+    )
+
+
+class AgingInput(TenantToolInput):
+    kind: Literal["RECEIVABLE", "PAYABLE"] = Field(
+        description="RECEIVABLE: what customers owe us. PAYABLE: what we owe vendors."
+    )
+    as_of: date | None = Field(default=None, description="Report date; omit for today.")
+    min_days_overdue: int | None = Field(default=None, ge=0, le=3650, description="Only debts at least this many days past due.")
+    party: str | None = Field(default=None, max_length=255, description="Tax code or name of one vendor or customer.")
+
+
+class PaymentScheduleInput(TenantToolInput):
+    as_of: date | None = Field(default=None, description="Start date; omit for today.")
+    horizon_days: int = Field(default=14, ge=1, le=90, description="How many days ahead to look.")

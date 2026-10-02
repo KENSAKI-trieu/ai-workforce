@@ -3,3 +3,5 @@
 Each kind of draft (journal entry, payment voucher, reminder) owns what approving it
 does; they register themselves with app.domains.finance.approvals when imported.
 """
+
+from app.domains.finance import journal_proposal  # noqa: F401

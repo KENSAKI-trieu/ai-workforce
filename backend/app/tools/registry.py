@@ -12,15 +12,22 @@ from sqlalchemy.orm import Session
 
 from app.models.models import AIAgent, User
 from app.tools.schemas import (
+    AccountBalanceInput,
+    AgingInput,
+    BudgetVsActualInput,
     ContractRiskReviewInput,
     CreateTaskInput,
     EmployeeLookupInput,
     ExpenseLookupInput,
     GenerateLegalDocumentInput,
     InvoiceLookupInput,
+    LedgerDetailInput,
+    PaymentScheduleInput,
+    ProposeJournalEntryInput,
     LeaveLookupInput,
     RAGSearchInput,
     SubmitApprovalInput,
+    TrialBalanceInput,
 )
 
 
@@ -241,7 +248,20 @@ def build_tool_registry() -> ToolRegistry:
 
 def _finance_definitions() -> tuple[ToolDefinition, ...]:
     """The Finance agent's tools, each gated by the org-structure box for its work."""
-    from app.tools.executors.finance import lookup_invoices
+    from app.tools.executors.finance import (
+        get_account_balance,
+        get_aging,
+        get_budget_vs_actual,
+        get_ledger_detail,
+        get_payment_schedule,
+        get_trial_balance,
+        lookup_invoices,
+        propose_journal_entry,
+    )
+
+    # Every figure in a reply comes from one of these: fixed parameters, computed in SQL,
+    # each result naming its `source`. There is deliberately no free-form query tool.
+    reading = "Amounts are exact; quote them, never add or estimate. "
 
     return (
         _definition(
@@ -252,6 +272,62 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             InvoiceLookupInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.invoices", lookup_invoices,
             permission="finance.invoice.process",
+        ),
+        # Terminal and approval-opening, like generate_legal_document: the draft waits for
+        # whoever its amount requires, so the graph does not stop for a second approval.
+        _definition(
+            "propose_journal_entry",
+            "Draft the journal entry for one matched invoice and send it for approval. "
+            "The amounts come from the invoice; pass main_account only if the user named "
+            "the account. Its result is the answer to the user, and it opens its own "
+            "approval, so never submit another one for it. Call it at most once per invoice.",
+            ProposeJournalEntryInput, ToolAction.WRITE, {"*"}, {"*"}, 45,
+            "tool.finance.journal.propose", propose_journal_entry,
+            terminal=True, opens_approval=True, permission="finance.journal.draft",
+        ),
+        _definition(
+            "get_account_balance",
+            "Opening balance, debits and credits in the period, and closing balance of one "
+            "account (sub-accounts included) for a YYYY-MM period. " + reading,
+            AccountBalanceInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.finance.balance", get_account_balance, permission="finance.ledger.view",
+        ),
+        _definition(
+            "get_trial_balance",
+            "Trial balance (bảng cân đối số phát sinh) of a period: every account's opening, "
+            "period and closing balances. " + reading,
+            TrialBalanceInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.trial_balance", get_trial_balance, permission="finance.ledger.view",
+        ),
+        _definition(
+            "get_ledger_detail",
+            "Ledger lines (sổ chi tiết) of one account between two dates, optionally for one "
+            "vendor or customer, with the running balance. " + reading,
+            LedgerDetailInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.ledger", get_ledger_detail, permission="finance.ledger.view",
+        ),
+        # No permission on the ACL: the executor decides between every department and the
+        # user's own one, which a single box on the ACL cannot express.
+        _definition(
+            "budget_vs_actual",
+            "Budget against actual spending per department and account for a period, with "
+            "the variance and whether it is over budget. " + reading,
+            BudgetVsActualInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.budget", get_budget_vs_actual,
+        ),
+        _definition(
+            "ar_ap_aging",
+            "Aging of receivables (customers owe us) or payables (we owe vendors): what is "
+            "outstanding per party and how overdue, from posted invoices less payments. " + reading,
+            AgingInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.aging", get_aging, permission="finance.ar_ap.view",
+        ),
+        _definition(
+            "payment_schedule",
+            "Purchase invoices to pay within the next days, earliest due first, with what is "
+            "already scheduled. " + reading,
+            PaymentScheduleInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.finance.payment_schedule", get_payment_schedule, permission="finance.ar_ap.view",
         ),
     )
 

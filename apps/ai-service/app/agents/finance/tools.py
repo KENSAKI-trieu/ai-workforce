@@ -7,4 +7,11 @@ intersected with. Tools run in the backend; this only names them."""
 TOOLS: tuple[str, ...] = (
     "rag_search",
     "lookup_invoices",
+    "propose_journal_entry",
+    "get_account_balance",
+    "get_trial_balance",
+    "get_ledger_detail",
+    "budget_vs_actual",
+    "ar_ap_aging",
+    "payment_schedule",
 )

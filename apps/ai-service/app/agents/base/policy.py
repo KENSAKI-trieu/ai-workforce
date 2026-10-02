@@ -16,6 +16,9 @@ class DomainPolicy:
     tools: tuple[str, ...]
     prompt: str
     citation_required: bool = True
+    # Every figure in a reply must be one a tool returned this turn (see figures.py).
+    # For domains whose answers are numbers, where a citation proves nothing.
+    numbers_from_tools: bool = False
 
     @property
     def node_prefix(self) -> str:
@@ -35,6 +38,7 @@ def policy_node(policy: DomainPolicy):
             "intent": f"{policy.agent}_REQUEST",
             "domain_prompt": policy.prompt,
             "citation_required": policy.citation_required,
+            "numbers_from_tools": policy.numbers_from_tools,
             "execution_trace": _trace(state, f"{policy.node_prefix}_policy"),
         }
 

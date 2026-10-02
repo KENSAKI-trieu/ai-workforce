@@ -43,8 +43,12 @@ def to_decimal(value: Any) -> Decimal:
             text = text.replace(",", "")
     elif "," in text:
         head, _, tail = text.rpartition(",")
-        text = text.replace(",", "") if len(tail) == 3 and head else text.replace(",", ".")
-    elif text.count(".") > 1 or (text.count(".") == 1 and len(text.rpartition(".")[2]) == 3):
+        # A thousands group never follows a lone 0: "0,125" is a fraction.
+        thousands = len(tail) == 3 and head not in {"", "0", "-0"}
+        text = text.replace(",", "") if thousands else text.replace(",", ".")
+    elif text.count(".") > 1 or (
+        text.count(".") == 1 and len(text.rpartition(".")[2]) == 3 and text.rpartition(".")[0] not in {"0", "-0"}
+    ):
         # 1.234.567, or 1.234 -- a thousands separator. Vietnamese amounts with exactly
         # three decimals do not occur in practice.
         text = text.replace(".", "")

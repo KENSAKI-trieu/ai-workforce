@@ -25,6 +25,7 @@ class WorkforceAgentState(TypedDict):
     available_tools: NotRequired[list[str]]
     domain_prompt: NotRequired[str]
     citation_required: NotRequired[bool]
+    numbers_from_tools: NotRequired[bool]
     pending_tool_call: NotRequired[dict[str, Any] | None]
     model_iterations: NotRequired[int]
     # Set for the last decision a turn may make: no tool can run after it.

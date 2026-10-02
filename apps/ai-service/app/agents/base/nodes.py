@@ -18,6 +18,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
 from app.agents.base import notices
+from app.agents.base.figures import render_results, unsupported_figures
 from app.agents.base.decision import DecisionProvider
 from app.agents.base.state import WorkforceAgentState
 from app.governance.guardrails import is_tool_allowed, validate_grounded_output, validate_input
@@ -476,6 +477,32 @@ def _used_non_document_tool(state: WorkforceAgentState) -> bool:
     )
 
 
+def _unsupported_figures(state: WorkforceAgentState) -> dict[str, Any] | None:
+    """Withhold a reply whose figures no tool returned, showing the tools' own instead."""
+    results = [
+        call.get("result")
+        for call in state.get("tool_calls") or []
+        if call.get("status") == "SUCCESS" and call.get("name") != "rag_search"
+    ]
+    unsupported = unsupported_figures(
+        str(state.get("final_answer") or ""), results, [_latest_user_text(state)]
+    )
+    if not unsupported:
+        return None
+    rendered = render_results(results)
+    return {
+        "final_answer": (
+            f"{notices.FIGURES_UNVERIFIED}\n{rendered}" if rendered else notices.FIGURES_WITHOUT_DATA
+        ),
+        "citations": [],
+        "errors": [
+            *(state.get("errors") or []),
+            {"node": "citation_verification", "error": "UNSUPPORTED_FIGURES", "figures": unsupported[:10]},
+        ],
+        "execution_trace": _trace(state, "citation_verification", "FAILED"),
+    }
+
+
 def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     # Any tool call used to skip this whole check, so an answer the model wrote after a
     # second search reached the user with citations nobody had checked.
@@ -486,6 +513,10 @@ def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
         # verify. Checking it anyway replaced the real cause -- a provider outage, a denied
         # or disabled tool -- with "citations could not be verified".
         return {"execution_trace": _trace(state, "citation_verification", "SKIPPED")}
+    if state.get("numbers_from_tools"):
+        withheld = _unsupported_figures(state)
+        if withheld is not None:
+            return withheld
     context = _searched_documents(state)
     supplied = _supplied_citations(state)
     if _used_non_document_tool(state):

@@ -10,9 +10,31 @@ from __future__ import annotations
 from datetime import date
 from typing import Any
 
+from fastapi import HTTPException
 from sqlalchemy import or_
 
+from app.agents.usage import _llm_usage_recorder
 from app.domains.finance.invoice_intake import serialize_invoice
+from app.domains.finance.journal_proposal import (
+    ProposalRefused,
+    describe,
+    propose_for_invoice,
+    serialize_entry,
+)
+from app.domains.finance.money import format_vnd
+from app.domains.finance.reports import (
+    PartyNotFound,
+    account_balance,
+    aging,
+    budget_vs_actual,
+    ledger_detail,
+    payment_schedule,
+    period_bounds,
+    resolve_party,
+    trial_balance,
+)
+from app.domains.platform.position_service import user_permissions
+from app.plugins.resolver import resolve_prompt_overlay
 from app.domains.platform.audit_service import (
     get_cost_by_agent,
     get_cost_by_department,
@@ -22,7 +44,17 @@ from app.domains.platform.audit_service import (
 )
 from app.models.models import FinInvoice, FinParty
 from app.tools.registry import ToolContext
-from app.tools.schemas import ExpenseLookupInput, InvoiceLookupInput
+from app.tools.schemas import (
+    AccountBalanceInput,
+    AgingInput,
+    BudgetVsActualInput,
+    ExpenseLookupInput,
+    InvoiceLookupInput,
+    LedgerDetailInput,
+    PaymentScheduleInput,
+    ProposeJournalEntryInput,
+    TrialBalanceInput,
+)
 
 
 def lookup_expenses(
@@ -37,13 +69,6 @@ def lookup_expenses(
         "WORKFLOW": get_cost_by_workflow,
     }
     return handlers[request.breakdown](context.db, context.actor.tenant_id, request.month)
-
-
-def _period_bounds(period: str) -> tuple[date, date]:
-    year, month = int(period[:4]), int(period[5:])
-    start = date(year, month, 1)
-    end = date(year + (month == 12), 1 if month == 12 else month + 1, 1)
-    return start, end
 
 
 def lookup_invoices(context: ToolContext, request: InvoiceLookupInput) -> dict[str, Any]:
@@ -63,7 +88,7 @@ def lookup_invoices(context: ToolContext, request: InvoiceLookupInput) -> dict[s
             FinInvoice.seller_name.ilike(f"%{term}%"),
         ))
     if request.period:
-        start, end = _period_bounds(request.period)
+        start, end = period_bounds(request.period)
         query = query.filter(FinInvoice.issue_date >= start, FinInvoice.issue_date < end)
     total = query.count()
     rows = query.order_by(FinInvoice.issue_date.desc().nullslast(), FinInvoice.created_at.desc()).limit(request.limit).all()
@@ -73,3 +98,98 @@ def lookup_invoices(context: ToolContext, request: InvoiceLookupInput) -> dict[s
         "invoices": [serialize_invoice(row) for row in rows],
         "source": "fin_invoices",
     }
+
+
+def propose_journal_entry(context: ToolContext, request: ProposeJournalEntryInput) -> dict[str, Any]:
+    """Draft the entry for one invoice and send it for approval. Terminal: its reply is the answer."""
+    db, actor = context.db, context.actor
+    try:
+        entry, created = propose_for_invoice(
+            db, actor, request.invoice_id,
+            main_account=request.main_account,
+            prompts=resolve_prompt_overlay(db, actor.tenant_id, "FINANCE"),
+            on_usage=_llm_usage_recorder(db, actor, "FINANCE"),
+        )
+    except ProposalRefused as exc:
+        return {"status": "REFUSED", "created": False, "reply": str(exc)}
+    # The gateway commits after the call, together with its audit row.
+    total = sum((line.debit for line in entry.lines), start=0)
+    if not created:
+        state = "đã được ghi sổ" if entry.status == "POSTED" else "đang chờ duyệt"
+        reply = f"Hoá đơn này đã có bút toán {state}: {describe(entry)}."
+    else:
+        doubt = (
+            " Lưu ý cho người duyệt: " + "; ".join(entry.confidence_reasons) + "."
+            if entry.confidence_reasons else ""
+        )
+        reply = (
+            f"Đã lập bút toán nháp và gửi duyệt ({format_vnd(total)}): {describe(entry)}."
+            f"{doubt} Bút toán chỉ được ghi sổ khi người có thẩm quyền duyệt."
+        )
+    return {"status": entry.status, "created": created, "reply": reply, "entry": serialize_entry(entry)}
+
+
+# --------------------------------------------------------------------------- reading the books
+
+
+def _today() -> date:
+    return date.today()
+
+
+def get_account_balance(context: ToolContext, request: AccountBalanceInput) -> dict[str, Any]:
+    return account_balance(context.db, context.actor.tenant_id, request.account, request.period)
+
+
+def get_trial_balance(context: ToolContext, request: TrialBalanceInput) -> dict[str, Any]:
+    return trial_balance(context.db, context.actor.tenant_id, request.period, level=request.level)
+
+
+def get_ledger_detail(context: ToolContext, request: LedgerDetailInput) -> dict[str, Any]:
+    party_id = None
+    if request.party:
+        try:
+            party_id = resolve_party(context.db, context.actor.tenant_id, request.party).id
+        except PartyNotFound as exc:
+            return {"found": False, "message": str(exc)}
+    return ledger_detail(
+        context.db, context.actor.tenant_id, request.account, request.date_from, request.date_to,
+        party_id=party_id, limit=request.limit,
+    )
+
+
+def get_budget_vs_actual(context: ToolContext, request: BudgetVsActualInput) -> dict[str, Any]:
+    """Every department for whoever reads the books; their own one for everyone else.
+
+    The department is forced here, not left to the model: someone holding only "Xem ngân
+    sách phòng mình" gets their own department whatever was asked for.
+    """
+    granted = user_permissions(context.db, context.actor)
+    department = request.department
+    if "finance.ledger.view" not in granted:
+        if "finance.budget.view_own" not in granted:
+            raise HTTPException(status_code=403, detail="Access denied for tool 'budget_vs_actual'")
+        own = (context.actor.department or "").upper()
+        if department and department.upper() != own:
+            return {"found": False, "message": f"Bạn chỉ được xem ngân sách của phòng {own}."}
+        department = own
+    return budget_vs_actual(context.db, context.actor.tenant_id, request.period, department=department)
+
+
+def get_aging(context: ToolContext, request: AgingInput) -> dict[str, Any]:
+    party_id = None
+    if request.party:
+        try:
+            party_id = resolve_party(context.db, context.actor.tenant_id, request.party).id
+        except PartyNotFound as exc:
+            return {"found": False, "message": str(exc)}
+    return aging(
+        context.db, context.actor.tenant_id,
+        "OUT" if request.kind == "RECEIVABLE" else "IN",
+        request.as_of or _today(),
+        min_days_overdue=request.min_days_overdue,
+        party_id=party_id,
+    )
+
+
+def get_payment_schedule(context: ToolContext, request: PaymentScheduleInput) -> dict[str, Any]:
+    return payment_schedule(context.db, context.actor.tenant_id, request.as_of or _today(), request.horizon_days)

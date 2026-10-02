@@ -52,6 +52,8 @@ FINANCE_CODES = (
     ("(2.000)", "-2000.00"),
     (1234567, "1234567.00"),
     ("15.000.000 VNĐ", "15000000.00"),
+    ("0,125", "0.13"),
+    ("0.5", "0.50"),
 ])
 def test_amounts_are_read_the_way_vietnamese_books_write_them(raw, expected):
     assert str(to_decimal(raw)) == expected

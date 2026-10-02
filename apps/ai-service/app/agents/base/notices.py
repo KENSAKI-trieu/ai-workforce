@@ -27,6 +27,14 @@ CITATION_UNVERIFIED = (
     "Tôi không đưa ra câu trả lời này vì không xác minh được nguồn trích dẫn của nó "
     "trong tài liệu của công ty."
 )
+FIGURES_UNVERIFIED = (
+    "Tôi không đưa ra câu trả lời vừa soạn vì trong đó có số liệu không lấy từ sổ sách. "
+    "Đây là số liệu gốc hệ thống trả về:"
+)
+FIGURES_WITHOUT_DATA = (
+    "Tôi không đưa ra câu trả lời này vì nó có số liệu nhưng không có dữ liệu sổ sách nào "
+    "đứng sau. Hãy hỏi cụ thể tài khoản, kỳ hoặc đối tượng để tôi tra cứu."
+)
 NO_EVIDENCE = "Không có tài liệu hay kết quả công cụ nào để trả lời yêu cầu này."
 NOT_IN_DOCUMENTS = (
     "Tài liệu của công ty mà tôi được phép tra cứu chưa đề cập nội dung này, nên tôi "

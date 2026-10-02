@@ -17,6 +17,8 @@ from app.tools.schemas import (
     BudgetVsActualInput,
     ContractRiskReviewInput,
     CreateTaskInput,
+    DraftPaymentReminderInput,
+    DraftPaymentVoucherInput,
     EmployeeLookupInput,
     ExpenseLookupInput,
     GenerateLegalDocumentInput,
@@ -254,6 +256,8 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         get_budget_vs_actual,
         get_ledger_detail,
         get_payment_schedule,
+        draft_reminder,
+        draft_voucher,
         get_trial_balance,
         lookup_invoices,
         propose_journal_entry,
@@ -328,6 +332,25 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             "already scheduled. " + reading,
             PaymentScheduleInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.payment_schedule", get_payment_schedule, permission="finance.ar_ap.view",
+        ),
+        # Both terminal and approval-opening: nothing is paid or sent on this call.
+        _definition(
+            "draft_payment_voucher",
+            "Draft a payment voucher for posted purchase invoices of one vendor and send it "
+            "for approval. It never transfers money. Its result is the answer to the user, "
+            "and it opens its own approval, so never submit another one for it.",
+            DraftPaymentVoucherInput, ToolAction.WRITE, {"*"}, {"*"}, 30,
+            "tool.finance.voucher.draft", draft_voucher,
+            terminal=True, opens_approval=True, permission="finance.journal.draft",
+        ),
+        _definition(
+            "draft_payment_reminder",
+            "Draft a payment reminder email to one customer from its aging, at level 1 (due), "
+            "2 (overdue) or 3 (final), and send it for approval; nothing is emailed before "
+            "that. Its result is the answer to the user; never submit another approval for it.",
+            DraftPaymentReminderInput, ToolAction.WRITE, {"*"}, {"*"}, 30,
+            "tool.finance.reminder.draft", draft_reminder,
+            terminal=True, opens_approval=True, permission="finance.reminder.send",
         ),
     )
 

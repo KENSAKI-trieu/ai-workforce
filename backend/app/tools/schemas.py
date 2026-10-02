@@ -222,3 +222,18 @@ class AgingInput(TenantToolInput):
 class PaymentScheduleInput(TenantToolInput):
     as_of: date | None = Field(default=None, description="Start date; omit for today.")
     horizon_days: int = Field(default=14, ge=1, le=90, description="How many days ahead to look.")
+
+
+class DraftPaymentVoucherInput(IdempotentToolInput):
+    invoice_ids: list[UUID] = Field(
+        min_length=1, max_length=50,
+        description="Ids of posted purchase invoices of ONE vendor, as payment_schedule or lookup_invoices returned them.",
+    )
+
+
+class DraftPaymentReminderInput(IdempotentToolInput):
+    party: str = Field(min_length=2, max_length=255, description="Tax code or name of the customer.")
+    level: Literal[1, 2, 3] = Field(
+        default=1,
+        description="1 friendly notice of amounts due, 2 reminder of overdue amounts, 3 final demand.",
+    )

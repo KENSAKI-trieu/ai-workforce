@@ -46,6 +46,8 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "budget_vs_actual": "So sánh ngân sách với thực tế; người chỉ có quyền phòng mình chỉ xem phòng mình.",
     "ar_ap_aging": "Báo cáo tuổi nợ phải thu, phải trả.",
     "payment_schedule": "Lịch hoá đơn mua vào đến hạn thanh toán.",
+    "draft_payment_voucher": "Lập phiếu chi nháp gửi duyệt; không tự chuyển tiền.",
+    "draft_payment_reminder": "Soạn thư nhắc nợ khách hàng gửi duyệt; chỉ gửi khi được duyệt.",
 }
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
@@ -70,6 +72,8 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "budget_vs_actual": "so sánh ngân sách",
     "ar_ap_aging": "xem tuổi nợ",
     "payment_schedule": "xem lịch thanh toán",
+    "draft_payment_voucher": "lập phiếu chi",
+    "draft_payment_reminder": "soạn thư nhắc nợ",
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
 

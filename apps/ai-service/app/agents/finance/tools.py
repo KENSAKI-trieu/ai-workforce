@@ -14,4 +14,6 @@ TOOLS: tuple[str, ...] = (
     "budget_vs_actual",
     "ar_ap_aging",
     "payment_schedule",
+    "draft_payment_voucher",
+    "draft_payment_reminder",
 )

@@ -8,6 +8,7 @@ never adds them up.
 from __future__ import annotations
 
 from datetime import date
+from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
@@ -22,6 +23,7 @@ from app.domains.finance.journal_proposal import (
     serialize_entry,
 )
 from app.domains.finance.money import format_vnd
+from app.domains.finance.payments import DraftRefused, draft_payment_reminder, draft_payment_voucher
 from app.domains.finance.reports import (
     PartyNotFound,
     account_balance,
@@ -42,12 +44,14 @@ from app.domains.platform.audit_service import (
     get_cost_by_workflow,
     get_llm_cost_summary,
 )
-from app.models.models import FinInvoice, FinParty
+from app.models.models import FinInvoice, FinParty, Tenant
 from app.tools.registry import ToolContext
 from app.tools.schemas import (
     AccountBalanceInput,
     AgingInput,
     BudgetVsActualInput,
+    DraftPaymentReminderInput,
+    DraftPaymentVoucherInput,
     ExpenseLookupInput,
     InvoiceLookupInput,
     LedgerDetailInput,
@@ -193,3 +197,50 @@ def get_aging(context: ToolContext, request: AgingInput) -> dict[str, Any]:
 
 def get_payment_schedule(context: ToolContext, request: PaymentScheduleInput) -> dict[str, Any]:
     return payment_schedule(context.db, context.actor.tenant_id, request.as_of or _today(), request.horizon_days)
+
+
+# --------------------------------------------------------------------------- drafts for approval
+
+
+def draft_voucher(context: ToolContext, request: DraftPaymentVoucherInput) -> dict[str, Any]:
+    """Terminal: a payment voucher waiting for whoever its amount requires."""
+    try:
+        approval = draft_payment_voucher(context.db, context.actor, list(request.invoice_ids))
+    except DraftRefused as exc:
+        return {"status": "REFUSED", "created": False, "reply": str(exc)}
+    payload = approval.payload
+    warnings = " Lưu ý: " + "; ".join(payload["warnings"]) + "." if payload.get("warnings") else ""
+    return {
+        "status": "PENDING_APPROVAL",
+        "created": True,
+        "approval_id": str(approval.id),
+        "reply": (
+            f"Đã lập phiếu chi nháp {format_vnd(Decimal(payload['amount']))} cho {payload['party']['name']} "
+            f"({len(payload['invoices'])} hoá đơn) và gửi duyệt.{warnings} Hệ thống không tự chuyển tiền: "
+            "sau khi được duyệt, người thực hiện chuyển khoản trên ngân hàng rồi ghi nhận đã thanh toán."
+        ),
+    }
+
+
+def draft_reminder(context: ToolContext, request: DraftPaymentReminderInput) -> dict[str, Any]:
+    """Terminal: a reminder letter waiting for approval; nothing is sent before that."""
+    db, actor = context.db, context.actor
+    try:
+        party = resolve_party(db, actor.tenant_id, request.party)
+        tenant = db.get(Tenant, actor.tenant_id)
+        approval = draft_payment_reminder(
+            db, actor, party, request.level, company_name=tenant.name if tenant else "", as_of=_today(),
+        )
+    except (PartyNotFound, DraftRefused) as exc:
+        return {"status": "REFUSED", "created": False, "reply": str(exc)}
+    payload = approval.payload
+    return {
+        "status": "PENDING_APPROVAL",
+        "created": True,
+        "approval_id": str(approval.id),
+        "reply": (
+            f"Đã soạn thư nhắc nợ mức {request.level} gửi {party.name} ({payload['recipient']}), "
+            f"tổng {format_vnd(Decimal(payload['amount']))}, và gửi duyệt. Thư chỉ được gửi đi khi "
+            "người duyệt đồng ý."
+        ),
+    }

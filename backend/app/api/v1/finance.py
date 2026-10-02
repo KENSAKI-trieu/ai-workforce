@@ -9,6 +9,7 @@ from __future__ import annotations
 
 import uuid
 from decimal import Decimal
+from datetime import date
 from pathlib import Path
 from typing import Any
 
@@ -31,10 +32,34 @@ from app.agents.usage import _llm_usage_recorder
 from app.domains.finance.einvoice_xml import InvoiceNotReadable
 from app.domains.finance.invoice_intake import intake_invoice, serialize_invoice
 from app.domains.finance.journal_proposal import ProposalRefused, propose_for_invoice, serialize_entry
-from app.domains.finance.reports import journal_workbook, period_bounds
+from app.domains.finance.payments import (
+    DraftRefused,
+    draft_payment_reminder,
+    draft_payment_voucher,
+    record_voucher_paid,
+)
+from app.domains.finance.reports import (
+    account_balance,
+    aging,
+    budget_vs_actual,
+    journal_workbook,
+    payment_schedule,
+    period_bounds,
+    trial_balance,
+)
+from app.domains.platform.position_service import has_permission
 from app.domains.finance.storage import read_invoice_file
 from app.domains.platform.audit_events import add_audit_event
-from app.models.models import FinAccount, FinImportBatch, FinInvoice, FinJournalEntry, FinParty, User
+from app.models.models import (
+    FinAccount,
+    FinImportBatch,
+    FinInvoice,
+    FinJournalEntry,
+    FinParty,
+    FinPayment,
+    Tenant,
+    User,
+)
 from app.plugins.resolver import resolve_prompt_overlay
 
 router = APIRouter(prefix="/finance", tags=["Finance"])
@@ -543,3 +568,180 @@ def export_journal(
         media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
         headers={"Content-Disposition": f'attachment; filename="but-toan-{normalized}.xlsx"'},
     )
+
+
+# --------------------------------------------------------------------------- reports
+
+
+def _period_or_422(period: str) -> str:
+    try:
+        return normalize_period(period)
+    except ValueError as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+
+@router.get("/reports/balance", summary="Opening, movement and closing balance of one account")
+def report_balance(
+    account: str,
+    period: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view")),
+):
+    return account_balance(db, current_user.tenant_id, account, _period_or_422(period))
+
+
+@router.get("/reports/trial-balance", summary="Trial balance of a period")
+def report_trial_balance(
+    period: str,
+    level: int = 3,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view")),
+):
+    return trial_balance(db, current_user.tenant_id, _period_or_422(period), level=4 if level == 4 else 3)
+
+
+@router.get("/reports/budget", summary="Budget against actual; own department only without the ledger box")
+def report_budget(
+    period: str,
+    department: str | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view", "finance.budget.view_own")),
+):
+    if not has_permission(db, current_user, "finance.ledger.view"):
+        department = (current_user.department or "").upper()
+    return budget_vs_actual(db, current_user.tenant_id, _period_or_422(period), department=department)
+
+
+@router.get("/reports/aging", summary="Aging of receivables or payables")
+def report_aging(
+    kind: str = "RECEIVABLE",
+    as_of: date | None = None,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ar_ap.view")),
+):
+    if kind not in {"RECEIVABLE", "PAYABLE"}:
+        raise HTTPException(status_code=422, detail="kind must be RECEIVABLE or PAYABLE")
+    return aging(db, current_user.tenant_id, "OUT" if kind == "RECEIVABLE" else "IN", as_of or date.today())
+
+
+@router.get("/reports/payment-schedule", summary="Purchase invoices falling due")
+def report_payment_schedule(
+    horizon_days: int = 14,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ar_ap.view")),
+):
+    return payment_schedule(db, current_user.tenant_id, date.today(), max(1, min(horizon_days, 90)))
+
+
+# --------------------------------------------------------------------------- vouchers and reminders
+
+
+class VoucherDraft(BaseModel):
+    invoice_ids: list[uuid.UUID] = Field(min_length=1, max_length=50)
+
+
+@router.post("/payments/vouchers", summary="Draft a payment voucher for approval")
+def create_voucher(
+    body: VoucherDraft,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.journal.draft")),
+):
+    try:
+        approval = draft_payment_voucher(db, current_user, body.invoice_ids)
+    except DraftRefused as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    add_audit_event(
+        db, tenant_id=current_user.tenant_id, actor_user=current_user, agent_role="FINANCE",
+        action="finance.voucher.drafted", resource_type="APPROVAL", resource_id=str(approval.id),
+        output_result={"amount": approval.payload.get("amount")}, request=request,
+    )
+    db.commit()
+    return {"approval_id": str(approval.id), "workflow_id": str(approval.workflow_id), "payload": approval.payload}
+
+
+class VoucherPaid(BaseModel):
+    paid_on: date
+    bank_reference: str = Field(min_length=2, max_length=60)
+
+
+@router.post("/payments/vouchers/{workflow_id}/paid", summary="Record that an approved voucher was paid at the bank")
+def mark_voucher_paid(
+    workflow_id: uuid.UUID,
+    body: VoucherPaid,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.journal.draft")),
+):
+    try:
+        payments = record_voucher_paid(
+            db, current_user, workflow_id, paid_on=body.paid_on, bank_reference=body.bank_reference
+        )
+    except DraftRefused as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    add_audit_event(
+        db, tenant_id=current_user.tenant_id, actor_user=current_user, agent_role="FINANCE",
+        action="finance.voucher.paid", resource_type="FIN_PAYMENT", resource_id=str(workflow_id),
+        input_parameters={"paid_on": body.paid_on.isoformat(), "bank_reference": body.bank_reference},
+        request=request,
+    )
+    db.commit()
+    return {"paid": len(payments), "total": plain(sum((payment.amount for payment in payments), Decimal("0")))}
+
+
+@router.get("/payments/vouchers", summary="Payment vouchers and their status")
+def list_vouchers(
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.journal.draft", "finance.ar_ap.view")),
+):
+    rows = db.query(FinPayment).filter(
+        FinPayment.tenant_id == current_user.tenant_id, FinPayment.workflow_id.isnot(None),
+        FinPayment.direction == "PAY",
+    ).order_by(FinPayment.created_at.desc()).limit(500).all()
+    vouchers: dict[str, dict[str, Any]] = {}
+    for payment in rows:
+        item = vouchers.setdefault(str(payment.workflow_id), {
+            "workflow_id": str(payment.workflow_id), "reference": payment.reference,
+            "status": payment.status, "total": Decimal("0"), "invoice_count": 0,
+            "party_id": str(payment.party_id) if payment.party_id else None,
+            "created_at": payment.created_at.isoformat() if payment.created_at else None,
+        })
+        item["total"] += payment.amount
+        item["invoice_count"] += 1
+    return [{**item, "total": plain(item["total"])} for item in vouchers.values()]
+
+
+class ReminderDraft(BaseModel):
+    party_id: uuid.UUID
+    level: int = Field(default=1, ge=1, le=3)
+
+
+@router.post("/reminders", summary="Draft a payment reminder for approval")
+def create_reminder(
+    body: ReminderDraft,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.reminder.send")),
+):
+    party = db.query(FinParty).filter(
+        FinParty.id == body.party_id, FinParty.tenant_id == current_user.tenant_id
+    ).first()
+    if party is None:
+        raise HTTPException(status_code=404, detail="Party not found")
+    tenant = db.get(Tenant, current_user.tenant_id)
+    try:
+        approval = draft_payment_reminder(
+            db, current_user, party, body.level, company_name=tenant.name if tenant else "", as_of=date.today(),
+        )
+    except DraftRefused as exc:
+        db.rollback()
+        raise HTTPException(status_code=409, detail=str(exc)) from exc
+    add_audit_event(
+        db, tenant_id=current_user.tenant_id, actor_user=current_user, agent_role="FINANCE",
+        action="finance.reminder.drafted", resource_type="APPROVAL", resource_id=str(approval.id),
+        request=request,
+    )
+    db.commit()
+    return {"approval_id": str(approval.id), "payload": approval.payload}

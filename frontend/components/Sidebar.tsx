@@ -28,6 +28,7 @@ import {
   Calendar,
   BarChart3,
   ScrollText,
+  Receipt,
   Bell,
   Cable,
   Network,
@@ -35,6 +36,15 @@ import {
 } from "lucide-react";
 
 // ─── Nav Config ──────────────────────────────────────────────────────────────
+const FINANCE_PAGE_PERMISSIONS = [
+  "finance.ledger.view",
+  "finance.budget.view_own",
+  "finance.invoice.process",
+  "finance.journal.draft",
+  "finance.ar_ap.view",
+  "finance.import.manage",
+];
+
 const AGENTS = [
   { name: { vi: "Trợ lý CEO", ja: "CEOエージェント" }, role: "CEO", emoji: "👔", icon: Bot, path: "/agents/CEO" },
   { name: { vi: "Trợ lý Nhân sự", ja: "人事エージェント" }, role: "HR", emoji: "🧑‍💼", icon: Users, path: "/agents/HR" },
@@ -58,6 +68,7 @@ const SIDEBAR_TEXT = {
     tasks: "Quản lý Task (Kanban)",
     calendar: "Lịch Công việc",
     approvals: "Trung tâm Phê duyệt",
+    finance: "Sổ sách Tài chính",
     users: "Nhân viên & Phân quyền",
     orgStructure: "Cơ cấu Chức vụ",
     audit: "Nhật ký Kiểm toán",
@@ -84,6 +95,7 @@ const SIDEBAR_TEXT = {
     tasks: "タスク管理（Kanban）",
     calendar: "業務カレンダー",
     approvals: "承認センター",
+    finance: "財務帳簿",
     users: "従業員・権限管理",
     orgStructure: "組織・役職構成",
     audit: "監査ログ",
@@ -397,6 +409,17 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
           href="/approvals"
           active={pathname === "/approvals"}
         />
+
+        {/* Sổ sách mà Trợ lý Tài chính đọc: chỉ hiện với chức vụ được tick một quyền
+            Tài chính; server vẫn kiểm từng thao tác. */}
+        {FINANCE_PAGE_PERMISSIONS.some((code) => userCan(user, code)) && (
+          <NavItem
+            icon={<Receipt size={18} />}
+            label={text.finance}
+            href="/finance"
+            active={pathname === "/finance"}
+          />
+        )}
 
         {/* Quản lý Nhân Viên & Phân Quyền */}
         <NavItem

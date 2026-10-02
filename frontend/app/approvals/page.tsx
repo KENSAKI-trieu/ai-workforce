@@ -6,6 +6,7 @@ import { useRouter } from "next/navigation";
 import { AlertTriangle, CheckCircle2, Download, Edit3, Eye, Loader2, RefreshCw, Scale, Send, ShieldAlert, X, XCircle } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ContractFileViewer, { ContractFile } from "@/components/legal/ContractFileViewer";
+import FinanceApprovalDetail, { FinancePayload, financeEditable, isFinanceApproval } from "@/components/finance/FinanceApprovalDetail";
 import api from "@/lib/api";
 import { useAuthStore, userCan } from "@/store/useAuthStore";
 
@@ -325,7 +326,13 @@ export default function ApprovalsCenterPage() {
                         {payload.review_url && <button className="ta-btn ta-btn-ghost" onClick={() => router.push(payload.review_url as string)}><Scale size={15} /> Mở bản rà soát</button>}
                       </div> : <small style={{ color: "var(--text-muted)" }}>Nội dung hợp đồng và file đã sửa chỉ chức vụ có quyền “Xem mọi bản rà soát hợp đồng” mở được.</small>}
                     </div>;
-                  })() : selected.action_type === "LEGAL_DOCUMENT_APPROVAL" ? <div style={{ padding: 14, border: "1px solid #DBE4EC", borderRadius: 9, background: "#F8FAFC" }}>
+                  })() : isFinanceApproval(selected.action_type) ? <FinanceApprovalDetail
+                    key={selected.id}
+                    actionType={selected.action_type}
+                    payload={selected.payload as FinancePayload}
+                    readOnly={readOnly}
+                    onEdit={(edited) => setEditedPayload(JSON.stringify(edited))}
+                  /> : selected.action_type === "LEGAL_DOCUMENT_APPROVAL" ? <div style={{ padding: 14, border: "1px solid #DBE4EC", borderRadius: 9, background: "#F8FAFC" }}>
                     <strong style={{ display: "block", marginBottom: 5 }}>{String(selected.payload.document_type_label || "Văn bản pháp lý")}</strong>
                     <small style={{ color: "var(--text-muted)" }}>{String(selected.payload.filename || "Bản nháp")}</small>
                     <p style={{ margin: "8px 0 12px", color: "var(--text-muted)", fontSize: 13 }}>Xem nội dung hoặc tải bản nháp trước khi quyết định. Payload lưu trữ nội bộ không được hiển thị.</p>
@@ -346,7 +353,8 @@ export default function ApprovalsCenterPage() {
                   </>}
                   {!readOnly && <div style={{ display: "flex", justifyContent: "flex-end", gap: 10, marginTop: 16 }}>
                     <button disabled={submitting} className="ta-btn" onClick={() => void act("REJECT")}><XCircle size={15} /> Từ chối</button>
-                    {!["LEGAL_DOCUMENT_APPROVAL", "LEGAL_CONTRACT_APPROVAL"].includes(selected.action_type) && <button disabled={submitting} className="ta-btn ta-btn-ghost" onClick={() => void act("EDIT_AND_APPROVE")}><Edit3 size={15} /> Sửa & duyệt</button>}
+                    {!["LEGAL_DOCUMENT_APPROVAL", "LEGAL_CONTRACT_APPROVAL"].includes(selected.action_type)
+                      && (!isFinanceApproval(selected.action_type) || financeEditable(selected.action_type)) && <button disabled={submitting} className="ta-btn ta-btn-ghost" onClick={() => void act("EDIT_AND_APPROVE")}><Edit3 size={15} /> Sửa & duyệt</button>}
                     <button disabled={submitting} className="ta-btn ta-btn-primary" onClick={() => void act("APPROVE")}><CheckCircle2 size={15} /> Phê duyệt</button>
                   </div>}
                 </>

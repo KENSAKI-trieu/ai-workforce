@@ -20,6 +20,7 @@ from sqlalchemy import (
     String,
     Text,
     UniqueConstraint,
+    text as sa_text,
 )
 from sqlalchemy.dialects.postgresql import JSONB, UUID
 from sqlalchemy.orm import Mapped, mapped_column, relationship
@@ -1709,5 +1710,393 @@ class TenantPlugin(Base):
         DateTime(timezone=True), server_default=func.now()
     )
     updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+# ============================================================
+# 31. FINANCE — the books the Finance agent reads and drafts into
+# ============================================================
+# There is no ERP behind the Finance agent: a company brings its books in by importing
+# the Excel its accounting software exports (MISA, Fast, ...), and invoices by uploading
+# their XML. The agent reads these tables through fixed-parameter tools and writes only
+# drafts; posting happens when a person approves. Money is Numeric, never Float: these
+# figures are compared for equality (debit = credit, invoice = PO).
+FIN_MONEY = Numeric(18, 2)
+
+
+class FinSettings(Base):
+    """One row per tenant: its chart of accounts and its approval thresholds."""
+
+    __tablename__ = "fin_settings"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    # TT200 (large and medium enterprises) or TT133 (small ones).
+    chart: Mapped[str] = mapped_column(String(10), nullable=False, default="TT200")
+    # The company's own tax code: a purchase invoice made out to anyone else is flagged.
+    company_tax_code: Mapped[str | None] = mapped_column(String(14))
+    # [{"up_to": 20000000, "permission": "finance.journal.approve"}, ...] -- ascending;
+    # an amount above the last bound needs approvals.sign_critical.
+    approval_thresholds: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # How far an invoice total may differ from its PO before it is an exception.
+    po_tolerance_percent: Mapped[Decimal] = mapped_column(
+        Numeric(5, 2), nullable=False, default=Decimal("0")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class FinImportBatch(Base):
+    """One Excel import. Every row it wrote points back here, so a bad import is undone whole."""
+
+    __tablename__ = "fin_import_batches"
+    __table_args__ = (Index("idx_fin_import_batches_tenant", "tenant_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    kind: Mapped[str] = mapped_column(String(30), nullable=False)
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="COMMITTED")
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FinAccount(Base):
+    """One account of the tenant's chart (hệ thống tài khoản)."""
+
+    __tablename__ = "fin_accounts"
+    __table_args__ = (UniqueConstraint("tenant_id", "code", name="uq_fin_account_code"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    code: Mapped[str] = mapped_column(String(20), nullable=False)
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    parent_code: Mapped[str | None] = mapped_column(String(20))
+    # DEBIT, CREDIT or BOTH: which side a positive balance sits on.
+    normal_balance: Mapped[str] = mapped_column(String(10), nullable=False, default="DEBIT")
+    is_active: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+
+
+class FinParty(Base):
+    """A vendor or customer (đối tượng công nợ)."""
+
+    __tablename__ = "fin_parties"
+    __table_args__ = (
+        # NULLs do not collide, so individuals without a tax code can coexist.
+        UniqueConstraint("tenant_id", "tax_code", name="uq_fin_party_tax_code"),
+        Index("idx_fin_parties_tenant_name", "tenant_id", "name"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    # VENDOR, CUSTOMER or BOTH.
+    kind: Mapped[str] = mapped_column(String(10), nullable=False, default="VENDOR")
+    tax_code: Mapped[str | None] = mapped_column(String(14))
+    name: Mapped[str] = mapped_column(String(255), nullable=False)
+    address: Mapped[str | None] = mapped_column(Text)
+    email: Mapped[str | None] = mapped_column(String(255))
+    # Where money is sent: sealed, and never changed from an invoice or an email.
+    bank_account: Mapped[str | None] = mapped_column(EncryptedText)
+    bank_name: Mapped[str | None] = mapped_column(String(255))
+    payment_terms_days: Mapped[int] = mapped_column(Integer, nullable=False, default=30)
+    # First seen on an invoice rather than imported: its first posting needs a closer look.
+    is_new: Mapped[bool] = mapped_column(Boolean, nullable=False, default=False)
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_import_batches.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FinPurchaseOrder(Base):
+    __tablename__ = "fin_purchase_orders"
+    __table_args__ = (UniqueConstraint("tenant_id", "po_number", name="uq_fin_po_number"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    po_number: Mapped[str] = mapped_column(String(50), nullable=False)
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_parties.id", ondelete="SET NULL")
+    )
+    order_date: Mapped[date | None] = mapped_column(Date)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="VND")
+    amount_before_tax: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    vat_amount: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    total_amount: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    # [{"description", "quantity", "unit_price", "amount"}]
+    lines: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="OPEN")
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_import_batches.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    party = relationship("FinParty")
+
+
+class FinInvoice(Base):
+    """A purchase (IN) or sales (OUT) invoice, from an uploaded e-invoice or an import."""
+
+    __tablename__ = "fin_invoices"
+    __table_args__ = (
+        UniqueConstraint(
+            "tenant_id", "direction", "seller_tax_code", "series", "number",
+            name="uq_fin_invoice_identity",
+        ),
+        Index("idx_fin_invoices_tenant_status", "tenant_id", "status"),
+        Index("idx_fin_invoices_tenant_party", "tenant_id", "party_id"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    direction: Mapped[str] = mapped_column(String(3), nullable=False, default="IN")
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_parties.id", ondelete="SET NULL")
+    )
+    seller_tax_code: Mapped[str] = mapped_column(String(14), nullable=False, default="")
+    seller_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    buyer_tax_code: Mapped[str | None] = mapped_column(String(14))
+    buyer_name: Mapped[str | None] = mapped_column(String(255))
+    template_code: Mapped[str | None] = mapped_column(String(20))  # mẫu số (KHMSHDon)
+    series: Mapped[str] = mapped_column(String(20), nullable=False, default="")  # ký hiệu
+    number: Mapped[str] = mapped_column(String(20), nullable=False)  # số hoá đơn
+    issue_date: Mapped[date | None] = mapped_column(Date)
+    due_date: Mapped[date | None] = mapped_column(Date)
+    currency: Mapped[str] = mapped_column(String(3), nullable=False, default="VND")
+    exchange_rate: Mapped[Decimal] = mapped_column(Numeric(18, 4), nullable=False, default=Decimal("1"))
+    amount_before_tax: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    vat_amount: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    total_amount: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    # {"10%": {"base": "...", "vat": "..."}, ...}
+    vat_breakdown: Mapped[dict] = mapped_column(JSONB, nullable=False, default=dict)
+    lines: Mapped[list] = mapped_column(EncryptedJSONB, nullable=False, default=list)
+    tax_authority_code: Mapped[str | None] = mapped_column(String(64))  # mã CQT
+    po_number: Mapped[str | None] = mapped_column(String(50))
+    po_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_purchase_orders.id", ondelete="SET NULL")
+    )
+    # RECEIVED, MATCHED, EXCEPTION, POSTED, PAID
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="RECEIVED")
+    # [{"code": "PO_AMOUNT_MISMATCH", "message": "..."}]
+    exceptions: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    source_format: Mapped[str] = mapped_column(String(10), nullable=False, default="XML")
+    source_filename: Mapped[str | None] = mapped_column(String(255))
+    source_storage_key: Mapped[str | None] = mapped_column(Text)
+    content_hash: Mapped[str | None] = mapped_column(String(64))
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_import_batches.id", ondelete="SET NULL")
+    )
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    party = relationship("FinParty")
+    purchase_order = relationship("FinPurchaseOrder")
+
+
+class FinJournalEntry(Base):
+    """A journal entry (bút toán). Drafted by the agent, posted only once approved."""
+
+    __tablename__ = "fin_journal_entries"
+    __table_args__ = (
+        Index("idx_fin_journal_tenant_status", "tenant_id", "status"),
+        # One live proposal per invoice: proposing again returns it instead of opening a
+        # second approval for the same document.
+        Index(
+            "uq_fin_journal_live_invoice", "invoice_id",
+            unique=True,
+            postgresql_where=sa_text("status IN ('PENDING_APPROVAL', 'POSTED')"),
+        ),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # INVOICE, PAYMENT, MANUAL
+    source: Mapped[str] = mapped_column(String(20), nullable=False, default="INVOICE")
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_invoices.id", ondelete="SET NULL")
+    )
+    # PENDING_APPROVAL, POSTED, REJECTED
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PENDING_APPROVAL")
+    # RULE (an approved posting rule), MODEL (the model chose the accounts) or USER.
+    proposed_by: Mapped[str] = mapped_column(String(10), nullable=False, default="MODEL")
+    confidence: Mapped[str] = mapped_column(String(10), nullable=False, default="LOW")
+    confidence_reasons: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # What the approver changed, kept so later proposals for this party can learn from it.
+    corrections: Mapped[dict | None] = mapped_column(JSONB)
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_workflows.id", ondelete="SET NULL")
+    )
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    approved_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    posted_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+    lines = relationship(
+        "FinJournalLine",
+        back_populates="entry",
+        cascade="all, delete-orphan",
+        order_by="FinJournalLine.line_no",
+    )
+    invoice = relationship("FinInvoice")
+
+
+class FinJournalLine(Base):
+    __tablename__ = "fin_journal_lines"
+    __table_args__ = (
+        CheckConstraint("debit >= 0 AND credit >= 0", name="ck_fin_journal_line_non_negative"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    entry_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_journal_entries.id", ondelete="CASCADE"), nullable=False
+    )
+    line_no: Mapped[int] = mapped_column(Integer, nullable=False)
+    account_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    debit: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    credit: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_parties.id", ondelete="SET NULL")
+    )
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+
+    entry = relationship("FinJournalEntry", back_populates="lines")
+
+
+class FinLedgerLine(Base):
+    """The general ledger (sổ cái): imported history, opening balances and posted entries."""
+
+    __tablename__ = "fin_ledger_lines"
+    __table_args__ = (
+        Index("idx_fin_ledger_account_period", "tenant_id", "account_code", "period"),
+        Index("idx_fin_ledger_party", "tenant_id", "party_id"),
+        CheckConstraint("debit >= 0 AND credit >= 0", name="ck_fin_ledger_line_non_negative"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    period: Mapped[str] = mapped_column(String(7), nullable=False)  # YYYY-MM
+    entry_date: Mapped[date] = mapped_column(Date, nullable=False)
+    account_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    debit: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    credit: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False, default=Decimal("0"))
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_parties.id", ondelete="SET NULL")
+    )
+    department: Mapped[str | None] = mapped_column(String(50))
+    voucher_no: Mapped[str | None] = mapped_column(String(50))
+    description: Mapped[str] = mapped_column(Text, nullable=False, default="")
+    # OPENING, IMPORT or JOURNAL
+    source: Mapped[str] = mapped_column(String(10), nullable=False, default="IMPORT")
+    journal_entry_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_journal_entries.id", ondelete="SET NULL")
+    )
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_import_batches.id", ondelete="CASCADE")
+    )
+
+
+class FinPayment(Base):
+    """Money paid to a vendor (PAY) or received from a customer (RECEIVE) against an invoice."""
+
+    __tablename__ = "fin_payments"
+    __table_args__ = (Index("idx_fin_payments_invoice", "tenant_id", "invoice_id"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    invoice_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_invoices.id", ondelete="CASCADE")
+    )
+    party_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_parties.id", ondelete="SET NULL")
+    )
+    direction: Mapped[str] = mapped_column(String(10), nullable=False, default="PAY")
+    amount: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False)
+    payment_date: Mapped[date | None] = mapped_column(Date)
+    # SCHEDULED (a voucher was approved), PAID, CANCELLED
+    status: Mapped[str] = mapped_column(String(20), nullable=False, default="PAID")
+    reference: Mapped[str | None] = mapped_column(String(100))
+    workflow_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("agent_workflows.id", ondelete="SET NULL")
+    )
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_import_batches.id", ondelete="CASCADE")
+    )
+    created_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class FinBudget(Base):
+    __tablename__ = "fin_budgets"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "department", "account_code", "period", name="uq_fin_budget_line"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    department: Mapped[str] = mapped_column(String(50), nullable=False)
+    account_code: Mapped[str] = mapped_column(String(20), nullable=False)
+    period: Mapped[str] = mapped_column(String(7), nullable=False)
+    amount: Mapped[Decimal] = mapped_column(FIN_MONEY, nullable=False)
+    import_batch_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_import_batches.id", ondelete="CASCADE")
+    )
+
+
+class FinPostingRule(Base):
+    """Long-term memory: how this party's invoices were posted when an approver agreed."""
+
+    __tablename__ = "fin_posting_rules"
+    __table_args__ = (
+        UniqueConstraint("tenant_id", "party_id", "direction", name="uq_fin_posting_rule"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    party_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("fin_parties.id", ondelete="CASCADE"), nullable=False
+    )
+    direction: Mapped[str] = mapped_column(String(3), nullable=False, default="IN")
+    # The account the amount before tax goes to (expense/asset for IN, revenue for OUT).
+    main_account: Mapped[str] = mapped_column(String(20), nullable=False)
+    times_confirmed: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    last_confirmed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )

@@ -69,7 +69,6 @@ from app.domains.legal.legal_document_submission import (
 from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
 from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.core.agent_status import refuse_under_development
-from app.domains.incubating.finance_service import audit_invoice_and_reconcile
 from app.domains.incubating.it_service import handle_it_request
 from app.domains.incubating.sales_service import handle_sales_request
 
@@ -125,10 +124,6 @@ class CreateJiraTicketRequest(BaseModel):
     summary: str
     description: Optional[str] = None
     priority: str = "MEDIUM"
-
-
-class AuditInvoiceRequest(BaseModel):
-    invoice_text: str
 
 
 class SalesQuotationRequest(BaseModel):
@@ -1486,17 +1481,6 @@ def create_jira_ticket_endpoint(
     # The IT agent is under development: this issued a Jira key no Jira ever saw.
     refuse_under_development("IT")
     return handle_it_request(db, current_user, f"{req.summary} - {req.description or ''}")
-
-
-# --- FINANCE ---
-@router.post("/finance/audit-invoice", summary="Audit invoice text and reconcile PO")
-def audit_invoice_endpoint(
-    req: AuditInvoiceRequest,
-    current_user: User = Depends(get_current_active_user),
-) -> Dict[str, Any]:
-    # The Finance agent is under development: every invoice was checked against one fixed PO.
-    refuse_under_development("FINANCE")
-    return audit_invoice_and_reconcile(req.invoice_text)
 
 
 # --- SALES ---

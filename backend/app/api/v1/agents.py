@@ -9,6 +9,7 @@ from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.core.gateway_tools import GATEWAY_TOOL_DESCRIPTIONS
+from app.core.finance_capabilities import configuration_version_for
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
 from app.core.tool_permissions import canonical_tool_names
 from app.core.security import PermissionRequired, get_current_active_user
@@ -344,7 +345,7 @@ def update_agent(
         setattr(agent, field_name, value)
     # Stamping the current version, not a literal: a lower number makes the seeding
     # migration treat this row as legacy and re-add defaults the operator just removed.
-    agent.configuration_version = HR_CONFIGURATION_VERSION
+    agent.configuration_version = configuration_version_for(agent.role_code, HR_CONFIGURATION_VERSION)
     db.add(AuditLog(
         tenant_id=current_user.tenant_id,
         actor_user_id=current_user.id,

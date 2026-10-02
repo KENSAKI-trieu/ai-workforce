@@ -22,6 +22,11 @@ from app.models.models import (
     WorkflowApproval,
 )
 from app.domains.platform.notification_service import create_notification
+from app.domains.finance.approvals import (
+    apply_finance_edit,
+    finalize_finance_approval,
+    is_finance_approval,
+)
 from app.domains.hr.hr_service import finalize_leave_approval
 from app.domains.platform.approval_access import (
     can_approve as _can_approve,
@@ -195,6 +200,7 @@ def process_approval_action(
             status_code=422,
             detail="Generated legal artifacts must be approved or rejected without editing the payload",
         )
+    is_finance = is_finance_approval(approval)
     is_langgraph = (approval.payload or {}).get("kind") == GRAPH_APPROVAL_KIND
     if is_langgraph and req.action == "EDIT_AND_APPROVE":
         raise HTTPException(
@@ -203,7 +209,11 @@ def process_approval_action(
         )
 
     original_payload = approval.payload
-    if req.action == "EDIT_AND_APPROVE":
+    if req.action == "EDIT_AND_APPROVE" and is_finance:
+        # Only what the draft's own module accepts changes; the amount, the permission it
+        # needs and who asked stay as the server wrote them.
+        approval.payload = apply_finance_edit(db, approval, req.edited_payload)
+    elif req.action == "EDIT_AND_APPROVE":
         approval.payload = req.edited_payload
     approved = req.action in {"APPROVE", "EDIT_AND_APPROVE"}
     approval.status = "APPROVED" if approved else "REJECTED"
@@ -236,6 +246,9 @@ def process_approval_action(
             support_task = db.query(Task).filter(Task.id == support_case.task_id).first()
             if support_task and not approved:
                 support_task.status = "CANCELLED"
+
+    if is_finance:
+        finalize_finance_approval(db, approval, current_user, approved)
 
     if approval.action_type == "LEAVE_REQUEST":
         finalize_leave_approval(

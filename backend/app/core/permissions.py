@@ -146,6 +146,44 @@ PERMISSIONS: tuple[Permission, ...] = (
         "legal.review.view_all", "Chuyên môn", "Xem mọi bản rà soát hợp đồng",
         "Mở, quyết định và tải file của bản rà soát hợp đồng do người khác tạo.",
     ),
+    # --- Tài chính ---
+    Permission(
+        "finance.ledger.view", "Tài chính", "Xem sổ sách kế toán",
+        "Tra cứu số dư, sổ cái, bảng cân đối phát sinh và ngân sách mọi phòng ban.",
+    ),
+    Permission(
+        "finance.budget.view_own", "Tài chính", "Xem ngân sách phòng mình",
+        "Xem ngân sách và chi phí thực tế của chính phòng ban mình.",
+    ),
+    Permission(
+        "finance.invoice.process", "Tài chính", "Xử lý hoá đơn",
+        "Tải hoá đơn điện tử lên, xem và đối chiếu hoá đơn với đơn mua hàng.",
+    ),
+    Permission(
+        "finance.journal.draft", "Tài chính", "Đề xuất bút toán",
+        "Cho agent đề xuất bút toán nháp và phiếu chi nháp để gửi duyệt.",
+    ),
+    Permission(
+        "finance.journal.approve", "Tài chính", "Duyệt bút toán, phiếu chi mức thường",
+        "Duyệt bút toán và phiếu chi dưới ngưỡng thứ nhất (mặc định 20 triệu đồng).",
+    ),
+    Permission(
+        "finance.journal.approve_high", "Tài chính", "Duyệt bút toán, phiếu chi mức cao",
+        "Duyệt bút toán và phiếu chi đến ngưỡng thứ hai (mặc định 500 triệu đồng). "
+        "Trên ngưỡng đó cần quyền phê duyệt tối quan trọng.",
+    ),
+    Permission(
+        "finance.ar_ap.view", "Tài chính", "Xem công nợ",
+        "Xem công nợ phải thu, phải trả, tuổi nợ và lịch thanh toán.",
+    ),
+    Permission(
+        "finance.reminder.send", "Tài chính", "Soạn nhắc nợ",
+        "Cho agent soạn email nhắc nợ khách hàng để gửi duyệt.",
+    ),
+    Permission(
+        "finance.import.manage", "Tài chính", "Nhập dữ liệu kế toán",
+        "Nhập hệ thống tài khoản, sổ cái, đối tượng, ngân sách từ Excel và cấu hình tài chính.",
+    ),
     # --- Báo cáo ---
     Permission(
         "analytics.view", "Báo cáo", "Xem báo cáo vận hành",
@@ -243,7 +281,21 @@ _MANAGER_CORE = (
     "costs.view",
     "audit.view",
     "finance.expense.view",
+    "finance.budget.view_own",
 )
+
+# The finance powers. Kept out of _ADMIN_CORE on purpose: everything there that a Manager
+# lacks is an admin marker (see _ADMIN_MARKERS), so ticking "Đề xuất bút toán" on an
+# accountant's position would have promoted its holders to Admin.
+_FINANCE_STAFF = (
+    "finance.ledger.view",
+    "finance.invoice.process",
+    "finance.journal.draft",
+    "finance.ar_ap.view",
+    "finance.reminder.send",
+)
+_FINANCE_MANAGER = _FINANCE_STAFF + ("finance.journal.approve",)
+_FINANCE_ADMIN = _FINANCE_MANAGER + ("finance.journal.approve_high", "finance.import.manage")
 
 _ADMIN_CORE = _MANAGER_CORE + (
     "users.manage",
@@ -279,7 +331,7 @@ _CEO_PERMISSIONS = _ADMIN_CORE + _ALL_SECTION_PERMISSIONS + (
     "org.structure.manage",
     "hr.scope.company",
     "hr.employee.manage",
-)
+) + _FINANCE_ADMIN
 
 
 @dataclass(frozen=True)
@@ -367,11 +419,11 @@ SPECIALISED_POSITIONS: tuple[SpecialisedPosition, ...] = (
     # manager set: it deliberately drops contract, leave and performance.
     SpecialisedPosition(
         "finance-admin", "Quản trị viên Tài chính", "ceo", "Admin", "FINANCE",
-        _ADMIN_CORE + ("hr.compensation.view",),
+        _ADMIN_CORE + ("hr.compensation.view",) + _FINANCE_ADMIN,
     ),
     SpecialisedPosition(
         "finance-manager", "Quản lý Tài chính", "ceo", "Manager", "FINANCE",
-        _MANAGER_CORE + ("hr.compensation.view",),
+        _MANAGER_CORE + ("hr.compensation.view",) + _FINANCE_MANAGER,
     ),
 )
 

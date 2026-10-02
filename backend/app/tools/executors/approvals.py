@@ -6,6 +6,7 @@ from typing import Any
 
 from fastapi import HTTPException
 
+from app.domains.finance.approvals import SERVER_KEYS
 from app.models.models import AgentWorkflow, User, WorkflowApproval
 from app.domains.platform.position_service import can_sign_approvals
 from app.tools.registry import ToolContext
@@ -15,7 +16,7 @@ from app.tools.schemas import SubmitApprovalInput
 # `kind` selects which branch of `_can_approve` applies and whether the approve route tries
 # to resume a LangGraph thread, so accepting it from a tool argument would let a requester
 # choose the rule that governs their own request.
-RESERVED_APPROVAL_PAYLOAD_KEYS = frozenset({"kind", "requester_id", "requester_name"})
+RESERVED_APPROVAL_PAYLOAD_KEYS = frozenset({"kind", "requester_id", "requester_name"}) | SERVER_KEYS
 
 
 def _validate_approver(context: ToolContext, request: SubmitApprovalInput) -> User | None:

@@ -11,6 +11,9 @@ non-HR agent together. Two cases never reach the graph whatever is configured:
 - agents under development answer with their fixed reply before any engine runs;
 - HR, until its capabilities exist as gateway tools with server-side section checks.
   Its graph today would only have knowledge search.
+
+Finance is the other way round: it has no deterministic flow, so it always runs on the
+graph (GRAPH_ONLY).
 """
 
 from __future__ import annotations
@@ -27,6 +30,9 @@ LANGGRAPH = "langgraph"
 ENGINES = frozenset({DETERMINISTIC, LANGGRAPH})
 # Roles whose tools are not in the gateway yet, so the graph cannot serve them.
 NOT_READY_FOR_LANGGRAPH = frozenset({"HR"})
+# Roles with no deterministic flow at all: their tools exist only in the gateway, so the
+# graph is the only engine that can answer them, whatever is configured.
+GRAPH_ONLY = frozenset({"FINANCE"})
 
 
 def parse_agent_engines(raw: str | None) -> dict[str, str]:
@@ -49,6 +55,10 @@ def engine_for(role_code: str) -> str:
     if is_under_development(role):
         return DETERMINISTIC
     configured = parse_agent_engines(settings.AGENT_ENGINES).get(role)
+    if role in GRAPH_ONLY:
+        if configured == DETERMINISTIC:
+            logger.warning("AGENT_ENGINES asks for the deterministic flow for %s, which has none; using LangGraph", role)
+        return LANGGRAPH
     wanted = configured or (LANGGRAPH if settings.LANGGRAPH_ENABLED and role != "HR" else DETERMINISTIC)
     if wanted == LANGGRAPH and role in NOT_READY_FOR_LANGGRAPH:
         if configured:

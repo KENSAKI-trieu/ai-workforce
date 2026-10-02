@@ -141,3 +141,23 @@ class ContractRiskReviewInput(TenantToolInput):
             "faulted for clauses it does not contain. Omit to let the backend decide."
         ),
     )
+
+
+# --------------------------------------------------------------------------- finance
+# Every finance input is a fixed parameter the backend turns into its own query. There is
+# no free-form SQL anywhere: the model picks what to look at, never how it is computed.
+FinancePeriod = Field(default=None, pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
+
+
+class InvoiceLookupInput(TenantToolInput):
+    status: Literal["RECEIVED", "MATCHED", "EXCEPTION", "POSTED", "PAID", "REJECTED"] | None = None
+    direction: Literal["IN", "OUT"] | None = Field(
+        default=None, description="IN for purchase invoices, OUT for sales invoices."
+    )
+    party: str | None = Field(
+        default=None, max_length=255,
+        description="Tax code or part of the name of the vendor or customer.",
+    )
+    number: str | None = Field(default=None, max_length=20, description="Invoice number.")
+    period: str | None = FinancePeriod
+    limit: int = Field(default=20, ge=1, le=50)

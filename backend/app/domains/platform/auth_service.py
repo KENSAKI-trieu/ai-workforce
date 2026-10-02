@@ -42,7 +42,7 @@ DEFAULT_AGENTS = [
     {"name": "HR Agent", "role_code": "HR", "avatar_emoji": "🧑‍💼", "description": "Handles leave requests, employee onboarding, and HR policy Q&A."},
     {"name": "Legal Agent", "role_code": "LEGAL", "avatar_emoji": "⚖️", "description": "Reviews contracts, detects risk clauses, generates amended documents."},
     {"name": "IT Agent", "role_code": "IT", "avatar_emoji": "💻", "description": "Resolves technical issues via RAG and auto-creates support tickets."},
-    {"name": "Finance Agent", "role_code": "FINANCE", "avatar_emoji": "💰", "description": "OCRs invoices, reconciles PO database, alerts on discrepancies."},
+    {"name": "Finance Agent", "role_code": "FINANCE", "avatar_emoji": "💰", "description": "Reads e-invoices, matches them to POs, drafts journal entries for approval and answers questions from the books."},
     {"name": "Sales Agent", "role_code": "SALES", "avatar_emoji": "📈", "description": "Looks up inventory, generates PDF quotations, logs leads to CRM."},
     {"name": "Knowledge Agent", "role_code": "KNOWLEDGE", "avatar_emoji": "📚", "description": "Company-wide knowledge base with hybrid RAG search and citations."},
 ]
@@ -65,7 +65,8 @@ DEFAULT_AGENT_CAPABILITIES = {
         "rag_search",
     ],
     "IT": ["search_it_kb", "create_jira_ticket"],
-    "FINANCE": ["reconcile_po_db"],
+    # No deterministic flow: every Finance grant is a gateway tool, composed in below.
+    "FINANCE": [],
     "SALES": ["generate_quotation_pdf"],
     "KNOWLEDGE": ["rag_search"],
 }

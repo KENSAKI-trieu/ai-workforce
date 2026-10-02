@@ -11,6 +11,11 @@ from __future__ import annotations
 from sqlalchemy.orm import Session
 
 from app.agents.langgraph.approvals import GRAPH_APPROVAL_KIND
+from app.domains.finance.approvals import (
+    can_approve_finance,
+    is_finance_approval,
+    no_finance_approver_warning,
+)
 from app.domains.hr.hr_service import can_approve_hr_request
 from app.domains.legal.legal_document_submission import can_approve_legal_documents
 from app.domains.platform.position_service import can_sign_approvals, can_sign_critical
@@ -46,6 +51,9 @@ def can_approve(db: Session, current_user: User, approval: WorkflowApproval) -> 
         return can_approve_hr_request(db, current_user, approval)
     if approval.action_type == "LEGAL_DOCUMENT_APPROVAL":
         return can_approve_legal_documents(current_user)
+    if is_finance_approval(approval):
+        # Signed by amount: the permission the server wrote when the draft was opened.
+        return can_approve_finance(db, current_user, approval)
     if str(payload.get("requester_id") or "") == str(current_user.id):
         # Blocking a requester who named themselves approver was only half of it: with
         # `approver_id` left empty this branch fell through to `return True` for anyone
@@ -82,6 +90,8 @@ NO_APPROVER_WARNING = (
 
 
 def no_approver_warning(approval: WorkflowApproval) -> str:
+    if is_finance_approval(approval):
+        return no_finance_approver_warning(approval)
     permission = (
         "Phê duyệt yêu cầu tối quan trọng" if approval.risk_level == "CRITICAL" else "Phê duyệt yêu cầu"
     )

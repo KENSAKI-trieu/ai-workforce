@@ -17,6 +17,7 @@ from app.tools.schemas import (
     EmployeeLookupInput,
     ExpenseLookupInput,
     GenerateLegalDocumentInput,
+    InvoiceLookupInput,
     LeaveLookupInput,
     RAGSearchInput,
     SubmitApprovalInput,
@@ -233,9 +234,26 @@ def build_tool_registry() -> ToolRegistry:
             review_contract_risk, terminal=True,
         ),
     )
-    for definition in definitions:
+    for definition in definitions + _finance_definitions():
         registry.register(definition)
     return registry
+
+
+def _finance_definitions() -> tuple[ToolDefinition, ...]:
+    """The Finance agent's tools, each gated by the org-structure box for its work."""
+    from app.tools.executors.finance import lookup_invoices
+
+    return (
+        _definition(
+            "lookup_invoices",
+            "List the company's purchase (IN) or sales (OUT) invoices with their status, "
+            "matching exceptions and amounts. Use it to answer which invoices exist, which "
+            "are waiting or flagged, or to find the invoice the user means.",
+            InvoiceLookupInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.finance.invoices", lookup_invoices,
+            permission="finance.invoice.process",
+        ),
+    )
 
 
 tool_registry = build_tool_registry()

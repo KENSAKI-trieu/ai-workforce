@@ -4,6 +4,7 @@ import uuid
 
 from app.core.security import create_internal_tool_token
 from app.models.models import AuditLog, LLMCostLog, Task, User
+from app.core.gateway_tools import GATEWAY_TOOLS
 from app.tools.registry import ToolAction, tool_registry
 
 
@@ -13,7 +14,8 @@ def _audit() -> dict[str, str]:
 
 def test_registry_exposes_governance_metadata() -> None:
     definitions = {item.name: item for item in tool_registry.all()}
-    assert len(definitions) == 8
+    # Every registered tool is one an administrator can grant, and none is missing.
+    assert set(definitions) == GATEWAY_TOOLS
     assert definitions["rag_search"].action == ToolAction.READ_ONLY
     # Runs without a prior human approval, like a review in the deterministic chat.
     assert definitions["audit_contract_risk"].action == ToolAction.READ_ONLY

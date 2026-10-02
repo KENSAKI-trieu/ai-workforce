@@ -13,6 +13,7 @@ from sqlalchemy import text
 from app.core.database import sync_engine, Base, SyncSessionLocal
 from app.core.config import settings
 from app.core.security import get_password_hash
+from app.core.finance_capabilities import configuration_version_for, upgrade_finance_grants
 from app.core.hr_capabilities import (
     HR_CONFIGURATION_VERSION,
     HR_RETIRED_TOOLS,
@@ -324,8 +325,8 @@ def init_db():
                 "name": "Finance & Accounting AI",
                 "avatar_emoji": "💰",
                 "model_name": "gpt-4o",
-                "description": "Xử lý OCR hóa đơn, đối chiếu PO database và cảnh báo bất thường tài chính.",
-                "system_prompt": "You are the Finance AI Agent. Audit invoices, extract details, and flag financial anomalies.",
+                "description": "Đọc hoá đơn điện tử, đối chiếu đơn mua hàng, đề xuất bút toán chờ duyệt và trả lời câu hỏi từ sổ sách.",
+                "system_prompt": "You are the Finance AI Agent. Answer from the company's books through your tools, and draft entries for human approval.",
             },
             {
                 "role_code": "SALES",
@@ -361,10 +362,18 @@ def init_db():
                     is_active=True,
                     tools_access=default_agent_tools[adata["role_code"]],
                     allowed_actions=default_agent_tools[adata["role_code"]],
-                    configuration_version=HR_CONFIGURATION_VERSION,
+                    configuration_version=configuration_version_for(
+                        adata["role_code"], HR_CONFIGURATION_VERSION
+                    ),
                 )
                 db.add(agent)
                 logger.info(f"Seeded AI Agent: {adata['role_code']} ({adata['name']})")
+            elif adata["role_code"] == "FINANCE":
+                # Its own versioning: the HR-numbered branches below would stamp a version
+                # the Finance upgrade then reads as "never upgraded".
+                if upgrade_finance_grants(agent):
+                    agent.description = adata["description"]
+                    agent.system_prompt = adata["system_prompt"]
             elif agent.tools_access == legacy_tools and adata["role_code"] != "HR":
                 agent.tools_access = default_agent_tools[adata["role_code"]]
                 agent.allowed_actions = default_agent_tools[adata["role_code"]]

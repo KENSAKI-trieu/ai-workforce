@@ -12,12 +12,14 @@ flows in ``app.agents``, which import the resolver.
 
 from __future__ import annotations
 
+from app.agents.finance.prompts import DEFAULT_FINANCE_PROMPTS, FINANCE_PROMPT_SLOTS
 from app.agents.hr.prompts import DEFAULT_HR_PROMPTS, HR_PROMPT_SLOTS
 from app.agents.legal.prompts import DEFAULT_LEGAL_PROMPTS, LEGAL_PROMPT_SLOTS
 
 PROMPT_SLOTS_BY_ROLE: dict[str, tuple[str, ...]] = {
     "HR": tuple(HR_PROMPT_SLOTS),
     "LEGAL": tuple(LEGAL_PROMPT_SLOTS),
+    "FINANCE": tuple(FINANCE_PROMPT_SLOTS),
 }
 
 # The slot that writes the reply the user reads. The administrator's free text on the
@@ -29,11 +31,11 @@ ANSWER_SLOT_BY_ROLE: dict[str, str] = {
     "LEGAL": "legal_answer",
 }
 
-_DEFAULTS: dict[str, str] = {**DEFAULT_HR_PROMPTS, **DEFAULT_LEGAL_PROMPTS}
+_DEFAULTS: dict[str, str] = {**DEFAULT_HR_PROMPTS, **DEFAULT_LEGAL_PROMPTS, **DEFAULT_FINANCE_PROMPTS}
 
 # A slot name shared by two roles would make `default_prompt` ambiguous and silently give
 # one role the other's prompt. Caught at import rather than at the first tenant preview.
-assert len(_DEFAULTS) == len(DEFAULT_HR_PROMPTS) + len(DEFAULT_LEGAL_PROMPTS), (
+assert len(_DEFAULTS) == len(DEFAULT_HR_PROMPTS) + len(DEFAULT_LEGAL_PROMPTS) + len(DEFAULT_FINANCE_PROMPTS), (
     "prompt slot names must be unique across roles"
 )
 

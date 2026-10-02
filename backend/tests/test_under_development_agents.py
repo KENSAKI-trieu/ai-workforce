@@ -1,8 +1,9 @@
-"""IT, Finance, Sales and CEO stay listed but closed until their logic is real.
+"""IT, Sales and CEO stay listed but closed until their logic is real.
 
-Each ran on placeholder data: a Jira key no Jira issued, one fixed PO for every invoice,
-one camera quoted for every request, and a CEO plan reported as done when nothing had
-been done. Neither chat nor the direct APIs may reach that logic any more.
+Each ran on placeholder data: a Jira key no Jira issued, one camera quoted for every
+request, and a CEO plan reported as done when nothing had been done. Neither chat nor the
+direct APIs may reach that logic any more. Finance left this list once it had books of
+its own to read (app/domains/finance).
 """
 
 from __future__ import annotations
@@ -68,7 +69,6 @@ def test_streamed_chat_is_not_sent_to_langgraph(role, client, ceo_token_headers,
     ("method", "path", "body"),
     [
         ("post", "/api/v1/it/tickets", {"summary": "VPN lỗi"}),
-        ("post", "/api/v1/finance/audit-invoice", {"invoice_text": "PO-1 15.000.000 VNĐ"}),
         ("post", "/api/v1/sales/quotation", {"item_query": "20 camera"}),
         ("get", "/api/v1/sales/download-quote/abc123", None),
     ],

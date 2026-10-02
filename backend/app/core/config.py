@@ -82,6 +82,8 @@ class Settings(BaseSettings):
     # chat message content at rest; empty stores them in plain text. See app/core/encryption.py.
     DATA_ENCRYPTION_KEY: str = ""
     LEGAL_DRAFT_STORAGE_PATH: str = "data/legal-drafts"
+    # Uploaded invoice files (XML/PDF), sealed with DATA_ENCRYPTION_KEY like contracts.
+    FINANCE_STORAGE_PATH: str = "data/finance"
     CLOUDINARY_URL: Optional[str] = None
 
     # --- Internal AI service ---

@@ -16,6 +16,7 @@ from app.models.models import AIAgent, User
 from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
 from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
+from app.core.finance_capabilities import upgrade_finance_grants
 from app.agents.langgraph.engine import LangGraphEngine
 from app.clients.ai_service_client import AIServiceError
 from app.plugins.resolver import resolve_skill_restriction
@@ -26,6 +27,13 @@ from app.agents.knowledge.flow import run_knowledge_turn
 from app.agents.legal.flow import run_legal_turn
 
 logger = logging.getLogger(__name__)
+
+# Finance answers only through its tools, so without the AI service it says so rather
+# than guessing at figures.
+FINANCE_UNAVAILABLE_REPLY = (
+    "Trợ lý Tài chính tạm thời không trả lời được vì dịch vụ AI đang không phản hồi. "
+    "Số liệu kế toán vẫn xem được ở trang Tài chính; vui lòng thử lại sau ít phút."
+)
 
 
 def execute_agent_chat(
@@ -83,6 +91,10 @@ def _execute_agent_chat_core(
         raise HTTPException(status_code=404, detail=f"Agent '{role_code_upper}' not found")
     if not agent.is_active:
         raise HTTPException(status_code=409, detail=f"Agent '{role_code_upper}' is inactive")
+    # A Finance row seeded before its tools existed catches up here, before the graph
+    # computes the grant from it. A no-op once the row carries the current version.
+    if upgrade_finance_grants(agent):
+        db.commit()
 
     # Resolved once per turn, immediately after the row is loaded, so every later
     # `_require_tool` and `_can_use_tool` call in this request sees the same narrowing.
@@ -176,6 +188,13 @@ def _execute_agent_chat_core(
             thread_id=thread_id,
             response_data=response_data,
         )
+
+    # -----------------------------------------------------------------------
+    # 4. FINANCE: graph only. Reached when the AI service failed and the fallback ran.
+    # -----------------------------------------------------------------------
+    elif role_code_upper == "FINANCE":
+        response_data["reply"] = FINANCE_UNAVAILABLE_REPLY
+        return response_data
 
     else:
         response_data["reply"] = f"Agent {role_code_upper} đã tiếp nhận chỉ thị: {message}"

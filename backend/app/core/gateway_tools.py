@@ -22,6 +22,8 @@ names against the registry instead, so drift fails a test rather than a producti
 
 from __future__ import annotations
 
+from app.core.finance_capabilities import finance_default_tools
+
 # Every tool name registered in app/tools/registry.py, with the operator-facing description
 # the configuration UI shows. Names missing from here are rejected as "Unknown tools" by
 # PATCH /agents/{role_code}, which used to make seeded agents unsaveable.
@@ -36,6 +38,7 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     # Shares its name with the Legal capability on purpose: one grant switches contract
     # review on or off in the deterministic chat and through LangGraph alike.
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
+    "lookup_invoices": "Tra cứu hoá đơn mua vào/bán ra, trạng thái đối chiếu và ngoại lệ.",
 }
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
@@ -52,6 +55,7 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "generate_legal_document": "soạn văn bản pháp lý",
     "submit_approval_request": "gửi yêu cầu phê duyệt",
     "audit_contract_risk": "rà soát rủi ro hợp đồng",
+    "lookup_invoices": "tra cứu hoá đơn",
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
 
@@ -84,7 +88,8 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
         "submit_approval_request",
     ),
     "IT": ("rag_search", "create_task", "submit_approval_request"),
-    "FINANCE": ("rag_search", "expense_lookup", "create_task", "submit_approval_request"),
+    # Finance runs only on the graph; its grants grow by version in finance_capabilities.
+    "FINANCE": finance_default_tools(),
     "SALES": ("rag_search", "create_task", "submit_approval_request"),
     "KNOWLEDGE": ("rag_search",),
 }

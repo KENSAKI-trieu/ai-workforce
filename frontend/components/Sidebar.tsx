@@ -33,6 +33,8 @@ import {
   Cable,
   Network,
   SlidersHorizontal,
+  Menu,
+  X,
 } from "lucide-react";
 
 // ─── Nav Config ──────────────────────────────────────────────────────────────
@@ -43,6 +45,7 @@ const FINANCE_PAGE_PERMISSIONS = [
   "finance.journal.draft",
   "finance.ar_ap.view",
   "finance.import.manage",
+  "finance.sheet.analyze",
 ];
 
 const AGENTS = [
@@ -222,6 +225,16 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
   const { locale, hydrateLocale, setLocale } = useLanguageStore();
   const text = SIDEBAR_TEXT[locale];
   const [notificationsOpen, setNotificationsOpen] = useState(false);
+  // Below 900px the menu is a drawer. It remembers the page it was opened on, so
+  // following a link -- a new pathname -- closes it without an effect.
+  const [drawerPath, setDrawerPath] = useState<string | null>(null);
+  const drawerOpen = drawerPath === pathname;
+  useEffect(() => {
+    if (!drawerOpen) return;
+    const onKey = (event: KeyboardEvent) => { if (event.key === "Escape") setDrawerPath(null); };
+    window.addEventListener("keydown", onKey);
+    return () => window.removeEventListener("keydown", onKey);
+  }, [drawerOpen]);
   const [unreadNotifications, setUnreadNotifications] = useState(0);
   const handleUnreadChange = useCallback((count: number) => setUnreadNotifications(count), []);
 
@@ -277,23 +290,25 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
 
   const isAgentsGroupActive = AGENTS.some((a) => pathname === a.path);
 
+  const badge = unreadNotifications > 0 && (
+    <span className="app-bell-badge">{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>
+  );
+
   return (
     <>
-    <aside
-      style={{
-        width: "270px",
-        minWidth: "270px",
-        height: "100vh",
-        background: "#FFFFFF",
-        borderRight: "1px solid #E2E8F0",
-        display: "flex",
-        flexDirection: "column",
-        position: "sticky",
-        top: 0,
-        overflow: "hidden",
-        zIndex: 50,
-      }}
-    >
+    {/* Phones and narrow windows: a bar with the menu button and the bell (.app-mobilebar). */}
+    <div className="app-mobilebar">
+      <button className="app-mobilebar-button" onClick={() => setDrawerPath(pathname)} aria-label="Mở trình đơn" aria-expanded={drawerOpen}>
+        <Menu size={20} />
+      </button>
+      <Link href="/dashboard" className="app-mobilebar-brand">AI Workforce</Link>
+      <button className="app-mobilebar-button" onClick={() => setNotificationsOpen((current) => !current)} aria-label={text.notifications} style={{ position: "relative" }}>
+        <Bell size={19} />
+        {badge}
+      </button>
+    </div>
+    {drawerOpen && <button className="app-sidebar-backdrop" aria-label="Đóng trình đơn" onClick={() => setDrawerPath(null)} />}
+    <aside className="app-sidebar" data-open={drawerOpen}>
       {/* ── Employee identity and notifications ── */}
       <div
         style={{
@@ -318,11 +333,14 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
             <span style={{ display: "block", fontSize: 11, color: "#64748B", marginTop: 2 }}>{user?.position_name || user?.role || "Employee"} · {user?.department || "ALL"}</span>
           </span>
         </button>
-        <button onClick={() => setNotificationsOpen((current) => !current)} aria-label={text.notifications} title={text.notifications} style={{ width: 36, height: 36, borderRadius: 10, border: "1px solid #E2E8F0", background: notificationsOpen ? "#EEF2FF" : "#fff", color: notificationsOpen ? "#4F46E5" : "#64748B", cursor: "pointer", display: "grid", placeItems: "center", position: "relative", flexShrink: 0 }}>
+        <button onClick={() => { setDrawerPath(null); setNotificationsOpen((current) => !current); }} aria-label={text.notifications} title={text.notifications} style={{ width: 36, height: 36, borderRadius: 10, border: "1px solid #E2E8F0", background: notificationsOpen ? "#EEF2FF" : "#fff", color: notificationsOpen ? "#4F46E5" : "#64748B", cursor: "pointer", display: "grid", placeItems: "center", position: "relative", flexShrink: 0 }}>
           <Bell size={17}/>
-          {unreadNotifications > 0 && <span style={{ position: "absolute", right: -5, top: -6, minWidth: 17, height: 17, padding: "0 4px", borderRadius: 9, background: "#EF4444", color: "#fff", fontSize: 9, fontWeight: 800, display: "grid", placeItems: "center", border: "2px solid #fff" }}>{unreadNotifications > 99 ? "99+" : unreadNotifications}</span>}
+          {badge}
         </button>
         <LanguageToggle locale={locale} onChange={setLocale} />
+        <button className="app-sidebar-close" onClick={() => setDrawerPath(null)} aria-label="Đóng trình đơn">
+          <X size={18} />
+        </button>
       </div>
 
       {/* ── Scrollable Nav ── */}

@@ -1,22 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
-import { Bell, BellRing, CheckCheck, RefreshCw, Settings2 } from "lucide-react";
+import { useRouter } from "next/navigation";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import { Bell, CheckCheck, RefreshCw, Settings2 } from "lucide-react";
 
 import AdminShell from "@/components/admin/AdminShell";
+import NotificationList from "@/components/NotificationList";
 import api from "@/lib/api";
-
-interface NotificationItem {
-  id: string;
-  event_type: string;
-  title: string;
-  message: string;
-  severity: string;
-  entity_type: string | null;
-  entity_id: string | null;
-  is_read: boolean;
-  created_at: string;
-}
+import { CHANNEL_LABELS, eventLabel, notificationHref, type NotificationItem } from "@/lib/notifications";
 
 interface Preferences {
   event_catalog: string[];
@@ -27,7 +18,9 @@ interface Preferences {
 }
 
 export default function NotificationsPage() {
+  const router = useRouter();
   const [items, setItems] = useState<NotificationItem[]>([]);
+  const [filter, setFilter] = useState<"all" | "unread">("all");
   const [unread, setUnread] = useState(0);
   const [preferences, setPreferences] = useState<Preferences | null>(null);
   const [tab, setTab] = useState<"inbox" | "preferences">("inbox");
@@ -54,10 +47,21 @@ export default function NotificationsPage() {
     await load();
   }
 
-  async function markOne(id: string) {
-    await api.post(`/api/v1/notifications/${id}/read`);
+  async function openItem(item: NotificationItem) {
+    if (!item.is_read) {
+      await api.post(`/api/v1/notifications/${item.id}/read`);
+      await load();
+    }
+    const href = notificationHref(item);
+    if (href) router.push(href);
+  }
+
+  async function remove(item: NotificationItem) {
+    await api.delete(`/api/v1/notifications/${item.id}`);
     await load();
   }
+
+  const visible = useMemo(() => filter === "unread" ? items.filter((item) => !item.is_read) : items, [filter, items]);
 
   async function markAll() {
     await api.post("/api/v1/notifications/read-all");
@@ -94,12 +98,12 @@ export default function NotificationsPage() {
     <AdminShell
       title="Thông báo"
       description="Theo dõi task, workflow, phê duyệt, chi phí, tài liệu và trạng thái integration."
-      action={<button className="ops-button secondary" onClick={() => void scan()}><RefreshCw size={15}/>Quét sự kiện</button>}
+      action={<button className="ops-button secondary" onClick={() => void scan()}><RefreshCw size={15}/>Kiểm tra sự kiện mới</button>}
     >
       {message && <div className="ops-alert">{message}</div>}
       <div className="ops-toolbar" style={{ marginBottom: 16 }}>
         <button className={`ops-button ${tab === "inbox" ? "" : "secondary"}`} onClick={() => setTab("inbox")}>
-          <Bell size={15}/> Hộp thư {unread ? `(${unread})` : ""}
+          <Bell size={15}/> Hộp thư
         </button>
         <button className={`ops-button ${tab === "preferences" ? "" : "secondary"}`} onClick={() => setTab("preferences")}>
           <Settings2 size={15}/> Cấu hình
@@ -111,28 +115,18 @@ export default function NotificationsPage() {
 
       {tab === "inbox" && (
         <div className="ops-card" style={{ padding: 0, overflow: "hidden" }}>
-          {items.map((item) => (
-            <button
-              key={item.id}
-              onClick={() => !item.is_read && void markOne(item.id)}
-              style={{
-                width: "100%", border: 0, borderBottom: "1px solid #eef2f7",
-                background: item.is_read ? "#fff" : "#f5f7ff", padding: "16px 18px",
-                display: "flex", gap: 13, textAlign: "left", cursor: item.is_read ? "default" : "pointer",
-              }}
-            >
-              <span className={`ops-badge ${item.severity === "ERROR" ? "error" : item.severity === "WARNING" ? "warning" : "success"}`}>
-                {item.is_read ? <Bell size={13}/> : <BellRing size={13}/>}
-              </span>
-              <span style={{ flex: 1 }}>
-                <strong style={{ fontSize: ".84rem" }}>{item.title}</strong>
-                <span className="ops-muted" style={{ display: "block", marginTop: 4, fontSize: ".77rem" }}>{item.message}</span>
-                <span className="ops-kpi-note">{item.event_type} · {new Date(item.created_at).toLocaleString("vi-VN")}</span>
-              </span>
-              {!item.is_read && <span className="ops-badge">Mới</span>}
-            </button>
-          ))}
-          {!items.length && <div className="ops-empty">Chưa có thông báo. Bấm “Quét sự kiện” để kiểm tra.</div>}
+          <div style={{ display: "flex", alignItems: "center", gap: 8, padding: "12px 14px", borderBottom: "1px solid #eef2f7" }}>
+            <div className="notif-segment" role="tablist">
+              <button role="tab" aria-selected={filter === "all"} className={filter === "all" ? "active" : ""} onClick={() => setFilter("all")}>Tất cả ({items.length})</button>
+              <button role="tab" aria-selected={filter === "unread"} className={filter === "unread" ? "active" : ""} onClick={() => setFilter("unread")}>Chưa đọc ({unread})</button>
+            </div>
+          </div>
+          <NotificationList
+            items={visible}
+            onOpen={(item) => void openItem(item)}
+            onRemove={(item) => void remove(item)}
+            empty={filter === "unread" ? "Không còn thông báo chưa đọc." : "Chưa có thông báo. Bấm “Kiểm tra sự kiện mới” để quét."}
+          />
         </div>
       )}
 
@@ -143,7 +137,7 @@ export default function NotificationsPage() {
             {preferences.event_catalog.map((eventType) => (
               <label key={eventType} style={{ display: "flex", gap: 9, padding: "8px 0", fontSize: ".8rem" }}>
                 <input type="checkbox" checked={preferences.enabled_event_types.includes(eventType)} onChange={() => togglePreference("enabled_event_types", eventType)} />
-                {eventType.replaceAll("_", " ")}
+                {eventLabel(eventType)}
               </label>
             ))}
           </section>
@@ -151,7 +145,7 @@ export default function NotificationsPage() {
             <div className="ops-card-header"><h2>Kênh nhận</h2></div>
             {preferences.channel_catalog.map((channel) => (
               <label key={channel} style={{ display: "flex", justifyContent: "space-between", gap: 9, padding: "9px 0", fontSize: ".8rem" }}>
-                <span><input type="checkbox" checked={preferences.enabled_channels.includes(channel)} onChange={() => togglePreference("enabled_channels", channel)} style={{ marginRight: 9 }} />{channel.replaceAll("_", " ")}</span>
+                <span><input type="checkbox" checked={preferences.enabled_channels.includes(channel)} onChange={() => togglePreference("enabled_channels", channel)} style={{ marginRight: 9 }} />{CHANNEL_LABELS[channel] ?? channel}</span>
                 {channel !== "IN_APP" && <span className="ops-badge warning">Cần connector</span>}
               </label>
             ))}
@@ -162,7 +156,7 @@ export default function NotificationsPage() {
             </div>
             <label style={{ display: "flex", gap: 9, margin: "14px 0", fontSize: ".8rem" }}>
               <input type="checkbox" checked={preferences.quiet_hours.enabled || false} onChange={(e) => setPreferences({...preferences, quiet_hours: {...preferences.quiet_hours, enabled: e.target.checked}})} />
-              Bật quiet hours
+              Không báo trong giờ yên lặng
             </label>
             <button className="ops-button" onClick={() => void savePreferences()}>Lưu cấu hình</button>
           </section>

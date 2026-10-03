@@ -115,7 +115,7 @@ function canTransition(task: TaskItem, nextStatus: string): boolean {
 
 export default function TaskManagementPage() {
   const router = useRouter();
-  const { isAuthenticated, user } = useAuthStore();
+  const { isAuthenticated, hasHydrated, user } = useAuthStore();
 
   const [tasks, setTasks] = useState<TaskItem[]>([]);
   const [agents, setAgents] = useState<AgentItem[]>([]);
@@ -443,10 +443,10 @@ export default function TaskManagementPage() {
     return matchesSearch && matchesPriority;
   });
 
-  if (!isAuthenticated) return null;
+  if (!hasHydrated || !isAuthenticated) return null;
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "var(--body-bg)" }}>
+    <div className="app-fullheight" style={{ display: "flex", height: "100vh", overflow: "hidden", background: "var(--body-bg)" }}>
       <Sidebar />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
@@ -464,9 +464,9 @@ export default function TaskManagementPage() {
         </header>
 
         {/* Main Workspace */}
-        <main style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
+        <main className="page-main" style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
           {/* Header & Controls */}
-          <div style={{ marginBottom: "20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+          <div className="wrap-mobile" style={{ marginBottom: "20px", display: "flex", alignItems: "center", justifyContent: "space-between" }}>
             <div>
               <h1 style={{ fontSize: "1.5rem", fontWeight: 800, color: "var(--text-dark)", display: "flex", alignItems: "center", gap: "10px" }}>
                 <Ticket size={24} color="var(--primary)" /> Quản Lý Công Việc (Kanban & Task CRUD)
@@ -477,7 +477,7 @@ export default function TaskManagementPage() {
             </div>
 
             {/* View Switcher */}
-            <div style={{ display: "flex", background: "#FFFFFF", padding: "4px", borderRadius: "10px", border: "1px solid var(--border)" }}>
+            <div className="scroll-x-mobile" style={{ display: "flex", background: "#FFFFFF", padding: "4px", borderRadius: "10px", border: "1px solid var(--border)" }}>
               <button
                 onClick={() => setViewMode("kanban")}
                 style={{
@@ -539,7 +539,7 @@ export default function TaskManagementPage() {
           </div>
 
           {/* Search and Filters */}
-          <div style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "20px" }}>
+          <div className="wrap-mobile" style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "20px" }}>
             <div style={{ position: "relative", flex: 1, maxWidth: "380px" }}>
               <Search size={16} style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "var(--text-light)" }} />
               <input
@@ -568,7 +568,7 @@ export default function TaskManagementPage() {
 
           {/* ── View 1: KANBAN BOARD WITH DRAG & DROP ── */}
           {viewMode === "kanban" && (
-            <div
+            <div className="kanban-board"
               style={{
                 display: "grid",
                 gridTemplateColumns: "repeat(5, 1fr)",
@@ -850,7 +850,7 @@ export default function TaskManagementPage() {
                 <textarea className="ta-input" rows={3} placeholder="Chi tiết các yêu cầu..." value={formDesc} onChange={(e) => setFormDesc(e.target.value)} />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
                   <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-dark)", marginBottom: "4px", display: "block" }}>Mức Độ Ưu Tiên</label>
                   <select className="ta-input" value={formPriority} onChange={(e) => setFormPriority(e.target.value)}>
@@ -871,7 +871,7 @@ export default function TaskManagementPage() {
               </div>
 
               {/* Assignee Selection */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
                   <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-dark)", marginBottom: "4px", display: "block" }}>Đối Tượng Phụ Trách</label>
                   <select className="ta-input" value={formAssigneeType} onChange={(e) => { setFormAssigneeType(e.target.value as "NONE" | "USER" | "AGENT"); setFormAssigneeId(""); }}>
@@ -939,7 +939,7 @@ export default function TaskManagementPage() {
                 <textarea className="ta-input" rows={3} value={formDesc} onChange={(e) => setFormDesc(e.target.value)} />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
                   <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-dark)", marginBottom: "4px", display: "block" }}>Mức Độ Ưu Tiên</label>
                   <select className="ta-input" value={formPriority} onChange={(e) => setFormPriority(e.target.value)}>
@@ -960,7 +960,7 @@ export default function TaskManagementPage() {
                 </div>
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
                   <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-dark)", marginBottom: "4px", display: "block" }}>Gán Phụ Trách</label>
                   <select className="ta-input" value={formAssigneeType} onChange={(e) => { setFormAssigneeType(e.target.value as "NONE" | "USER" | "AGENT"); setFormAssigneeId(""); }}>
@@ -1022,7 +1022,7 @@ export default function TaskManagementPage() {
               Task <strong>&quot;{activeTask.title}&quot;</strong> sẽ bị xóa vĩnh viễn khỏi Database. Thao tác này không thể hoàn tác!
             </p>
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+            <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
               <button onClick={() => setShowDeleteModal(false)} className="ta-btn" style={{ justifyContent: "center" }}>
                 Hủy bỏ
               </button>

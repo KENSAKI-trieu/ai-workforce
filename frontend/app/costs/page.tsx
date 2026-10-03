@@ -319,9 +319,9 @@ export default function CostsManagementPage() {
       <Sidebar />
 
       {/* Main Content Area */}
-      <div style={{ flex: 1, padding: "28px 36px", overflowX: "hidden" }}>
+      <div className="page-main" style={{ flex: 1, padding: "28px 36px", overflowX: "hidden" }}>
         {/* Header Title Section */}
-        <div style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
+        <div className="wrap-mobile" style={{ display: "flex", justifyContent: "space-between", alignItems: "center", marginBottom: "24px" }}>
           <div>
             <div style={{ display: "flex", alignItems: "center", gap: "10px" }}>
               <div
@@ -718,7 +718,7 @@ export default function CostsManagementPage() {
 
         {/* ── TAB 1: Analytics & Token Statistics ── */}
         {activeTab === "analytics" && (
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
+          <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "24px" }}>
             {/* Daily Token & Cost Usage Trend */}
             <div
               style={{

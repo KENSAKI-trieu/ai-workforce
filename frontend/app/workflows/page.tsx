@@ -157,14 +157,14 @@ export default function WorkflowsPage() {
             <button className="ta-btn ta-btn-primary" onClick={() => setShowCreate(true)}><Plus size={15} /> Tạo workflow</button>
           </div>
         </header>
-        <main style={{ padding: "24px 32px" }}>
+        <main className="page-main" style={{ padding: "24px 32px" }}>
           <h1 style={{ fontSize: "1.5rem", fontWeight: 800 }}>Workflow Automation</h1>
           <p style={{ color: "var(--text-muted)", margin: "6px 0 20px" }}>
             Xây chuỗi Trigger → AI Agent → Human Approval → Output và theo dõi từng lần chạy.
           </p>
           {error && <div className="ta-card" style={{ color: "#B91C1C", padding: 14, marginBottom: 14 }}>{error}</div>}
 
-          <div style={{ display: "grid", gridTemplateColumns: "320px minmax(480px, 1fr)", gap: 20 }}>
+          <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "320px minmax(480px, 1fr)", gap: 20 }}>
             <section>
               {loading ? <div className="ta-card" style={{ padding: 20 }}>Đang tải...</div> : workflows.map((workflow) => (
                 <button

@@ -85,6 +85,9 @@ export default function ApprovalsCenterPage() {
   const [contractViewer, setContractViewer] = useState<{ title: string; files: ContractFile[]; initialKey: string } | null>(null);
 
   const tabRef = useRef<Tab>("pending");
+  const linkedId = useRef<string | null>(
+    typeof window === "undefined" ? null : new URLSearchParams(window.location.search).get("id"),
+  );
   const list = tab === "pending" ? approvals : submittedItems;
   const readOnly = tab === "submitted";
   const selected = useMemo(
@@ -102,7 +105,19 @@ export default function ApprovalsCenterPage() {
       ]);
       setApprovals(pending.data);
       setSubmittedItems(mine.data);
+      // Opened from a notification (/approvals?id=...): show that request once, on
+      // whichever tab holds it -- a decision on one's own request sits under "Tôi đã gửi".
+      const wanted = linkedId.current;
+      linkedId.current = null;
+      if (wanted && !pending.data.some((item) => item.id === wanted) && mine.data.some((item) => item.id === wanted)) {
+        tabRef.current = "submitted";
+        setTab("submitted");
+      }
       const shown = tabRef.current === "pending" ? pending.data : mine.data;
+      if (wanted && shown.some((item) => item.id === wanted)) {
+        setSelectedId(wanted);
+        return;
+      }
       setSelectedId((current) =>
         current && shown.some((item) => item.id === current) ? current : shown[0]?.id || null,
       );
@@ -228,7 +243,7 @@ export default function ApprovalsCenterPage() {
           </button>
         </header>
 
-        <main style={{ padding: "24px 32px" }}>
+        <main className="page-main" style={{ padding: "24px 32px" }}>
           <h1 style={{ display: "flex", alignItems: "center", gap: 10, fontSize: "1.5rem", fontWeight: 800 }}>
             <Scale size={24} color="var(--primary)" /> Trung tâm phê duyệt an toàn
           </h1>
@@ -237,7 +252,7 @@ export default function ApprovalsCenterPage() {
           </p>
           {error && <div className="ta-card" style={{ padding: 14, color: "#B91C1C", marginBottom: 16 }}>{error}</div>}
 
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, .8fr) minmax(420px, 1.4fr)", gap: 20 }}>
+          <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "minmax(280px, .8fr) minmax(420px, 1.4fr)", gap: 20 }}>
             <section>
               <div style={{ display: "flex", gap: 8, marginBottom: 10 }}>
                 <button className={`ta-btn ${tab === "pending" ? "ta-btn-primary" : "ta-btn-ghost"}`} onClick={() => switchTab("pending")}>

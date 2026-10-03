@@ -335,7 +335,7 @@ export default function OrgStructurePage() {
           )}
         </header>
 
-        <main style={{ padding: "24px 32px" }}>
+        <main className="page-main" style={{ padding: "24px 32px" }}>
           <h1
             style={{
               display: "flex",
@@ -369,7 +369,7 @@ export default function OrgStructurePage() {
             </div>
           )}
 
-          <div
+          <div className="stack-mobile"
             style={{
               display: "grid",
               gridTemplateColumns: "minmax(280px, 380px) minmax(0, 1fr)",
@@ -568,10 +568,40 @@ export default function OrgStructurePage() {
                     </div>
                   ) : (
                     <div style={{ marginBottom: 18 }}>
-                      {groupedCatalog.map(([group, items]) => (
+                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
+                        Đang cấp {draftPermissions.size}/{catalog.length} quyền. Thay đổi chỉ có hiệu lực sau khi bấm Lưu.
+                      </div>
+                      {groupedCatalog.map(([group, items]) => {
+                        // Only boxes the editor may grant; the rest stay as they are.
+                        const grantableCodes = items
+                          .filter((item) => myPermissions.includes(item.code))
+                          .map((item) => item.code);
+                        const held = items.filter((item) => draftPermissions.has(item.code)).length;
+                        const allOn = grantableCodes.length > 0 && grantableCodes.every((code) => draftPermissions.has(code));
+                        return (
                         <div key={group} style={{ marginBottom: 14 }}>
-                          <div style={{ fontWeight: 700, fontSize: 13, marginBottom: 6 }}>
-                            {group}
+                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
+                            <strong style={{ fontSize: 13 }}>{group}</strong>
+                            <span className={`ta-badge ${held ? "ta-badge-info" : "ta-badge-neutral"}`} style={{ fontSize: 10 }}>
+                              {held}/{items.length}
+                            </span>
+                            {canManage && grantableCodes.length > 1 && (
+                              <button
+                                type="button"
+                                className="ta-btn ta-btn-ghost"
+                                style={{ marginLeft: "auto", padding: "2px 10px", fontSize: 12 }}
+                                onClick={() => setDraftPermissions((current) => {
+                                  const next = new Set(current);
+                                  for (const code of grantableCodes) {
+                                    if (allOn) next.delete(code);
+                                    else next.add(code);
+                                  }
+                                  return next;
+                                })}
+                              >
+                                {allOn ? "Bỏ cả nhóm" : "Chọn cả nhóm"}
+                              </button>
+                            )}
                           </div>
                           <div
                             style={{
@@ -598,7 +628,10 @@ export default function OrgStructurePage() {
                                     alignItems: "flex-start",
                                     padding: 10,
                                     borderRadius: 8,
-                                    border: "1px solid var(--border, #E2E8F0)",
+                                    border: checked
+                                      ? "1px solid var(--primary)"
+                                      : "1px solid var(--border, #E2E8F0)",
+                                    background: checked ? "var(--sidebar-active-bg, #EEF2FF)" : "transparent",
                                     opacity: grantable ? 1 : 0.5,
                                     cursor: canManage && grantable ? "pointer" : "not-allowed",
                                   }}
@@ -627,7 +660,8 @@ export default function OrgStructurePage() {
                             })}
                           </div>
                         </div>
-                      ))}
+                        );
+                      })}
                     </div>
                   )}
 

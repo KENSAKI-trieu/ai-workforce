@@ -225,7 +225,7 @@ function StatusBadge({ status }: { status: string }) {
 // ─── Main Page ────────────────────────────────────────────────────────────────
 export default function DashboardPage() {
   const router = useRouter();
-  const { user, isAuthenticated } = useAuthStore();
+  const { user, isAuthenticated, hasHydrated } = useAuthStore();
   const [agents, setAgents] = useState<Agent[]>([]);
   const [dashboardStats, setDashboardStats] = useState<DashboardStats | null>(null);
   const [loading, setLoading] = useState(true);
@@ -345,7 +345,8 @@ export default function DashboardPage() {
   };
 
   const agentStatuses = Object.fromEntries(agents.map((a) => [a.role_code, a.is_active]));
-  if (!isAuthenticated) return null;
+  // isAuthenticated is read from localStorage, which the server render cannot see.
+  if (!hasHydrated || !isAuthenticated) return null;
 
   const kpiCards = [
     {
@@ -402,7 +403,7 @@ export default function DashboardPage() {
   const monthlyData = dashboardStats?.monthly_data || MONTHLY_DATA;
 
   return (
-    <div
+    <div className="app-fullheight"
       style={{
         display: "flex",
         height: "100vh",
@@ -565,9 +566,9 @@ export default function DashboardPage() {
           </div>
 
           {/* Right: Actions */}
-          <div style={{ display: "flex", alignItems: "center", gap: "8px" }}>
+          <div className="wrap-mobile" style={{ display: "flex", alignItems: "center", gap: "8px" }}>
             {/* Date */}
-            <div
+            <div className="hide-mobile"
               style={{
                 display: "flex",
                 alignItems: "center",
@@ -709,7 +710,7 @@ export default function DashboardPage() {
         </header>
 
         {/* ── Page Body ── */}
-        <main
+        <main className="page-main"
           style={{
             flex: 1,
             overflowY: "auto",
@@ -726,7 +727,7 @@ export default function DashboardPage() {
             </div>
 
             {/* Title row */}
-            <div style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
+            <div className="wrap-mobile" style={{ display: "flex", alignItems: "center", justifyContent: "space-between" }}>
               <div>
                 <h1
                   style={{
@@ -789,7 +790,7 @@ export default function DashboardPage() {
           </div>
 
           {/* ── KPI Cards ── */}
-          <div
+          <div className="kpi-row"
             style={{
               display: "grid",
               gridTemplateColumns: "repeat(4, 1fr)",
@@ -868,7 +869,7 @@ export default function DashboardPage() {
           </div>
 
           {/* ── Charts Row ── */}
-          <div
+          <div className="stack-mobile"
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 360px",
@@ -1042,7 +1043,7 @@ export default function DashboardPage() {
           </div>
 
           {/* ── Bottom Grid: Table + Employee List ── */}
-          <div
+          <div className="stack-mobile"
             style={{
               display: "grid",
               gridTemplateColumns: "1fr 0.52fr",

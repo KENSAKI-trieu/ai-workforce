@@ -856,8 +856,8 @@ def withdraw_draft(
 
 # --------------------------------------------------------------------------- sheets to analyse
 #
-# Someone's own spreadsheet: whoever is signed in may upload and analyse one, and only they
-# ever read it. Nothing here touches the books, so no finance box is required.
+# Someone's own spreadsheet: whoever holds "Phân tích file Excel" may upload and analyse
+# one, and only they ever read it. Nothing here touches the books.
 
 
 class SheetCorrection(BaseModel):
@@ -887,7 +887,7 @@ def _own_sheet_or_404(db: Session, user: User, sheet_id: uuid.UUID):
 async def upload_sheet(
     file: UploadFile = File(...),
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(PermissionRequired("finance.sheet.analyze")),
 ):
     filename = Path(file.filename or "bang-tinh.xlsx").name
     data = await file.read()
@@ -911,13 +911,13 @@ async def upload_sheet(
 
 
 @router.get("/sheets", summary="The spreadsheets one uploaded")
-def list_sheets(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+def list_sheets(db: Session = Depends(get_db), current_user: User = Depends(PermissionRequired("finance.sheet.analyze"))):
     sheets = own_sheets(db, current_user).order_by(FinSheet.created_at.desc()).limit(50).all()
     return [describe_sheet(sheet) for sheet in sheets]
 
 
 @router.get("/sheets/{sheet_id}", summary="How a spreadsheet was read, with its first rows")
-def get_sheet(sheet_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+def get_sheet(sheet_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(PermissionRequired("finance.sheet.analyze"))):
     return preview(_own_sheet_or_404(db, current_user, sheet_id))
 
 
@@ -926,7 +926,7 @@ def correct_sheet(
     sheet_id: uuid.UUID,
     body: SheetCorrection,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(PermissionRequired("finance.sheet.analyze")),
 ):
     sheet = _own_sheet_or_404(db, current_user, sheet_id)
     try:
@@ -949,7 +949,7 @@ def analyze_sheet(
     sheet_id: uuid.UUID,
     body: SheetAnalysisRequest,
     db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
+    current_user: User = Depends(PermissionRequired("finance.sheet.analyze")),
 ):
     sheet = _own_sheet_or_404(db, current_user, sheet_id)
     try:
@@ -967,7 +967,7 @@ def analyze_sheet(
 
 
 @router.delete("/sheets/{sheet_id}", status_code=204, summary="Delete a spreadsheet and its file")
-def delete_sheet(sheet_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+def delete_sheet(sheet_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(PermissionRequired("finance.sheet.analyze"))):
     sheet = _own_sheet_or_404(db, current_user, sheet_id)
     storage_key = sheet.storage_key
     db.delete(sheet)

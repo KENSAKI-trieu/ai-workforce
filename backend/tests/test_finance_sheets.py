@@ -57,7 +57,7 @@ def test_a_real_sheet_is_read_without_counting_its_totals():
 
 
 def test_sums_group_by_a_column_or_by_month_and_filter(transactional_db_session):
-    owner = person(transactional_db_session)
+    owner = person(transactional_db_session, "finance.sheet.analyze")
     sheet = FinSheet(tenant_id=owner.tenant_id, created_by_id=owner.id, filename="chi-phi.xlsx", storage_key="x",
                      sheet_name="Chi phí", **{k: v for k, v in parse_grid(GRID).items() if k != "header_row"})
     by_department = analyze(sheet, operation="sum", value_column="số tiền", group_by="Phòng ban")
@@ -79,7 +79,7 @@ def test_sums_group_by_a_column_or_by_month_and_filter(transactional_db_session)
 
 
 def test_a_column_that_is_not_there_is_named_back_with_the_ones_that_are(transactional_db_session):
-    owner = person(transactional_db_session)
+    owner = person(transactional_db_session, "finance.sheet.analyze")
     sheet = FinSheet(tenant_id=owner.tenant_id, created_by_id=owner.id, filename="a.xlsx", storage_key="x",
                      sheet_name="S", **{k: v for k, v in parse_grid(GRID).items() if k != "header_row"})
     result = analyze_spreadsheet(
@@ -94,7 +94,7 @@ def test_a_column_that_is_not_there_is_named_back_with_the_ones_that_are(transac
 
 
 def test_only_the_uploader_reads_a_sheet_and_can_correct_how_it_was_read(client, transactional_db_session):
-    owner = person(transactional_db_session)
+    owner = person(transactional_db_session, "finance.sheet.analyze")
     headers = login(client, owner)
     uploaded = client.post(
         "/api/v1/finance/sheets", headers=headers,
@@ -115,7 +115,7 @@ def test_only_the_uploader_reads_a_sheet_and_can_correct_how_it_was_read(client,
     kept = client.patch(f"/api/v1/finance/sheets/{sheet['sheet_id']}", headers=headers, json={"skip_totals": False})
     assert kept.status_code == 200 and kept.json()["row_count"] == 7
 
-    stranger = person(transactional_db_session)
+    stranger = person(transactional_db_session, "finance.sheet.analyze")
     for response in (
         client.get(f"/api/v1/finance/sheets/{sheet['sheet_id']}", headers=login(client, stranger)),
         client.post(f"/api/v1/finance/sheets/{sheet['sheet_id']}/analyze", headers=login(client, stranger), json={"operation": "count"}),
@@ -139,6 +139,17 @@ def test_only_the_uploader_reads_a_sheet_and_can_correct_how_it_was_read(client,
 
 
 def test_an_old_xls_is_refused_with_how_to_fix_it(client, transactional_db_session):
-    headers = login(client, person(transactional_db_session))
+    headers = login(client, person(transactional_db_session, "finance.sheet.analyze"))
     refused = client.post("/api/v1/finance/sheets", headers=headers, files={"file": ("cu.xls", b"\xd0\xcf\x11\xe0", "application/vnd.ms-excel")})
     assert refused.status_code == 422 and ".xlsx" in refused.json()["detail"]
+
+
+def test_without_the_box_nobody_uploads_or_asks_the_agent(client, transactional_db_session):
+    from app.tools.registry import tool_registry
+
+    assert tool_registry.get("analyze_spreadsheet").acl.permission == "finance.sheet.analyze"
+    assert tool_registry.get("list_spreadsheets").acl.permission == "finance.sheet.analyze"
+    headers = login(client, person(transactional_db_session))
+    assert client.get("/api/v1/finance/sheets", headers=headers).status_code == 403
+    refused = client.post("/api/v1/finance/sheets", headers=headers, files={"file": ("a.csv", b"a,b\n1,2", "text/csv")})
+    assert refused.status_code == 403

@@ -214,7 +214,7 @@ export default function AvatarCropper({ file, busy = false, onCancel, onApply }:
           <button type="button" aria-label="Đóng" onClick={onCancel} disabled={disabled} style={{ width: 34, height: 34, display: "grid", placeItems: "center", border: 0, borderRadius: 9, background: "#F1F5F9", color: "#64748B", cursor: disabled ? "not-allowed" : "pointer" }}><X size={18}/></button>
         </header>
 
-        <div style={{ display: "grid", gridTemplateColumns: "minmax(280px, 1fr) minmax(250px, .8fr)", gap: 22, padding: 20 }}>
+        <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "minmax(280px, 1fr) minmax(250px, .8fr)", gap: 22, padding: 20 }}>
           <div>
             <div style={{ position: "relative", width: "min(100%, 420px)", margin: "0 auto", overflow: "hidden", borderRadius: 16, background: "#E2E8F0", boxShadow: "inset 0 0 0 1px rgba(15,23,42,.1)" }}>
               <canvas

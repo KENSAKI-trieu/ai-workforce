@@ -124,7 +124,7 @@ export default function SheetsTab() {
     : result?.operation === "count" ? Number(value).toLocaleString("vi-VN") : formatVnd(value);
 
   return (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(220px, 280px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
+    <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "minmax(220px, 280px) minmax(0, 1fr)", gap: 16, alignItems: "start" }}>
       <aside className="ta-card" style={{ padding: 14, display: "grid", gap: 10 }}>
         <input ref={fileInput} type="file" accept=".xlsx,.csv" hidden
           onChange={(event) => { const file = event.target.files?.[0]; if (file) void upload(file); event.target.value = ""; }} />

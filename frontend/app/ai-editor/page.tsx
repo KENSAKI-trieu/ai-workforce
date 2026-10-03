@@ -320,7 +320,7 @@ export default function AIEditorPage() {
           <span className="ta-badge ta-badge-info" style={{ display: "inline-flex", gap: 5, alignItems: "center" }}><ShieldCheck size={12} /> Owner / Admin / CEO</span>
         </header>
 
-        <main style={{ padding: "24px 30px 34px" }}>
+        <main className="page-main" style={{ padding: "24px 30px 34px" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", gap: 16, marginBottom: 20 }}>
             <div>
               <h1 style={{ display: "flex", alignItems: "center", gap: 9, fontSize: "1.5rem", fontWeight: 800 }}><Bot size={25} color="var(--primary)" /> Cấu hình AI Employees</h1>
@@ -332,7 +332,7 @@ export default function AIEditorPage() {
           {message && <div className="ta-card" style={{ padding: 13, marginBottom: 14, color: "#047857", background: "#ECFDF5", display: "flex", gap: 8, alignItems: "center" }}><CheckCircle2 size={17} /> {message}</div>}
           {error && <div className="ta-card" style={{ padding: 13, marginBottom: 14, color: "#B91C1C", background: "#FEF2F2" }}>{error}</div>}
 
-          <div style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)", gap: 18, alignItems: "start" }}>
+          <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "280px minmax(0, 1fr)", gap: 18, alignItems: "start" }}>
             <aside className="ta-card" style={{ padding: 10, position: "sticky", top: 16 }}>
               <div style={{ padding: "8px 9px 11px", borderBottom: "1px solid var(--border)" }}>
                 <strong style={{ fontSize: 13 }}>Danh sách Agent</strong>
@@ -376,7 +376,7 @@ export default function AIEditorPage() {
                         {draft.is_active ? "Đang hoạt động" : "Đã tắt"}
                       </label>
                     </div>
-                    <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
+                    <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                       <label style={{ display: "grid", gap: 5, fontSize: 11, fontWeight: 700 }}>Tên Agent<input className="ta-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
                       <label style={{ display: "grid", gap: 5, fontSize: 11, fontWeight: 700 }}>Model<input className="ta-input" value={draft.model_name} onChange={(event) => setDraft({ ...draft, model_name: event.target.value })} /></label>
                     </div>

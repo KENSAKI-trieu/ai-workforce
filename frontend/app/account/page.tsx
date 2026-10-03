@@ -203,7 +203,7 @@ export default function AccountPage() {
   return (
     <div style={{ display: "flex", minHeight: "100vh", background: "var(--body-bg)" }}>
       <Sidebar/>
-      <main style={{ flex: 1, minWidth: 0, padding: "28px 34px", overflowY: "auto" }}>
+      <main className="page-main" style={{ flex: 1, minWidth: 0, padding: "28px 34px", overflowY: "auto" }}>
         <div style={{ maxWidth: 1120, margin: "0 auto" }}>
           <div style={{ display: "flex", justifyContent: "space-between", alignItems: "flex-start", marginBottom: 22 }}>
             <div>
@@ -234,10 +234,10 @@ export default function AccountPage() {
                 </label>
               </section>
 
-              <div style={{ display: "grid", gridTemplateColumns: "minmax(0,1.5fr) minmax(300px,.7fr)", gap: 18, alignItems: "start" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "minmax(0,1.5fr) minmax(300px,.7fr)", gap: 18, alignItems: "start" }}>
                 <form onSubmit={saveProfile} className="ta-card" style={{ padding: 22 }}>
                   <h2 style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 16, fontWeight: 800, marginBottom: 17 }}><UserRound size={18} color="#4F46E5"/> Hồ sơ cá nhân</h2>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13 }}>
+                  <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13 }}>
                     <Field label="Họ và tên"><input className="ta-input" value={form.full_name} onChange={(e) => updateField("full_name", e.target.value)} required minLength={2}/></Field>
                     <Field label="Số điện thoại"><input className="ta-input" value={form.phone} onChange={(e) => updateField("phone", e.target.value)} placeholder="0901 234 567"/></Field>
                     <Field label="Ngày sinh"><input className="ta-input" type="date" value={form.date_of_birth} onChange={(e) => updateField("date_of_birth", e.target.value)}/></Field>
@@ -251,7 +251,7 @@ export default function AccountPage() {
                   </div>
 
                   <h2 style={{ display: "flex", gap: 8, alignItems: "center", fontSize: 16, fontWeight: 800, margin: "25px 0 15px" }}><Heart size={18} color="#EC4899"/> Sở thích & cách làm việc</h2>
-                  <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13 }}>
+                  <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 13 }}>
                     <Field label="Sở thích" wide><input className="ta-input" value={form.hobbies} onChange={(e) => updateField("hobbies", e.target.value)} placeholder="Đọc sách, chạy bộ, du lịch..."/><small style={{ color: "var(--text-light)" }}>Phân cách bằng dấu phẩy.</small></Field>
                     <Field label="Ngôn ngữ ưu tiên"><select className="ta-input" value={form.preferred_language} onChange={(e) => updateField("preferred_language", e.target.value)}><option value="vi">Tiếng Việt</option><option value="ja">Tiếng Nhật</option><option value="en">English</option></select></Field>
                     <Field label="Múi giờ"><input className="ta-input" value={form.timezone} onChange={(e) => updateField("timezone", e.target.value)}/></Field>

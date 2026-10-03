@@ -377,15 +377,15 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             PaymentScheduleInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.payment_schedule", get_payment_schedule, permission="finance.ar_ap.view",
         ),
-        # A user's own uploaded file, not the books: no box on the ACL, and the executor
-        # reads only files the caller uploaded.
+        # A user's own uploaded file, not the books: the executor reads only files the
+        # caller uploaded, and the box decides who may analyse at all.
         _definition(
             "list_spreadsheets",
             "The Excel/CSV files the user uploaded to analyse, newest first, with their "
             "columns (name and kind: NUMBER, DATE, TEXT) and row counts. Call it before "
             "analyze_spreadsheet when you do not know the columns.",
             SpreadsheetListInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
-            "tool.finance.sheets", list_spreadsheets,
+            "tool.finance.sheets", list_spreadsheets, permission="finance.sheet.analyze",
         ),
         _definition(
             "analyze_spreadsheet",
@@ -396,7 +396,7 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             "come from the user's file, not the company's books: say so. The reply shows a "
             "chart of it. " + reading,
             SpreadsheetAnalysisInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
-            "tool.finance.sheet_analysis", analyze_spreadsheet,
+            "tool.finance.sheet_analysis", analyze_spreadsheet, permission="finance.sheet.analyze",
         ),
         # Both terminal and approval-opening: nothing is paid or sent on this call.
         _definition(

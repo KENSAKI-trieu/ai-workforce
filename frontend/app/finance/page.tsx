@@ -33,8 +33,8 @@ export default function FinancePage() {
       visible.push({ key: "books", label: "Sổ sách & báo cáo" });
     }
     if (userCan(user, "finance.ar_ap.view")) visible.push({ key: "debts", label: "Công nợ" });
-    // Anyone's own spreadsheet: no box needed, the server shows each person only their files.
-    visible.push({ key: "sheets", label: "Phân tích Excel" });
+    // One's own spreadsheets: the server shows each person only their files.
+    if (userCan(user, "finance.sheet.analyze")) visible.push({ key: "sheets", label: "Phân tích Excel" });
     if (userCan(user, "finance.import.manage")) visible.push({ key: "data", label: "Dữ liệu & cài đặt" });
     return visible;
   }, [user]);
@@ -61,7 +61,7 @@ export default function FinancePage() {
             <MessageSquare size={15} /> Hỏi Trợ lý Tài chính
           </button>
         </header>
-        <main style={{ padding: "24px 32px" }}>
+        <main className="page-main" style={{ padding: "24px 32px" }}>
           <h1 style={{ display: "flex", alignItems: "center", gap: 10, fontSize: "1.5rem", fontWeight: 800 }}>
             <Receipt size={24} color="var(--primary)" /> Sổ sách Tài chính
           </h1>

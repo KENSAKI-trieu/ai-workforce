@@ -58,7 +58,7 @@ const DAYS_OF_WEEK = ["T2", "T3", "T4", "T5", "T6", "T7", "CN"];
 
 export default function CalendarPage() {
   const router = useRouter();
-  const { isAuthenticated } = useAuthStore();
+  const { isAuthenticated, hasHydrated } = useAuthStore();
 
   const [currentDate, setCurrentDate] = useState(new Date());
   const [tasks, setTasks] = useState<TaskItem[]>([]);
@@ -226,10 +226,10 @@ export default function CalendarPage() {
   const today = new Date();
   const isCurrentMonth = today.getFullYear() === year && today.getMonth() === month;
 
-  if (!isAuthenticated) return null;
+  if (!hasHydrated || !isAuthenticated) return null;
 
   return (
-    <div style={{ display: "flex", height: "100vh", overflow: "hidden", background: "var(--body-bg)" }}>
+    <div className="app-fullheight" style={{ display: "flex", height: "100vh", overflow: "hidden", background: "var(--body-bg)" }}>
       <Sidebar />
 
       <div style={{ flex: 1, display: "flex", flexDirection: "column", overflow: "hidden", minWidth: 0 }}>
@@ -247,7 +247,7 @@ export default function CalendarPage() {
         </header>
 
         {/* Main Calendar Content */}
-        <main style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
+        <main className="page-main" style={{ flex: 1, overflowY: "auto", padding: "24px 32px" }}>
           {/* Header Controls & Month Picker */}
           <div style={{ marginBottom: "20px", display: "flex", alignItems: "center", justifyContent: "space-between", flexWrap: "wrap", gap: "16px" }}>
             <div>
@@ -301,7 +301,7 @@ export default function CalendarPage() {
           </div>
 
           {/* Search & Filter Bar */}
-          <div style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "20px" }}>
+          <div className="wrap-mobile" style={{ display: "flex", alignItems: "center", gap: "14px", marginBottom: "20px" }}>
             <div style={{ position: "relative", flex: 1, maxWidth: "340px" }}>
               <Search size={16} style={{ position: "absolute", left: "12px", top: "50%", transform: "translateY(-50%)", color: "var(--text-light)" }} />
               <input
@@ -343,9 +343,9 @@ export default function CalendarPage() {
           </div>
 
           {/* Calendar Grid */}
-          <div className="ta-card" style={{ padding: "0", borderRadius: "16px", overflow: "hidden" }}>
+          <div className="ta-card scroll-x-mobile" style={{ padding: "0", borderRadius: "16px", overflow: "hidden" }}>
             {/* Weekdays Header */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: "#F8FAFC", borderBottom: "1px solid var(--border)" }}>
+            <div className="calendar-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: "#F8FAFC", borderBottom: "1px solid var(--border)" }}>
               {DAYS_OF_WEEK.map((day, idx) => (
                 <div
                   key={day}
@@ -364,7 +364,7 @@ export default function CalendarPage() {
             </div>
 
             {/* Days Grid */}
-            <div style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: "#E2E8F0", gap: "1px" }}>
+            <div className="calendar-grid" style={{ display: "grid", gridTemplateColumns: "repeat(7, 1fr)", background: "#E2E8F0", gap: "1px" }}>
               {/* Previous Month Padding Days */}
               {Array.from({ length: startingDayOfWeek }).map((_, idx) => {
                 const prevDay = prevMonthLastDay - startingDayOfWeek + idx + 1;
@@ -508,7 +508,7 @@ export default function CalendarPage() {
                 <textarea className="ta-input" rows={3} placeholder="Nội dung công việc..." value={formDesc} onChange={(e) => setFormDesc(e.target.value)} />
               </div>
 
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
                   <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-dark)", marginBottom: "4px", display: "block" }}>Mức Độ Ưu Tiên</label>
                   <select className="ta-input" value={formPriority} onChange={(e) => setFormPriority(e.target.value)}>
@@ -526,7 +526,7 @@ export default function CalendarPage() {
               </div>
 
               {/* Assignee Selection */}
-              <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
+              <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px" }}>
                 <div>
                   <label style={{ fontSize: "0.8rem", fontWeight: 600, color: "var(--text-dark)", marginBottom: "4px", display: "block" }}>Đối Tượng Phụ Trách</label>
                   <select className="ta-input" value={formAssigneeType} onChange={(e) => { setFormAssigneeType(e.target.value as "NONE" | "USER" | "AGENT"); setFormAssigneeId(""); }}>
@@ -589,7 +589,7 @@ export default function CalendarPage() {
               </p>
             )}
 
-            <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", fontSize: "0.82rem", color: "var(--text-dark)", marginBottom: "20px" }}>
+            <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: "12px", fontSize: "0.82rem", color: "var(--text-dark)", marginBottom: "20px" }}>
               <div><strong>Trạng thái:</strong> {selectedTask.status}</div>
               <div><strong>Hạn chót:</strong> {selectedTask.due_date ? new Date(selectedTask.due_date).toLocaleDateString("vi-VN") : "Không có"}</div>
               <div><strong>Người phụ trách:</strong> {selectedTask.ai_agent ? `${selectedTask.ai_agent.emoji} ${selectedTask.ai_agent.name}` : selectedTask.assignee?.name || "Chưa gán"}</div>

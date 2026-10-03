@@ -148,7 +148,7 @@ export default function InvoicesTab({ canUpload, canPropose }: { canUpload: bool
       )}
       {message && <div className="ta-card" style={{ padding: 12, marginBottom: 12, color: message.tone === "error" ? "#B91C1C" : "#047857" }}>{message.text}</div>}
 
-      <div style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) minmax(380px, 1.1fr)", gap: 16 }}>
+      <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "minmax(320px, 1fr) minmax(380px, 1.1fr)", gap: 16 }}>
         <section>
           <div style={{ display: "flex", gap: 6, marginBottom: 10, flexWrap: "wrap" }}>
             {["", "EXCEPTION", "MATCHED", "POSTED", "PAID"].map((status) => (

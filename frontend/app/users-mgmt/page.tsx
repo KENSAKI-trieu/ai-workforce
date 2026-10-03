@@ -350,7 +350,7 @@ export default function UsersManagementPage() {
             <button className="ta-btn ta-btn-primary" onClick={() => setShowAdd(true)}><UserPlus size={15} /> Thêm nhân viên</button>
           </div>}
         </header>
-        <main style={{ padding: "24px 32px" }}>
+        <main className="page-main" style={{ padding: "24px 32px" }}>
           <h1 style={{ display: "flex", alignItems: "center", gap: 9, fontSize: "1.5rem", fontWeight: 800 }}><Users size={24} color="var(--primary)" /> Quản lý công ty & phân quyền</h1>
           <p style={{ color: "var(--text-muted)", margin: "6px 0 18px" }}>Vai trò lấy từ cây chức vụ của công ty. Tạo hoặc đổi quyền của chức vụ trong Sơ đồ tổ chức.</p>
           {error && <div className="ta-card" style={{ color: "#B91C1C", padding: 13, marginBottom: 14 }}>{error}</div>}
@@ -363,7 +363,7 @@ export default function UsersManagementPage() {
             ))}
           </div>
 
-          <div style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) 220px 190px", gap: 10, marginBottom: 14 }}>
+          <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "minmax(260px, 1fr) 220px 190px", gap: 10, marginBottom: 14 }}>
             <div style={{ position: "relative" }}>
               <Search size={15} style={{ position: "absolute", top: 12, left: 11 }} />
               <input className="ta-input" value={query} onChange={(event) => setQuery(event.target.value)} placeholder="Tìm theo tên hoặc email..." style={{ paddingLeft: 34 }} />
@@ -444,7 +444,7 @@ export default function UsersManagementPage() {
           <input className="ta-input" placeholder="Họ và tên" value={employee.full_name} onChange={(event) => setEmployee({ ...employee, full_name: event.target.value })} required />
           <input className="ta-input" type="email" placeholder="Email công ty" value={employee.email} onChange={(event) => setEmployee({ ...employee, email: event.target.value })} required />
           <input className="ta-input" type="password" minLength={8} value={employee.password} onChange={(event) => setEmployee({ ...employee, password: event.target.value })} required />
-          <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
+          <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 10 }}>
             <select className="ta-input" value={employee.position_id} onChange={(event) => setEmployee({ ...employee, position_id: event.target.value })} required>
               {assignablePositions.map((position) => (
                 <option key={position.id} value={position.id}>{position.name}</option>

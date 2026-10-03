@@ -66,7 +66,8 @@ def test_an_ordinary_employee_can_read_the_org_chart(client, employee_token_head
     payload = _tree(client, employee_token_headers)
 
     assert payload["positions"]
-    assert payload["my_permissions"] == []
+    # Only their own spreadsheets: nothing that reaches anyone else's data.
+    assert payload["my_permissions"] == ["finance.sheet.analyze"]
 
 
 # ---------------------------------------------------------------- creating

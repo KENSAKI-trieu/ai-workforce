@@ -135,10 +135,6 @@ PERMISSIONS: tuple[Permission, ...] = (
     ),
     # --- Chuyên môn ---
     Permission(
-        "finance.expense.view", "Chuyên môn", "Tra cứu chi phí",
-        "Dùng công cụ tra cứu chi phí và dữ liệu tài chính.",
-    ),
-    Permission(
         "legal.document.generate", "Chuyên môn", "Soạn văn bản pháp lý",
         "Dùng công cụ sinh bản nháp văn bản pháp lý.",
     ),
@@ -149,7 +145,8 @@ PERMISSIONS: tuple[Permission, ...] = (
     # --- Tài chính ---
     Permission(
         "finance.ledger.view", "Tài chính", "Xem sổ sách kế toán",
-        "Tra cứu số dư, sổ cái, bảng cân đối phát sinh và ngân sách mọi phòng ban.",
+        "Tra cứu số dư, sổ cái, bảng cân đối phát sinh, xu hướng tài khoản, cơ cấu chi phí và "
+        "ngân sách mọi phòng ban, kèm biểu đồ, trên trang Tài chính và qua Trợ lý Tài chính.",
     ),
     Permission(
         "finance.budget.view_own", "Tài chính", "Xem ngân sách phòng mình",
@@ -160,29 +157,37 @@ PERMISSIONS: tuple[Permission, ...] = (
         "Tải hoá đơn điện tử lên, xem và đối chiếu hoá đơn với đơn mua hàng.",
     ),
     Permission(
-        "finance.journal.draft", "Tài chính", "Đề xuất bút toán",
-        "Cho agent đề xuất bút toán nháp và phiếu chi nháp để gửi duyệt.",
+        "finance.journal.draft", "Tài chính", "Lập bút toán, phiếu chi nháp",
+        "Lập bút toán nháp và phiếu chi nháp (trên trang Tài chính hoặc nhờ Trợ lý Tài chính) "
+        "để gửi duyệt. Không tự ghi sổ, không chuyển tiền.",
     ),
     Permission(
         "finance.journal.approve", "Tài chính", "Duyệt bút toán, phiếu chi mức thường",
-        "Duyệt bút toán và phiếu chi dưới ngưỡng thứ nhất (mặc định 20 triệu đồng).",
+        "Duyệt bút toán và phiếu chi dưới ngưỡng thứ nhất (mặc định 20 triệu đồng), và duyệt "
+        "thư nhắc nợ trước khi gửi khách hàng.",
     ),
     Permission(
         "finance.journal.approve_high", "Tài chính", "Duyệt bút toán, phiếu chi mức cao",
-        "Duyệt bút toán và phiếu chi đến ngưỡng thứ hai (mặc định 500 triệu đồng). "
-        "Trên ngưỡng đó cần quyền phê duyệt tối quan trọng.",
+        "Duyệt bút toán và phiếu chi đến ngưỡng thứ hai (mặc định 500 triệu đồng), và rút lại "
+        "phiếu do người khác gửi. Trên ngưỡng đó cần quyền phê duyệt tối quan trọng.",
     ),
     Permission(
         "finance.ar_ap.view", "Tài chính", "Xem công nợ",
         "Xem công nợ phải thu, phải trả, tuổi nợ và lịch thanh toán.",
     ),
     Permission(
-        "finance.reminder.send", "Tài chính", "Soạn nhắc nợ",
-        "Cho agent soạn email nhắc nợ khách hàng để gửi duyệt.",
+        "finance.reminder.send", "Tài chính", "Soạn thư nhắc nợ",
+        "Soạn email nhắc nợ khách hàng (trên trang Tài chính hoặc nhờ Trợ lý Tài chính) để gửi "
+        "duyệt; thư chỉ được gửi khi người có quyền duyệt đồng ý.",
     ),
     Permission(
         "finance.import.manage", "Tài chính", "Nhập dữ liệu kế toán",
         "Nhập hệ thống tài khoản, sổ cái, đối tượng, ngân sách từ Excel và cấu hình tài chính.",
+    ),
+    Permission(
+        "finance.sheet.analyze", "Tài chính", "Phân tích file Excel",
+        "Tải bảng tính của riêng mình lên để tính tổng, đếm, trung bình theo nhóm và xem biểu đồ, "
+        "kể cả hỏi Trợ lý Tài chính về file đó. Mỗi người chỉ thấy file của mình; không đọc sổ sách.",
     ),
     # --- Báo cáo ---
     Permission(
@@ -192,6 +197,11 @@ PERMISSIONS: tuple[Permission, ...] = (
     Permission(
         "costs.view", "Báo cáo", "Xem chi phí AI",
         "Xem báo cáo chi phí sử dụng mô hình.",
+    ),
+    Permission(
+        "finance.expense.view", "Báo cáo", "Tra cứu chi phí AI qua trợ lý",
+        "Cho trợ lý AI (như Trợ lý CEO) trả lời về chi phí và mức sử dụng mô hình AI. "
+        "Không liên quan đến sổ sách kế toán.",
     ),
     Permission(
         "costs.manage", "Báo cáo", "Quản lý ngân sách AI",
@@ -282,6 +292,8 @@ _MANAGER_CORE = (
     "audit.view",
     "finance.expense.view",
     "finance.budget.view_own",
+    # One's own spreadsheet. Everyone except a guest had it before it became a box.
+    "finance.sheet.analyze",
 )
 
 # The finance powers. Kept out of _ADMIN_CORE on purpose: everything there that a Manager
@@ -357,7 +369,7 @@ DEFAULT_POSITIONS: tuple[DefaultPosition, ...] = (
     DefaultPosition("ceo", "Giám đốc điều hành", "CEO", "owner", _CEO_PERMISSIONS),
     DefaultPosition("admin", "Quản trị viên", "Admin", "ceo", _ADMIN_PERMISSIONS),
     DefaultPosition("manager", "Quản lý", "Manager", "ceo", _MANAGER_PERMISSIONS),
-    DefaultPosition("employee", "Nhân viên", "Employee", "manager", ()),
+    DefaultPosition("employee", "Nhân viên", "Employee", "manager", ("finance.sheet.analyze",)),
     DefaultPosition("guest", "Khách", "Guest", "manager", ()),
 )
 

@@ -195,7 +195,7 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
   const partTotal = parts.reduce((sum, part) => sum + Number(part.value), 0);
 
   const donut = () => (
-    <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) minmax(180px, 1.2fr)", gap: 12, alignItems: "center" }}>
+    <div className="fin-donut" style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) minmax(180px, 1.2fr)", gap: 12, alignItems: "center" }}>
       <ResponsiveContainer width="100%" height={height - 20}>
         <PieChart>
           <Tooltip formatter={show} />

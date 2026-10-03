@@ -14,6 +14,13 @@ export function currentPeriod(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
+/** The YYYY-MM period `months` before (negative) or after `period`. */
+export function shiftPeriod(period: string, months: number): string {
+  const [year, month] = period.split("-").map(Number);
+  const index = year * 12 + (month - 1) + months;
+  return `${Math.floor(index / 12)}-${String((index % 12) + 1).padStart(2, "0")}`;
+}
+
 /** A balance as the books write it: "Nợ 1.000 ₫", "Có 1.000 ₫", or both for 131/331 and the like. */
 export function formatSide(side: { debit: string; credit: string } | undefined): string {
   if (!side) return "—";

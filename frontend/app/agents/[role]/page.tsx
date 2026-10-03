@@ -29,6 +29,7 @@ import {
   HRChatTools,
   HRMessageCard,
 } from "@/components/hr/HRChatTools";
+import FinanceChart, { type ChartSpec } from "@/components/finance/FinanceChart";
 import api from "@/lib/api";
 import { ExecutionPhase, streamAgentChat } from "@/lib/chatStream";
 import { useAuthStore, userCan } from "@/store/useAuthStore";
@@ -590,7 +591,14 @@ export default function AgentPage() {
                         ))}
                       </div>
                     )}
-                    {item.attachments?.map((attachment, index) => (
+                    {item.attachments?.map((attachment, index) => attachment.type === "CHART_CARD" ? (
+                      <FinanceChart
+                        key={`${item.id}-attachment-${index}`}
+                        spec={attachment.payload as unknown as ChartSpec}
+                        height={240}
+                        width={640}
+                      />
+                    ) : (
                       <HRMessageCard
                         key={`${item.id}-attachment-${index}`}
                         attachment={attachment}

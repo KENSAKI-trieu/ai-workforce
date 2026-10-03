@@ -119,6 +119,7 @@ def _execute_agent_chat_core(
         "invoice_card": None,
         "quote_card": None,
         "dag_plan_card": None,
+        "chart_cards": [],
     }
 
     # Checked before either engine: an unfinished agent answers the same way whether or

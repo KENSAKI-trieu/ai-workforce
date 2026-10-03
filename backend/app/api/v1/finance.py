@@ -41,13 +41,23 @@ from app.domains.finance.payments import (
 )
 from app.domains.finance.reports import (
     account_balance,
+    account_trend,
     aging,
     budget_vs_actual,
+    expense_breakdown,
     journal_workbook,
     own_budget_department,
     payment_schedule,
     period_bounds,
     trial_balance,
+)
+from app.domains.finance.visuals import (
+    aging_chart,
+    balance_chart,
+    budget_chart,
+    expense_chart,
+    schedule_chart,
+    trend_chart,
 )
 from app.domains.platform.position_service import has_permission
 from app.domains.finance.storage import read_invoice_file
@@ -577,6 +587,11 @@ def export_journal(
 # --------------------------------------------------------------------------- reports
 
 
+def _with_charts(report: dict[str, Any], builder) -> dict[str, Any]:
+    """The report and the charts drawn from it: the same builders the chat uses."""
+    return {**report, "charts": builder(report)}
+
+
 def _period_or_422(period: str) -> str:
     try:
         return normalize_period(period)
@@ -591,7 +606,7 @@ def report_balance(
     db: Session = Depends(get_db),
     current_user: User = Depends(PermissionRequired("finance.ledger.view")),
 ):
-    return account_balance(db, current_user.tenant_id, account, _period_or_422(period))
+    return _with_charts(account_balance(db, current_user.tenant_id, account, _period_or_422(period)), balance_chart)
 
 
 @router.get("/reports/trial-balance", summary="Trial balance of a period")
@@ -615,7 +630,9 @@ def report_budget(
         department = own_budget_department(current_user)
         if department is None:
             raise HTTPException(status_code=403, detail="Tài khoản chưa gắn phòng ban nào để xem ngân sách phòng mình")
-    return budget_vs_actual(db, current_user.tenant_id, _period_or_422(period), department=department)
+    return _with_charts(
+        budget_vs_actual(db, current_user.tenant_id, _period_or_422(period), department=department), budget_chart,
+    )
 
 
 @router.get("/reports/aging", summary="Aging of receivables or payables")
@@ -627,7 +644,9 @@ def report_aging(
 ):
     if kind not in {"RECEIVABLE", "PAYABLE"}:
         raise HTTPException(status_code=422, detail="kind must be RECEIVABLE or PAYABLE")
-    return aging(db, current_user.tenant_id, "OUT" if kind == "RECEIVABLE" else "IN", as_of or date.today())
+    return _with_charts(
+        aging(db, current_user.tenant_id, "OUT" if kind == "RECEIVABLE" else "IN", as_of or date.today()), aging_chart,
+    )
 
 
 @router.get("/reports/payment-schedule", summary="Purchase invoices falling due")
@@ -636,7 +655,43 @@ def report_payment_schedule(
     db: Session = Depends(get_db),
     current_user: User = Depends(PermissionRequired("finance.ar_ap.view")),
 ):
-    return payment_schedule(db, current_user.tenant_id, date.today(), max(1, min(horizon_days, 90)))
+    return _with_charts(
+        payment_schedule(db, current_user.tenant_id, date.today(), max(1, min(horizon_days, 90))), schedule_chart,
+    )
+
+
+@router.get("/reports/account-trend", summary="One account month by month, with its charts")
+def report_account_trend(
+    account: str,
+    from_period: str,
+    to_period: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view")),
+):
+    if not account.isdigit():
+        raise HTTPException(status_code=422, detail="Số tài khoản chỉ gồm chữ số")
+    return _with_charts(
+        account_trend(db, current_user.tenant_id, account, _period_or_422(from_period), _period_or_422(to_period)),
+        trend_chart,
+    )
+
+
+@router.get("/reports/expenses", summary="Expenses by account or department, with a chart")
+def report_expenses(
+    from_period: str,
+    to_period: str,
+    group_by: str = "account",
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view")),
+):
+    if group_by not in {"account", "department"}:
+        raise HTTPException(status_code=422, detail="group_by must be account or department")
+    return _with_charts(
+        expense_breakdown(
+            db, current_user.tenant_id, _period_or_422(from_period), _period_or_422(to_period), group_by=group_by,
+        ),
+        expense_chart,
+    )
 
 
 # --------------------------------------------------------------------------- vouchers and reminders

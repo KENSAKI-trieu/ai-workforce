@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
 from app.tools.schemas import (
     AccountBalanceInput,
+    AccountTrendInput,
     AgingInput,
     BudgetVsActualInput,
     ContractRiskReviewInput,
@@ -20,6 +21,7 @@ from app.tools.schemas import (
     DraftPaymentReminderInput,
     DraftPaymentVoucherInput,
     EmployeeLookupInput,
+    ExpenseBreakdownInput,
     ExpenseLookupInput,
     GenerateLegalDocumentInput,
     InvoiceLookupInput,
@@ -252,8 +254,10 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
     """The Finance agent's tools, each gated by the org-structure box for its work."""
     from app.tools.executors.finance import (
         get_account_balance,
+        get_account_trend,
         get_aging,
         get_budget_vs_actual,
+        get_expense_breakdown,
         get_ledger_detail,
         get_payment_schedule,
         draft_reminder,
@@ -310,6 +314,23 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             "ar_ap_aging with that party. " + two_sided + reading,
             AccountBalanceInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.balance", get_account_balance, permission="finance.ledger.view",
+        ),
+        _definition(
+            "get_account_trend",
+            "One account month by month over a range of periods (at most 24): opening, "
+            "debits, credits and closing balance of each month. Use it for how a balance, "
+            "a revenue or a cost moved over time; the reply shows a chart of it. "
+            + two_sided + reading,
+            AccountTrendInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 30,
+            "tool.finance.trend", get_account_trend, permission="finance.ledger.view",
+        ),
+        _definition(
+            "get_expense_breakdown",
+            "What the company spent between two periods (expense accounts 6xx and 8xx, "
+            "closing entries to 911 left out), by account or by department, each with its "
+            "share of the total; the reply shows a chart of it. " + reading,
+            ExpenseBreakdownInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.expenses", get_expense_breakdown, permission="finance.ledger.view",
         ),
         _definition(
             "get_trial_balance",

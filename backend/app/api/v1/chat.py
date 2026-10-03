@@ -51,6 +51,7 @@ class AgentChatResponse(BaseModel):
     invoice_card: Optional[dict[str, Any]] = None
     quote_card: Optional[dict[str, Any]] = None
     dag_plan_card: Optional[dict[str, Any]] = None
+    chart_cards: list[dict[str, Any]] = Field(default_factory=list)
 
 
 class FeedbackRequest(BaseModel):
@@ -116,7 +117,7 @@ def _result_attachments(result: dict[str, Any]) -> list[dict[str, Any]]:
         {"type": key.upper(), "payload": result[key]}
         for key in card_keys
         if result.get(key) is not None
-    ]
+    ] + [{"type": "CHART_CARD", "payload": chart} for chart in result.get("chart_cards") or []]
 
 
 def _encode_sse(event: str, data: dict[str, Any]) -> str:

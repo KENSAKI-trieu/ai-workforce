@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from app.agents.base.figures import figures_in, format_money, render_results, unsupported_figures
-from app.agents.base.nodes import citation_verification
+from app.agents.base.nodes import _drop_tool_tags, citation_verification
 from app.agents.finance.agent import POLICY as FINANCE_POLICY
 
 BALANCE = {
@@ -92,3 +92,14 @@ def test_the_graph_reformats_a_verified_reply_only():
     assert passed["final_answer"] == "Số dư cuối kỳ là 125.000.000 ₫."
     withheld = citation_verification(_state("Số dư cuối kỳ là 152000000.00 ₫.", [BALANCE]))
     assert withheld["errors"][-1]["error"] == "UNSUPPORTED_FIGURES"
+
+
+def test_a_tag_naming_the_tool_is_dropped_but_a_document_citation_stays():
+    state = _state(
+        "Tổng nợ quá hạn là 125000000.00 ₫ [Nguồn: ar_ap_aging].",
+        [{**BALANCE, "source": "fin_invoices POSTED OUT"}],
+    )
+    state["tool_calls"][0]["name"] = "ar_ap_aging"
+    assert citation_verification(state)["final_answer"] == "Tổng nợ quá hạn là 125.000.000 ₫."
+    kept = "Theo TT200 [Citation: TT200.pdf, Điều 52]."
+    assert _drop_tool_tags(kept, {"ar_ap_aging", "fin_invoices posted out"}) == kept

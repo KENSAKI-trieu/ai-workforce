@@ -506,6 +506,111 @@ def payment_schedule(db: Session, tenant_id: uuid.UUID, as_of: date, horizon_day
     }
 
 
+MAX_TREND_PERIODS = 24
+
+
+def periods_between(start: str, end: str) -> list[str]:
+    """Every YYYY-MM period from `start` to `end`, both included."""
+    start, end = normalize_period(start), normalize_period(end)
+    if start > end:
+        start, end = end, start
+    year, month = int(start[:4]), int(start[5:])
+    periods = []
+    while f"{year:04d}-{month:02d}" <= end:
+        periods.append(f"{year:04d}-{month:02d}")
+        year, month = (year + 1, 1) if month == 12 else (year, month + 1)
+    return periods
+
+
+def account_trend(db: Session, tenant_id: uuid.UUID, code: str, start: str, end: str) -> dict[str, Any]:
+    """One account month by month: opening, debits, credits and closing of each period.
+
+    Each month is `account_balance` of that month, so the figures are the ones a single
+    balance question would get; the range is capped to keep the answer readable.
+    """
+    periods = periods_between(start, end)[-MAX_TREND_PERIODS:]
+    rows = []
+    name, two_sided = None, _two_sided(code)
+    for period in periods:
+        balance = account_balance(db, tenant_id, code, period)
+        name = name or balance["account_name"]
+        rows.append({key: balance[key] for key in ("period", "opening", "period_debit", "period_credit", "closing")})
+    return {
+        "account": code,
+        "account_name": name,
+        "two_sided": two_sided,
+        "periods": rows,
+        "source": f"fin_ledger_lines account {code}* {periods[0]}..{periods[-1]}",
+    }
+
+
+# Classes 6 and 8 of TT200/TT133: production, selling, administrative, financial and other
+# expenses. A close to 911 at period end moves them out again; it is not spending.
+EXPENSE_PREFIXES = ("6", "8")
+
+
+def expense_breakdown(
+    db: Session,
+    tenant_id: uuid.UUID,
+    start: str,
+    end: str,
+    *,
+    group_by: str = "account",
+    level: int = 3,
+) -> dict[str, Any]:
+    """What was spent between two periods, by expense account or by department."""
+    periods = periods_between(start, end)
+    in_range = and_(
+        FinLedgerLine.period >= periods[0], FinLedgerLine.period <= periods[-1],
+        FinLedgerLine.source != "OPENING",
+    )
+    closing_vouchers = db.query(FinLedgerLine.voucher_no, FinLedgerLine.entry_date).filter(
+        FinLedgerLine.tenant_id == tenant_id, in_range,
+        FinLedgerLine.account_code.like("911%"), FinLedgerLine.voucher_no.isnot(None),
+    ).distinct().all()
+    closing = {(voucher, day) for voucher, day in closing_vouchers}
+    key = (
+        func.substr(FinLedgerLine.account_code, 1, level)
+        if group_by == "account"
+        else func.coalesce(func.upper(FinLedgerLine.department), "")
+    )
+    sums: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for group, voucher, day, debit, credit in db.query(
+        key, FinLedgerLine.voucher_no, FinLedgerLine.entry_date,
+        func.sum(FinLedgerLine.debit), func.sum(FinLedgerLine.credit),
+    ).filter(
+        FinLedgerLine.tenant_id == tenant_id, in_range,
+        or_(*(FinLedgerLine.account_code.like(f"{prefix}%") for prefix in EXPENSE_PREFIXES)),
+    ).group_by(key, FinLedgerLine.voucher_no, FinLedgerLine.entry_date):
+        if (voucher, day) in closing:
+            continue
+        sums[group or ""] += Decimal(debit or 0) - Decimal(credit or 0)
+    names = {
+        account.code: account.name
+        for account in db.query(FinAccount).filter(FinAccount.tenant_id == tenant_id)
+    } if group_by == "account" else {}
+    total = sum(sums.values(), ZERO)
+    rows = [
+        {
+            "key": group,
+            "name": names.get(group) if group_by == "account" else (group or "Chưa gắn phòng ban"),
+            "amount": plain(amount),
+            # Given outright so a reply never has to work a share out itself.
+            "share_percent": plain(amount * 100 / total) if total > 0 else None,
+        }
+        for group, amount in sorted(sums.items(), key=lambda item: item[1], reverse=True)
+        if amount != 0
+    ]
+    return {
+        "from": periods[0],
+        "to": periods[-1],
+        "group_by": group_by,
+        "rows": rows,
+        "total": plain(total),
+        "source": f"fin_ledger_lines accounts 6*, 8* {periods[0]}..{periods[-1]} excluding closes to 911",
+    }
+
+
 def _pairs(entry: FinJournalEntry) -> Iterable[tuple[str, str, Decimal]]:
     """(debit account, credit account, amount) as accounting software imports them."""
     debits = [line for line in entry.lines if line.debit]

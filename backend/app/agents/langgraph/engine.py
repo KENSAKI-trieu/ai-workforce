@@ -15,6 +15,7 @@ from app.core.gateway_tools import (
     effective_tool_grants,
 )
 from app.core.security import create_internal_tool_token
+from app.domains.finance.visuals import charts_from_tool_calls
 from app.models.models import (
     AIAgent,
     AgentWorkflow,
@@ -860,6 +861,9 @@ class LangGraphEngine:
             "invoice_card": None,
             "quote_card": None,
             "dag_plan_card": None,
+            # Drawn from the tool results the answer was written from, never from the
+            # answer's text.
+            "chart_cards": charts_from_tool_calls(state.get("tool_calls") or []),
             "orchestration": {
                 "workflow_id": str(workflow.id),
                 "thread_id": result.get("thread_id"),

@@ -523,12 +523,24 @@ def _unsupported_figures(state: WorkforceAgentState) -> dict[str, Any] | None:
 def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
     update = _verify_citations(state)
     if state.get("numbers_from_tools") and "final_answer" not in update and not _answered_by_tool(state):
-        # The answer stands as the model wrote it; only how its amounts are written changes.
+        # The answer stands as the model wrote it; only how its amounts are written changes,
+        # and a tag naming the tool or table a figure came from ("[Nguồn: ar_ap_aging]") is
+        # dropped: it has been checked, and it means nothing to the reader.
         answer = str(state.get("final_answer") or "")
-        formatted = format_money(answer)
+        formatted = _drop_tool_tags(format_money(answer), _tool_sources(state))
         if formatted != answer:
             update = {**update, "final_answer": formatted}
     return update
+
+
+_SOURCE_TAG = re.compile(r"[ \t]*\[(?:citation|nguồn|source)\b[^\]]*\]", re.IGNORECASE)
+
+
+def _drop_tool_tags(answer: str, sources: set[str]) -> str:
+    def drop(match: re.Match[str]) -> str:
+        return "" if _names_tool_source(match.group(0).casefold(), sources) else match.group(0)
+
+    return _SOURCE_TAG.sub(drop, answer)
 
 
 def _verify_citations(state: WorkforceAgentState) -> dict[str, Any]:

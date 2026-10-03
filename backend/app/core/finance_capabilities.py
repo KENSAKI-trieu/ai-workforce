@@ -30,6 +30,7 @@ FINANCE_TOOL_INTRODUCTIONS: dict[int, tuple[str, ...]] = {
         "payment_schedule",
     ),
     105: ("draft_payment_voucher", "draft_payment_reminder"),
+    106: ("get_account_trend", "get_expense_breakdown"),
 }
 
 FINANCE_CONFIGURATION_VERSION: int = max(FINANCE_TOOL_INTRODUCTIONS)

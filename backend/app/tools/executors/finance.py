@@ -27,8 +27,10 @@ from app.domains.finance.payments import DraftRefused, draft_payment_reminder, d
 from app.domains.finance.reports import (
     PartyNotFound,
     account_balance,
+    account_trend,
     aging,
     budget_vs_actual,
+    expense_breakdown,
     ledger_detail,
     own_budget_department,
     payment_schedule,
@@ -49,10 +51,12 @@ from app.models.models import FinInvoice, FinParty, Tenant
 from app.tools.registry import ToolContext
 from app.tools.schemas import (
     AccountBalanceInput,
+    AccountTrendInput,
     AgingInput,
     BudgetVsActualInput,
     DraftPaymentReminderInput,
     DraftPaymentVoucherInput,
+    ExpenseBreakdownInput,
     ExpenseLookupInput,
     InvoiceLookupInput,
     LedgerDetailInput,
@@ -151,6 +155,16 @@ def _today() -> date:
 
 def get_account_balance(context: ToolContext, request: AccountBalanceInput) -> dict[str, Any]:
     return account_balance(context.db, context.actor.tenant_id, request.account, request.period)
+
+
+def get_account_trend(context: ToolContext, request: AccountTrendInput) -> dict[str, Any]:
+    return account_trend(context.db, context.actor.tenant_id, request.account, request.from_period, request.to_period)
+
+
+def get_expense_breakdown(context: ToolContext, request: ExpenseBreakdownInput) -> dict[str, Any]:
+    return expense_breakdown(
+        context.db, context.actor.tenant_id, request.from_period, request.to_period, group_by=request.group_by,
+    )
 
 
 def get_trial_balance(context: ToolContext, request: TrialBalanceInput) -> dict[str, Any]:

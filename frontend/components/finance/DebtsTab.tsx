@@ -3,12 +3,13 @@
 import { Banknote, Loader2, Mail } from "lucide-react";
 import { useCallback, useEffect, useState } from "react";
 import api from "@/lib/api";
+import FinanceChart, { type ChartSpec } from "@/components/finance/FinanceChart";
 import { apiError, formatVnd } from "@/components/finance/format";
 
 interface AgingParty { party_id: string | null; party: string; tax_code?: string | null; NOT_DUE: string; "1_30": string; "31_60": string; "61_90": string; OVER_90: string; total: string }
-interface Aging { kind: string; as_of: string; buckets: Record<string, string>; total: string; parties: AgingParty[] }
+interface Aging { kind: string; as_of: string; buckets: Record<string, string>; total: string; parties: AgingParty[]; charts?: ChartSpec[] }
 interface ScheduleRow { invoice_id: string; party: string; series: string; number: string; due_date: string; overdue: boolean; remaining: string; already_scheduled: string; in_pending_voucher: string; to_schedule: string }
-interface Schedule { invoices: ScheduleRow[]; total_to_schedule: string; until: string }
+interface Schedule { invoices: ScheduleRow[]; total_to_schedule: string; until: string; charts?: ChartSpec[] }
 interface Voucher { workflow_id: string; reference: string; status: string; total: string; invoice_count: number; created_at?: string | null }
 
 const BUCKETS: [keyof AgingParty, string][] = [["NOT_DUE", "Chưa đến hạn"], ["1_30", "1–30 ngày"], ["31_60", "31–60"], ["61_90", "61–90"], ["OVER_90", "Trên 90"]];
@@ -94,6 +95,7 @@ export default function DebtsTab({ canDraft, canRemind }: { canDraft: boolean; c
           <button className={`ta-btn ${kind === "PAYABLE" ? "ta-btn-primary" : "ta-btn-ghost"}`} onClick={() => setKind("PAYABLE")}>Phải trả</button>
           {aging && <span style={{ marginLeft: "auto" }}>Tổng: <b>{formatVnd(aging.total)}</b> tại {aging.as_of}</span>}
         </div>
+        {aging?.charts?.map((chart) => <div key={chart.title} style={{ marginBottom: 12 }}><FinanceChart spec={chart} /></div>)}
         {!aging || aging.parties.length === 0 ? <small style={{ color: "var(--text-muted)" }}>Không có công nợ còn mở.</small> : (
           <div style={{ overflowX: "auto" }}>
             <table className="ta-table" style={{ width: "100%", fontSize: 13 }}>
@@ -134,6 +136,7 @@ export default function DebtsTab({ canDraft, canRemind }: { canDraft: boolean; c
             </button>
           )}
         </div>
+        {schedule?.charts?.map((chart) => <div key={chart.title} style={{ marginBottom: 12 }}><FinanceChart spec={chart} /></div>)}
         {!schedule || schedule.invoices.length === 0 ? <small style={{ color: "var(--text-muted)" }}>Không có hoá đơn đến hạn.</small> : (
           <table className="ta-table" style={{ width: "100%", fontSize: 13 }}>
             <thead><tr>{canDraft && <th />}<th>Nhà cung cấp</th><th>Hoá đơn</th><th>Hạn</th><th style={num}>Còn phải trả</th><th style={num}>Đã lên lịch</th></tr></thead>

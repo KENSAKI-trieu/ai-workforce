@@ -183,6 +183,20 @@ class AccountBalanceInput(TenantToolInput):
     period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
 
 
+class AccountTrendInput(TenantToolInput):
+    account: str = FinanceAccount
+    from_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="First period, YYYY-MM.")
+    to_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Last period, YYYY-MM; at most 24 months after from_period.")
+
+
+class ExpenseBreakdownInput(TenantToolInput):
+    from_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="First period, YYYY-MM.")
+    to_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Last period, YYYY-MM; the same as from_period for one month.")
+    group_by: Literal["account", "department"] = Field(
+        default="account", description="account: by expense account (641, 642 ...). department: by department.",
+    )
+
+
 class TrialBalanceInput(TenantToolInput):
     period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
     level: Literal[3, 4] = Field(default=3, description="3 for level-1 accounts, 4 for their sub-accounts.")

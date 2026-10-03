@@ -12,6 +12,7 @@ import uuid
 from typing import Iterable
 
 from fastapi import HTTPException
+from sqlalchemy import inspect
 from sqlalchemy.orm import Session, object_session
 
 from app.core.permissions import (
@@ -81,7 +82,9 @@ def user_permissions(db: Session | None, user: User) -> frozenset[str]:
     """
     if user.position_id is None:
         return frozenset()
-    position = user.position
+    # A detached user -- a streamed reply runs after the request's session let go of it --
+    # cannot lazy-load its position; read it through whichever session is at hand.
+    position = None if inspect(user).detached else user.position
     if position is None:
         session = db or object_session(user)
         if session is None:

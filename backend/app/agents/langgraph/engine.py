@@ -62,7 +62,9 @@ class GraphModelUnavailable(AIServiceError):
         super().__init__("The graph's decision model is unavailable", status_code=503)
 
 
-def role_restricted_tools(user: User, allowed_tools: list[str]) -> list[dict[str, str]]:
+def role_restricted_tools(
+    user: User, allowed_tools: list[str], db: Session | None = None
+) -> list[dict[str, str]]:
     """The agent's granted gateway tools whose role/department ACL refuses this user."""
     # Imported here: the registry builds itself at import time and pulls in the chat flows.
     from app.tools.registry import tool_registry
@@ -71,7 +73,7 @@ def role_restricted_tools(user: User, allowed_tools: list[str]) -> list[dict[str
     return [
         {"name": name, "label": GATEWAY_TOOL_LABELS[name]}
         for name in sorted(set(allowed_tools) & set(GATEWAY_TOOL_LABELS))
-        if name in definitions and not definitions[name].acl.permits(user)
+        if name in definitions and not definitions[name].acl.permits(user, db)
     ]
 
 
@@ -143,7 +145,9 @@ class LangGraphEngine:
             # Granted, but the gateway's ACL refuses them to this user, so they never reach
             # the model's tool list. Asked for an NDA without the drafting tool, the model
             # explained the gap with a company rule the documents never state.
-            "restricted_tools": role_restricted_tools(user, allowed_tools),
+            # The session, not the user's own: a streamed turn runs after the request's
+            # session let go of `user`, and a lazy load on it would fail.
+            "restricted_tools": role_restricted_tools(user, allowed_tools, db),
             # What the tenant added to this agent's reply prompt -- plugin appends and the
             # administrator's own text. The graph puts it after its own rules.
             "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),

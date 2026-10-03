@@ -253,3 +253,18 @@ def test_a_profile_without_the_basic_card_is_answered_not_crashed():
     })
     assert "Tra cứu danh bạ nhân sự" in reply
     assert "Hợp đồng được phép xem: **0**" in reply
+
+
+def test_a_detached_user_still_resolves_permissions_through_the_session(transactional_db_session):
+    """A streamed chat reply runs after the request's session let go of the user; the
+    tool ACL check used to lazy-load the position then and crash the whole turn."""
+    from app.agents.langgraph.engine import role_restricted_tools
+    from app.domains.platform.position_service import user_permissions
+    from tests.finance_helpers import person
+
+    db = transactional_db_session
+    user = person(db, "finance.ledger.view")
+    db.expunge(user)
+    assert "finance.ledger.view" in user_permissions(db, user)
+    restricted = {item["name"] for item in role_restricted_tools(user, ["get_account_balance", "ar_ap_aging"], db)}
+    assert restricted == {"ar_ap_aging"}

@@ -59,7 +59,7 @@ class ToolACL:
     # of the role/department match, which tools gated by a permission leave open ("*").
     permission: str | None = None
 
-    def permits(self, user: User) -> bool:
+    def permits(self, user: User, db: Session | None = None) -> bool:
         role_allowed = "*" in self.allowed_roles or user.role in self.allowed_roles
         department_allowed = (
             "*" in self.allowed_departments
@@ -72,7 +72,7 @@ class ToolACL:
         if allowed and self.permission:
             from app.domains.platform.position_service import has_permission
 
-            allowed = has_permission(None, user, self.permission)
+            allowed = has_permission(db, user, self.permission)
         return allowed
 
 

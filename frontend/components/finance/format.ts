@@ -14,12 +14,13 @@ export function currentPeriod(): string {
   return `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, "0")}`;
 }
 
-/** A balance side as the books write it: "Dư Nợ 1.000 ₫" / "Dư Có 1.000 ₫". */
+/** A balance as the books write it: "Nợ 1.000 ₫", "Có 1.000 ₫", or both for 131/331 and the like. */
 export function formatSide(side: { debit: string; credit: string } | undefined): string {
   if (!side) return "—";
-  if (Number(side.debit)) return `Nợ ${formatVnd(side.debit)}`;
-  if (Number(side.credit)) return `Có ${formatVnd(side.credit)}`;
-  return "0";
+  const parts: string[] = [];
+  if (Number(side.debit)) parts.push(`Nợ ${formatVnd(side.debit)}`);
+  if (Number(side.credit)) parts.push(`Có ${formatVnd(side.credit)}`);
+  return parts.length ? parts.join(" / ") : "0";
 }
 
 export interface ImportError { row: number | null; column: string | null; message: string }

@@ -266,6 +266,18 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
     # Every figure in a reply comes from one of these: fixed parameters, computed in SQL,
     # each result naming its `source`. There is deliberately no free-form query tool.
     reading = "Amounts are exact; quote them, never add or estimate. "
+    # Receivables, payables and taxes carry debts and advances at once; netting them hides both.
+    two_sided = (
+        "Accounts that can sit on either side (131, 331, 333, 338 ...) show their debit and "
+        "credit balances separately, never netted: report both. "
+    )
+    # A drafting tool ends the turn with its own result, so one called on a question
+    # both opens an approval nobody asked for and drops the answer the user wanted.
+    on_request = (
+        "Call it only when the user asks for this draft, in this message or by agreeing "
+        "to a draft you offered; a question about invoices, balances, debts or due dates "
+        "is answered with the reading tools, never acted on. "
+    )
 
     return (
         _definition(
@@ -282,6 +294,7 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         _definition(
             "propose_journal_entry",
             "Draft the journal entry for one matched invoice and send it for approval. "
+            + on_request +
             "The amounts come from the invoice; pass main_account only if the user named "
             "the account. Its result is the answer to the user, and it opens its own "
             "approval, so never submit another one for it. Call it at most once per invoice.",
@@ -292,21 +305,25 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         _definition(
             "get_account_balance",
             "Opening balance, debits and credits in the period, and closing balance of one "
-            "account (sub-accounts included) for a YYYY-MM period. " + reading,
+            "account (sub-accounts included) for a YYYY-MM period, over every vendor and "
+            "customer together: for one party's balance use get_ledger_detail or "
+            "ar_ap_aging with that party. " + two_sided + reading,
             AccountBalanceInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.balance", get_account_balance, permission="finance.ledger.view",
         ),
         _definition(
             "get_trial_balance",
             "Trial balance (bảng cân đối số phát sinh) of a period: every account's opening, "
-            "period and closing balances. " + reading,
+            "period and closing balances. " + two_sided + reading,
             TrialBalanceInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
             "tool.finance.trial_balance", get_trial_balance, permission="finance.ledger.view",
         ),
         _definition(
             "get_ledger_detail",
             "Ledger lines (sổ chi tiết) of one account between two dates, optionally for one "
-            "vendor or customer, with the running balance. " + reading,
+            "vendor or customer, with the running balance, plus the opening balance, total "
+            "debits and credits and closing balance of the whole range (also when the line "
+            "list is truncated). " + two_sided + reading,
             LedgerDetailInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
             "tool.finance.ledger", get_ledger_detail, permission="finance.ledger.view",
         ),
@@ -322,14 +339,16 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         _definition(
             "ar_ap_aging",
             "Aging of receivables (customers owe us) or payables (we owe vendors): what is "
-            "outstanding per party and how overdue, from posted invoices less payments. " + reading,
+            "outstanding per party and how overdue, from posted invoices less payments, on "
+            "today or on a past date (as_of). " + reading,
             AgingInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
             "tool.finance.aging", get_aging, permission="finance.ar_ap.view",
         ),
         _definition(
             "payment_schedule",
             "Purchase invoices to pay within the next days, earliest due first, with what is "
-            "already scheduled. " + reading,
+            "already scheduled, what sits in a payment voucher waiting for approval, and what "
+            "still needs a voucher (to_schedule). " + reading,
             PaymentScheduleInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.payment_schedule", get_payment_schedule, permission="finance.ar_ap.view",
         ),
@@ -337,8 +356,9 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         _definition(
             "draft_payment_voucher",
             "Draft a payment voucher for posted purchase invoices of one vendor and send it "
-            "for approval. It never transfers money. Its result is the answer to the user, "
-            "and it opens its own approval, so never submit another one for it.",
+            "for approval. It never transfers money. " + on_request +
+            "Its result is the answer to the user, and it opens its own approval, so never "
+            "submit another one for it.",
             DraftPaymentVoucherInput, ToolAction.WRITE, {"*"}, {"*"}, 30,
             "tool.finance.voucher.draft", draft_voucher,
             terminal=True, opens_approval=True, permission="finance.journal.draft",
@@ -347,7 +367,8 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             "draft_payment_reminder",
             "Draft a payment reminder email to one customer from its aging, at level 1 (due), "
             "2 (overdue) or 3 (final), and send it for approval; nothing is emailed before "
-            "that. Its result is the answer to the user; never submit another approval for it.",
+            "that. " + on_request +
+            "Its result is the answer to the user; never submit another approval for it.",
             DraftPaymentReminderInput, ToolAction.WRITE, {"*"}, {"*"}, 30,
             "tool.finance.reminder.draft", draft_reminder,
             terminal=True, opens_approval=True, permission="finance.reminder.send",

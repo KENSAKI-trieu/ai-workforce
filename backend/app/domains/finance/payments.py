@@ -30,6 +30,7 @@ from app.domains.finance.money import ZERO, format_vnd, period_of, plain
 from app.domains.finance.reports import aging, outstanding_invoices
 from app.domains.platform.email_delivery import deliver_email
 from app.models.models import (
+    AgentWorkflow,
     FinAccount,
     FinInvoice,
     FinJournalEntry,
@@ -59,9 +60,11 @@ def _mask(account: str | None) -> str | None:
 def draft_payment_voucher(db: Session, actor: User, invoice_ids: list[uuid.UUID]) -> WorkflowApproval:
     if not invoice_ids:
         raise DraftRefused("Chưa chọn hoá đơn nào để lập phiếu chi")
+    # Locked until the voucher is stored: two people drafting for the same invoice at
+    # once would otherwise both pass the check below and schedule it twice.
     invoices = db.query(FinInvoice).filter(
         FinInvoice.tenant_id == actor.tenant_id, FinInvoice.id.in_(invoice_ids)
-    ).all()
+    ).order_by(FinInvoice.id).with_for_update().all()
     if len(invoices) != len(set(invoice_ids)):
         raise DraftRefused("Có hoá đơn không tìm thấy")
     if any(invoice.direction != "IN" for invoice in invoices):
@@ -70,11 +73,18 @@ def draft_payment_voucher(db: Session, actor: User, invoice_ids: list[uuid.UUID]
     if len(parties) != 1 or None in parties:
         raise DraftRefused("Một phiếu chi chỉ trả cho một nhà cung cấp; hãy tách theo nhà cung cấp")
     party = db.get(FinParty, parties.pop())
-    drafting = db.query(FinPayment.invoice_id).filter(
+    drafting = db.query(FinPayment).filter(
         FinPayment.invoice_id.in_(invoice_ids), FinPayment.status == "DRAFT"
     ).first()
     if drafting:
-        raise DraftRefused("Có hoá đơn đang nằm trong một phiếu chi chờ duyệt")
+        invoice = next(item for item in invoices if item.id == drafting.invoice_id)
+        workflow = db.get(AgentWorkflow, drafting.workflow_id) if drafting.workflow_id else None
+        pending = f" ({workflow.title})" if workflow else ""
+        raise DraftRefused(
+            f"Hoá đơn {invoice.series} số {invoice.number} đã nằm trong một phiếu chi đang chờ "
+            f"duyệt{pending}. Xem phiếu đó ở trang Phê duyệt, tab \"Tôi đã gửi\"; muốn lập "
+            "lại thì rút phiếu cũ trước"
+        )
     open_amounts = {
         item.invoice.id: item.remaining - item.scheduled
         for item in outstanding_invoices(db, actor.tenant_id, "IN", party_id=party.id)
@@ -243,13 +253,24 @@ def _vn_date(iso: str) -> str:
 
 
 def draft_payment_reminder(
-    db: Session, actor: User, party: FinParty, level: int, *, company_name: str, as_of: date
+    db: Session, actor: User, party: FinParty, level: int | None, *, company_name: str, as_of: date
 ) -> WorkflowApproval:
     if party.kind not in {"CUSTOMER", "BOTH"}:
         raise DraftRefused(f"{party.name} không phải khách hàng")
     if not party.email:
         raise DraftRefused(f"Khách hàng {party.name} chưa có email trong danh mục đối tượng")
-    report = aging(db, actor.tenant_id, "OUT", as_of, party_id=party.id, min_days_overdue=0 if level == 1 else 1)
+    # Locked so two reminders drafted at once cannot both pass the pending check below.
+    db.query(FinParty).filter(FinParty.id == party.id).with_for_update().one()
+    if level is None:
+        # No level asked for: a debt already overdue is not "due", and a final demand is
+        # never chosen for the user.
+        overdue = aging(db, actor.tenant_id, "OUT", as_of, party_id=party.id, min_days_overdue=1, invoice_limit=1)
+        level = 2 if overdue["invoices"] else 1
+    # Every open invoice: the letter lists what its total adds up.
+    report = aging(
+        db, actor.tenant_id, "OUT", as_of, party_id=party.id,
+        min_days_overdue=0 if level == 1 else 1, invoice_limit=None,
+    )
     if not report["invoices"]:
         raise DraftRefused(f"{party.name} không có khoản nợ {'đến hạn' if level == 1 else 'quá hạn'} nào")
     pending = db.query(WorkflowApproval).filter(
@@ -258,7 +279,12 @@ def draft_payment_reminder(
         WorkflowApproval.payload["party_id"].astext == str(party.id),
     ).first()
     if pending is not None:
-        raise DraftRefused(f"Đã có thư nhắc nợ cho {party.name} đang chờ duyệt")
+        workflow = db.get(AgentWorkflow, pending.workflow_id) if pending.workflow_id else None
+        title = f" ({workflow.title})" if workflow else ""
+        raise DraftRefused(
+            f"Đã có một thư nhắc nợ gửi {party.name} đang chờ duyệt{title}. Xem thư đó ở trang "
+            "Phê duyệt, tab \"Tôi đã gửi\"; muốn soạn lại thì rút thư cũ trước"
+        )
     lines = "\n".join(
         f"- Hoá đơn {item['series']} số {item['number']}, hạn {_vn_date(item['due_date'])}, "
         f"còn {format_vnd(Decimal(item['remaining']))} (quá hạn {item['days_overdue']} ngày)"

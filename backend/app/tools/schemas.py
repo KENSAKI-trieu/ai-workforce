@@ -214,7 +214,10 @@ class AgingInput(TenantToolInput):
     kind: Literal["RECEIVABLE", "PAYABLE"] = Field(
         description="RECEIVABLE: what customers owe us. PAYABLE: what we owe vendors."
     )
-    as_of: date | None = Field(default=None, description="Report date; omit for today.")
+    as_of: date | None = Field(
+        default=None,
+        description="Report date: the debts open on that day, a past one included; omit for today.",
+    )
     min_days_overdue: int | None = Field(default=None, ge=0, le=3650, description="Only debts at least this many days past due.")
     party: str | None = Field(default=None, max_length=255, description="Tax code or name of one vendor or customer.")
 
@@ -233,7 +236,11 @@ class DraftPaymentVoucherInput(IdempotentToolInput):
 
 class DraftPaymentReminderInput(IdempotentToolInput):
     party: str = Field(min_length=2, max_length=255, description="Tax code or name of the customer.")
-    level: Literal[1, 2, 3] = Field(
-        default=1,
-        description="1 friendly notice of amounts due, 2 reminder of overdue amounts, 3 final demand.",
+    level: Literal[1, 2, 3] | None = Field(
+        default=None,
+        description=(
+            "1 friendly notice of amounts due, 2 reminder of overdue amounts, 3 final demand. "
+            "Leave it empty unless the user named the level or the tone: the draft then takes "
+            "2 when anything is overdue, else 1."
+        ),
     )

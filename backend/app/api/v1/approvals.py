@@ -153,6 +153,9 @@ def get_submitted_approvals(
             count = len(eligible_approvers(db, approval))
             item["eligible_approver_count"] = count
             item["warning"] = None if count else no_approver_warning(approval)
+        # A finance draft holds its invoices or customer until decided; its requester can
+        # take it back (POST /finance/approvals/{id}/withdraw).
+        item["can_withdraw"] = approval.status == "WAITING" and is_finance_approval(approval)
         items.append(item)
     return items
 

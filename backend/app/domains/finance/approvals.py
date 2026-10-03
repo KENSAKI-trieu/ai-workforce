@@ -8,6 +8,7 @@ requester sends can set them, and the requester can never sign their own draft.
 
 from __future__ import annotations
 
+from datetime import datetime, timezone
 from decimal import Decimal
 from typing import Any, Callable
 
@@ -137,3 +138,43 @@ def apply_finance_edit(db: Session, approval: WorkflowApproval, edited: dict[str
 def finalize_finance_approval(db: Session, approval: WorkflowApproval, approver: User, approved: bool) -> None:
     _, finalize = _handlers(approval.action_type)
     finalize(db, approval, approver, approved)
+
+
+# Who may take back someone else's draft: the top signing level, which could have
+# rejected it anyway. Anyone with a lower level just rejects what they may sign.
+WITHDRAW_ANY = "finance.journal.approve_high"
+
+
+def can_withdraw_finance(db: Session | None, user: User, approval: WorkflowApproval) -> bool:
+    from app.domains.platform.position_service import user_permissions
+
+    payload = approval.payload or {}
+    if str(payload.get("requester_id") or "") == str(user.id):
+        return True
+    if approval.workflow is not None and approval.workflow.initiator_id == user.id:
+        return True
+    return WITHDRAW_ANY in user_permissions(db, user)
+
+
+def withdraw_finance_approval(
+    db: Session, approval: WorkflowApproval, actor: User, reason: str | None = None
+) -> None:
+    """Take back a draft nobody has decided, undoing what it holds.
+
+    A waiting draft locks what it is about -- an invoice in a voucher cannot go in another,
+    a customer with a reminder waiting gets no second one -- and finance approvals do not
+    expire. Without this, a draft no one is entitled to sign locked them for good.
+    Withdrawing undoes it as a rejection would: the voucher's payments are cancelled, the
+    journal entry is set aside, the letter is never sent.
+    """
+    if approval.status != "WAITING":
+        raise HTTPException(status_code=409, detail=f"Approval is already {approval.status}")
+    if not can_withdraw_finance(db, actor, approval):
+        raise HTTPException(status_code=403, detail="Only the requester or a top-level finance approver can withdraw this draft")
+    finalize_finance_approval(db, approval, actor, False)
+    approval.status = "WITHDRAWN"
+    approval.comments = (reason or "").strip()[:1000] or None
+    if approval.workflow is not None:
+        approval.workflow.status = "CANCELLED"
+        approval.workflow.completed_at = datetime.now(timezone.utc)
+    db.flush()

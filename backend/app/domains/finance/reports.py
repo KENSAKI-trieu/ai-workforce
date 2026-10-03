@@ -6,7 +6,10 @@ which report to read and for what, never how it is computed.
 
 Balances follow Vietnamese practice: an account's balance at the start of a period is
 everything posted before it plus the opening balances loaded for that period; an account
-code covers its sub-accounts (331 includes 3311, 3312).
+code covers its sub-accounts (331 includes 3311, 3312). An account that can sit on either
+side (131, 331, 333 ...) is never netted across parties or sub-accounts: a customer who
+owes 100 and another who paid 30 in advance are a debit of 100 and a credit of 30, as the
+balance sheet reports them, not a debit of 70.
 """
 
 from __future__ import annotations
@@ -23,6 +26,7 @@ from openpyxl import Workbook
 from sqlalchemy import and_, func, or_
 from sqlalchemy.orm import Session
 
+from app.domains.finance.charts import normal_balance
 from app.domains.finance.money import ZERO, normalize_period, plain
 from app.models.models import (
     FinAccount,
@@ -81,6 +85,51 @@ def _side(net: Decimal) -> dict[str, str]:
     return {"debit": plain(net if net > 0 else ZERO), "credit": plain(-net if net < 0 else ZERO)}
 
 
+def _two_sided(code: str) -> bool:
+    return normal_balance(code) == "BOTH"
+
+
+# (exact account code, party id): the level a two-sided balance is split at.
+Detail = tuple[str, Any]
+
+
+def _detail_sums(db: Session, tenant_id: uuid.UUID, *conditions) -> dict[Detail, tuple[Decimal, Decimal]]:
+    """(debit, credit) per exact account code and party."""
+    return {
+        (code, party_id): (Decimal(debit or 0), Decimal(credit or 0))
+        for code, party_id, debit, credit in db.query(
+            FinLedgerLine.account_code,
+            FinLedgerLine.party_id,
+            func.sum(FinLedgerLine.debit),
+            func.sum(FinLedgerLine.credit),
+        ).filter(FinLedgerLine.tenant_id == tenant_id, *conditions)
+        .group_by(FinLedgerLine.account_code, FinLedgerLine.party_id)
+    }
+
+
+def _closing_nets(
+    opening: dict[Detail, tuple[Decimal, Decimal]], moving: dict[Detail, tuple[Decimal, Decimal]]
+) -> tuple[dict[Detail, Decimal], dict[Detail, Decimal]]:
+    """Opening and closing debit-minus-credit per detail."""
+    zero = (ZERO, ZERO)
+    opened = {key: opening.get(key, zero)[0] - opening.get(key, zero)[1] for key in opening.keys() | moving.keys()}
+    closed = {key: opened[key] + moving.get(key, zero)[0] - moving.get(key, zero)[1] for key in opened}
+    return opened, closed
+
+
+def _sides(nets: Iterable[Decimal], two_sided: bool) -> tuple[Decimal, Decimal]:
+    """(debit, credit) balance of some detail nets: netted, or each detail on its own side."""
+    values = list(nets)
+    if not two_sided:
+        net = sum(values, ZERO)
+        return max(net, ZERO), max(-net, ZERO)
+    return sum((v for v in values if v > 0), ZERO), sum((-v for v in values if v < 0), ZERO)
+
+
+def _side_of(debit: Decimal, credit: Decimal) -> dict[str, str]:
+    return {"debit": plain(debit), "credit": plain(credit)}
+
+
 def _account(db: Session, tenant_id: uuid.UUID, code: str) -> FinAccount | None:
     return db.query(FinAccount).filter(FinAccount.tenant_id == tenant_id, FinAccount.code == code).first()
 
@@ -88,10 +137,12 @@ def _account(db: Session, tenant_id: uuid.UUID, code: str) -> FinAccount | None:
 def account_balance(db: Session, tenant_id: uuid.UUID, code: str, period: str) -> dict[str, Any]:
     period = normalize_period(period)
     account = _account(db, tenant_id, code)
-    opening_debit, opening_credit = _sums(db, tenant_id, _under(code), _before(period))
+    two_sided = _two_sided(code)
+    opened, closed = _closing_nets(
+        _detail_sums(db, tenant_id, _under(code), _before(period)),
+        _detail_sums(db, tenant_id, _under(code), _in(period)),
+    )
     period_debit, period_credit = _sums(db, tenant_id, _under(code), _in(period))
-    opening = opening_debit - opening_credit
-    closing = opening + period_debit - period_credit
     rows = db.query(func.count(FinLedgerLine.id)).filter(
         FinLedgerLine.tenant_id == tenant_id, _under(code),
         or_(_before(period), _in(period)),
@@ -101,10 +152,12 @@ def account_balance(db: Session, tenant_id: uuid.UUID, code: str, period: str) -
         "account_name": account.name if account else None,
         "known_account": account is not None,
         "period": period,
-        "opening": _side(opening),
+        # Two-sided: the debit and credit balances of its parties and sub-accounts, apart.
+        "two_sided": two_sided,
+        "opening": _side_of(*_sides(opened.values(), two_sided)),
         "period_debit": plain(period_debit),
         "period_credit": plain(period_credit),
-        "closing": _side(closing),
+        "closing": _side_of(*_sides(closed.values(), two_sided)),
         "ledger_rows": int(rows or 0),
         "source": f"fin_ledger_lines account {code}* through {period}",
     }
@@ -117,32 +170,37 @@ def trial_balance(db: Session, tenant_id: uuid.UUID, period: str, *, level: int 
         account.code: account.name
         for account in db.query(FinAccount).filter(FinAccount.tenant_id == tenant_id)
     }
-    head = func.substr(FinLedgerLine.account_code, 1, level)
-    rows: dict[str, dict[str, Decimal]] = defaultdict(lambda: defaultdict(lambda: ZERO))
-    for key, condition in (("opening", _before(period)), ("period", _in(period))):
-        for code, debit, credit in db.query(
-            head, func.sum(FinLedgerLine.debit), func.sum(FinLedgerLine.credit)
-        ).filter(FinLedgerLine.tenant_id == tenant_id, condition).group_by(head):
-            rows[code][f"{key}_debit"] += Decimal(debit or 0)
-            rows[code][f"{key}_credit"] += Decimal(credit or 0)
+    moving = _detail_sums(db, tenant_id, _in(period))
+    opened, closed = _closing_nets(_detail_sums(db, tenant_id, _before(period)), moving)
+    groups: dict[str, dict[str, Any]] = defaultdict(
+        lambda: {"opening": [], "closing": [], "period_debit": ZERO, "period_credit": ZERO}
+    )
+    for key in opened:
+        group = groups[key[0][:level]]
+        group["opening"].append(opened[key])
+        group["closing"].append(closed[key])
+        debit, credit = moving.get(key, (ZERO, ZERO))
+        group["period_debit"] += debit
+        group["period_credit"] += credit
     table = []
     totals = defaultdict(lambda: ZERO)
-    for code in sorted(rows):
-        values = rows[code]
-        opening = values["opening_debit"] - values["opening_credit"]
-        closing = opening + values["period_debit"] - values["period_credit"]
+    for code in sorted(groups):
+        values = groups[code]
+        two_sided = _two_sided(code)
+        opening = _sides(values["opening"], two_sided)
+        closing = _sides(values["closing"], two_sided)
         line = {
             "account": code,
             "account_name": names.get(code),
-            "opening": _side(opening),
+            "opening": _side_of(*opening),
             "period_debit": plain(values["period_debit"]),
             "period_credit": plain(values["period_credit"]),
-            "closing": _side(closing),
+            "closing": _side_of(*closing),
         }
         table.append(line)
-        for side, net in (("opening", opening), ("closing", closing)):
-            totals[f"{side}_debit"] += max(net, ZERO)
-            totals[f"{side}_credit"] += max(-net, ZERO)
+        for side, (debit, credit) in (("opening", opening), ("closing", closing)):
+            totals[f"{side}_debit"] += debit
+            totals[f"{side}_credit"] += credit
         totals["period_debit"] += values["period_debit"]
         totals["period_credit"] += values["period_credit"]
     return {
@@ -165,20 +223,34 @@ def ledger_detail(
     party_id: uuid.UUID | None = None,
     limit: int = 100,
 ) -> dict[str, Any]:
-    """Sổ chi tiết tài khoản: the lines between two dates, with the running balance."""
+    """Sổ chi tiết tài khoản: the lines between two dates, with the running balance.
+
+    The range's totals and closing balance cover every line, also when only the first
+    `limit` are listed. A two-sided account read across all its parties has no meaningful
+    running balance -- it would net one customer's debt against another's advance -- so
+    its lines carry none; asking for one party gives it.
+    """
     period = f"{start.year:04d}-{start.month:02d}"
     conditions = [_under(code)]
     if party_id:
         conditions.append(FinLedgerLine.party_id == party_id)
-    before_debit, before_credit = _sums(
-        db, tenant_id, *conditions,
-        or_(FinLedgerLine.entry_date < start, and_(FinLedgerLine.period == period, FinLedgerLine.source == "OPENING")),
-    )
-    running = before_debit - before_credit
-    query = db.query(FinLedgerLine).filter(
-        FinLedgerLine.tenant_id == tenant_id, *conditions,
-        FinLedgerLine.entry_date >= start, FinLedgerLine.entry_date <= end,
+    in_range = (
+        FinLedgerLine.entry_date >= start,
+        FinLedgerLine.entry_date <= end,
         FinLedgerLine.source != "OPENING",
+    )
+    split = _two_sided(code) and party_id is None
+    opened, closed = _closing_nets(
+        _detail_sums(
+            db, tenant_id, *conditions,
+            or_(FinLedgerLine.entry_date < start, and_(FinLedgerLine.period == period, FinLedgerLine.source == "OPENING")),
+        ),
+        _detail_sums(db, tenant_id, *conditions, *in_range),
+    )
+    range_debit, range_credit = _sums(db, tenant_id, *conditions, *in_range)
+    running = sum(opened.values(), ZERO)
+    query = db.query(FinLedgerLine).filter(
+        FinLedgerLine.tenant_id == tenant_id, *conditions, *in_range,
     ).order_by(FinLedgerLine.entry_date, FinLedgerLine.voucher_no)
     total = query.count()
     lines = []
@@ -191,13 +263,17 @@ def ledger_detail(
             "account": line.account_code,
             "debit": plain(line.debit),
             "credit": plain(line.credit),
-            "balance": _side(running),
+            "balance": None if split else _side(running),
         })
     return {
         "account": code,
         "from": start.isoformat(),
         "to": end.isoformat(),
-        "opening": _side(before_debit - before_credit),
+        "two_sided": split,
+        "opening": _side_of(*_sides(opened.values(), split)),
+        "period_debit": plain(range_debit),
+        "period_credit": plain(range_credit),
+        "closing": _side_of(*_sides(closed.values(), split)),
         "lines": lines,
         "line_count": total,
         "truncated": total > len(lines),
@@ -253,6 +329,8 @@ class Outstanding:
     invoice: FinInvoice
     paid: Decimal
     scheduled: Decimal
+    # In a payment voucher still waiting for approval.
+    drafted: Decimal = ZERO
 
     @property
     def remaining(self) -> Decimal:
@@ -260,28 +338,59 @@ class Outstanding:
 
 
 def outstanding_invoices(
-    db: Session, tenant_id: uuid.UUID, direction: str, *, party_id: uuid.UUID | None = None
+    db: Session,
+    tenant_id: uuid.UUID,
+    direction: str,
+    *,
+    party_id: uuid.UUID | None = None,
+    as_of: date | None = None,
 ) -> list[Outstanding]:
-    """Posted invoices not yet fully paid. Scheduled payments are shown, not deducted."""
+    """Posted invoices not yet fully paid. Scheduled and drafted payments are shown, not deducted.
+
+    Without `as_of`, what is open now. With it, what was open on that day: invoices issued
+    by then, including those paid off since, less only the payments made by then. The
+    issue date stands in for the posting date; a payment with no date (loaded by an
+    import) counts as made before any day asked about.
+    """
     query = db.query(FinInvoice).filter(
         FinInvoice.tenant_id == tenant_id,
         FinInvoice.direction == direction,
-        FinInvoice.status == "POSTED",
     )
+    if as_of is None:
+        query = query.filter(FinInvoice.status == "POSTED")
+    else:
+        query = query.filter(
+            FinInvoice.status.in_(("POSTED", "PAID")),
+            or_(FinInvoice.issue_date.is_(None), FinInvoice.issue_date <= as_of),
+        )
     if party_id:
         query = query.filter(FinInvoice.party_id == party_id)
     invoices = query.all()
-    payments: dict[uuid.UUID, dict[str, Decimal]] = defaultdict(lambda: {"PAID": ZERO, "SCHEDULED": ZERO})
+    payments: dict[uuid.UUID, dict[str, Decimal]] = defaultdict(
+        lambda: {"PAID": ZERO, "SCHEDULED": ZERO, "DRAFT": ZERO}
+    )
     if invoices:
+        conditions = [
+            FinPayment.invoice_id.in_([invoice.id for invoice in invoices]),
+            FinPayment.status.in_(("PAID", "SCHEDULED", "DRAFT")),
+        ]
+        if as_of is not None:
+            conditions.append(or_(
+                FinPayment.status != "PAID",
+                FinPayment.payment_date.is_(None),
+                FinPayment.payment_date <= as_of,
+            ))
         for invoice_id, status, amount in db.query(
             FinPayment.invoice_id, FinPayment.status, func.sum(FinPayment.amount)
-        ).filter(
-            FinPayment.invoice_id.in_([invoice.id for invoice in invoices]),
-            FinPayment.status.in_(("PAID", "SCHEDULED")),
-        ).group_by(FinPayment.invoice_id, FinPayment.status):
+        ).filter(*conditions).group_by(FinPayment.invoice_id, FinPayment.status):
             payments[invoice_id][status] = Decimal(amount or 0)
     result = [
-        Outstanding(invoice, payments[invoice.id]["PAID"], payments[invoice.id]["SCHEDULED"])
+        Outstanding(
+            invoice,
+            payments[invoice.id]["PAID"],
+            payments[invoice.id]["SCHEDULED"],
+            payments[invoice.id]["DRAFT"],
+        )
         for invoice in invoices
     ]
     return [item for item in result if item.remaining > 0]
@@ -302,15 +411,16 @@ def aging(
     *,
     min_days_overdue: int | None = None,
     party_id: uuid.UUID | None = None,
+    invoice_limit: int | None = 50,
 ) -> dict[str, Any]:
-    """Báo cáo tuổi nợ: receivables (OUT invoices) or payables (IN), by overdue bucket."""
+    """Báo cáo tuổi nợ on `as_of`: receivables (OUT invoices) or payables (IN), by overdue bucket."""
     parties: dict[uuid.UUID | None, dict[str, Any]] = {}
     totals = {name: ZERO for name, _, _ in AGING_BUCKETS}
     names = {
         party.id: party for party in db.query(FinParty).filter(FinParty.tenant_id == tenant_id)
     }
     invoices = []
-    for item in outstanding_invoices(db, tenant_id, direction, party_id=party_id):
+    for item in outstanding_invoices(db, tenant_id, direction, party_id=party_id, as_of=as_of):
         invoice = item.invoice
         due = invoice.due_date or invoice.issue_date or as_of
         overdue = (as_of - due).days
@@ -350,34 +460,41 @@ def aging(
         "parties": [
             {**row, **{key: plain(row[key]) for key in (*totals, "total")}} for row in party_rows
         ],
-        "invoices": invoices[:50],
+        "invoices": invoices[:invoice_limit] if invoice_limit else invoices,
         "invoice_count": len(invoices),
         "source": f"fin_invoices POSTED {direction} - fin_payments PAID, as of {as_of.isoformat()}",
     }
 
 
 def payment_schedule(db: Session, tenant_id: uuid.UUID, as_of: date, horizon_days: int) -> dict[str, Any]:
-    """Purchase invoices to pay by `as_of + horizon_days`, earliest due first."""
+    """Purchase invoices to pay by `as_of + horizon_days`, earliest due first.
+
+    What still needs a voucher leaves out both approved payments and those in a voucher
+    waiting for approval: a second voucher for them would be refused.
+    """
     until = as_of + timedelta(days=horizon_days)
+    names = {party.id: party.name for party in db.query(FinParty).filter(FinParty.tenant_id == tenant_id)}
     rows = []
     total = ZERO
+    # A plan from the books as they stand: `as_of` only moves the window.
     for item in outstanding_invoices(db, tenant_id, "IN"):
         invoice = item.invoice
         due = invoice.due_date or invoice.issue_date or as_of
         if due > until:
             continue
-        to_pay = item.remaining - item.scheduled
-        total += max(to_pay, ZERO)
+        to_pay = max(item.remaining - item.scheduled - item.drafted, ZERO)
+        total += to_pay
         rows.append({
             "invoice_id": str(invoice.id),
-            "party": invoice.party.name if invoice.party else invoice.seller_name,
+            "party": names.get(invoice.party_id) or invoice.seller_name,
             "series": invoice.series,
             "number": invoice.number,
             "due_date": due.isoformat(),
             "overdue": due < as_of,
             "remaining": plain(item.remaining),
             "already_scheduled": plain(item.scheduled),
-            "to_schedule": plain(max(to_pay, ZERO)),
+            "in_pending_voucher": plain(item.drafted),
+            "to_schedule": plain(to_pay),
         })
     rows.sort(key=lambda row: row["due_date"])
     return {
@@ -418,6 +535,16 @@ def journal_workbook(entries: list[FinJournalEntry]) -> bytes:
     buffer = io.BytesIO()
     workbook.save(buffer)
     return buffer.getvalue()
+
+
+def own_budget_department(user: Any) -> str | None:
+    """The department someone limited to their own budget sees; None when they have none.
+
+    "ALL" is what an account no department was set for carries, not a department, and an
+    empty one must not switch the department filter off.
+    """
+    department = str(getattr(user, "department", "") or "").strip().upper()
+    return None if department in {"", "ALL"} else department
 
 
 class PartyNotFound(LookupError):

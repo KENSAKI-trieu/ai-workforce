@@ -128,6 +128,36 @@ def unsupported_figures(answer: str, results: Iterable[Any], user_texts: Iterabl
     return [written for written, value, kind in figures_in(answer) if not _matches(value, kind, known)]
 
 
+_MONEY = re.compile(
+    r"(?<![\w.,/-])(\d{1,3}(?:[.,]\d{3})+(?:[.,]\d{1,2})?|\d+(?:[.,]\d{1,2})?)(\s*)(₫|đồng|vnđ|vnd|đ\b)",
+    re.IGNORECASE,
+)
+
+
+def _vietnamese_amount(value: Decimal) -> str:
+    whole = f"{abs(value):,.2f}".replace(",", " ").replace(".", ",").replace(" ", ".")
+    if whole.endswith(",00"):
+        whole = whole[:-3]
+    return f"-{whole}" if value < 0 else whole
+
+
+def format_money(answer: str) -> str:
+    """Write every amount of money the Vietnamese way: 198000000.00 ₫ -> 198.000.000 ₫.
+
+    The tools return exact decimal strings and the model sometimes copies them as they
+    are. Only the way an amount is written changes, never its value, so it runs after the
+    figures were checked.
+    """
+
+    def rewrite(match: re.Match[str]) -> str:
+        value = _number(match.group(1))
+        if value is None:
+            return match.group(0)
+        return f"{_vietnamese_amount(value)}{match.group(2)}{match.group(3)}"
+
+    return _MONEY.sub(rewrite, answer)
+
+
 def render_results(results: list[Any], *, limit: int = 30) -> str:
     """The tools' own figures as plain lines, shown in place of a withheld answer."""
     lines: list[str] = []

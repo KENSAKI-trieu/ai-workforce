@@ -18,8 +18,9 @@ from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
-from app.core.security import PermissionRequired
+from app.core.security import PermissionRequired, get_current_active_user
 from app.domains.finance import excel_import
+from app.domains.finance.approvals import is_finance_approval, withdraw_finance_approval
 from app.domains.finance.charts import CHARTS
 from app.domains.finance.money import normalize_period, normalize_tax_code, plain
 from app.domains.finance.settings import (
@@ -43,6 +44,7 @@ from app.domains.finance.reports import (
     aging,
     budget_vs_actual,
     journal_workbook,
+    own_budget_department,
     payment_schedule,
     period_bounds,
     trial_balance,
@@ -56,9 +58,11 @@ from app.models.models import (
     FinInvoice,
     FinJournalEntry,
     FinParty,
+    AgentWorkflow,
     FinPayment,
     Tenant,
     User,
+    WorkflowApproval,
 )
 from app.plugins.resolver import resolve_prompt_overlay
 
@@ -608,7 +612,9 @@ def report_budget(
     current_user: User = Depends(PermissionRequired("finance.ledger.view", "finance.budget.view_own")),
 ):
     if not has_permission(db, current_user, "finance.ledger.view"):
-        department = (current_user.department or "").upper()
+        department = own_budget_department(current_user)
+        if department is None:
+            raise HTTPException(status_code=403, detail="Tài khoản chưa gắn phòng ban nào để xem ngân sách phòng mình")
     return budget_vs_actual(db, current_user.tenant_id, _period_or_422(period), department=department)
 
 
@@ -745,3 +751,37 @@ def create_reminder(
     )
     db.commit()
     return {"approval_id": str(approval.id), "payload": approval.payload}
+
+
+# --------------------------------------------------------------------------- withdrawing a draft
+
+
+class Withdrawal(BaseModel):
+    reason: str | None = Field(default=None, max_length=1000)
+
+
+@router.post("/approvals/{approval_id}/withdraw", summary="Take back a finance draft nobody has decided")
+def withdraw_draft(
+    approval_id: uuid.UUID,
+    body: Withdrawal,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """A waiting voucher locks its invoices and a waiting reminder its customer; this frees them."""
+    approval = db.query(WorkflowApproval).join(AgentWorkflow).filter(
+        WorkflowApproval.id == approval_id,
+        AgentWorkflow.tenant_id == current_user.tenant_id,
+    ).with_for_update().first()
+    if approval is None or not is_finance_approval(approval):
+        raise HTTPException(status_code=404, detail="Approval request not found")
+    withdraw_finance_approval(db, approval, current_user, body.reason)
+    add_audit_event(
+        db, tenant_id=current_user.tenant_id, actor_user=current_user, agent_role="FINANCE",
+        action="finance.draft.withdrawn", resource_type="APPROVAL", resource_id=str(approval.id),
+        workflow_id=approval.workflow_id,
+        input_parameters={"action_type": approval.action_type, "reason": approval.comments},
+        request=request,
+    )
+    db.commit()
+    return {"id": str(approval.id), "status": approval.status}

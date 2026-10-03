@@ -1,5 +1,5 @@
-"""Finance agent -- under development.
+"""Finance agent: answers from the company's own books through fixed-parameter tools.
 
-The backend answers this role with its under-development reply and never routes it
-here; the policy is kept so the agent can be built out.
+It always runs on the graph. Every figure in a reply must come from a tool result of the
+turn (DomainPolicy.numbers_from_tools); what it drafts goes to a person for approval.
 """

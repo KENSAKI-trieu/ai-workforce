@@ -10,6 +10,7 @@ import pytest
 
 from app.core.config import settings
 from app.domains.finance.payments import DraftRefused, draft_payment_reminder, draft_payment_voucher
+from app.domains.finance.reports import payment_schedule
 from app.domains.finance.settings import get_settings, seed_chart
 from app.models.models import FinInvoice, FinLedgerLine, FinParty, FinPayment, User, WorkflowApproval
 from app.tools.executors.finance import draft_reminder, draft_voucher
@@ -164,3 +165,93 @@ def test_drafting_tools_are_terminal_and_gated():
         definition = tool_registry.get(name)
         assert definition.terminal and definition.opens_approval
         assert definition.acl.permission == code
+
+
+def test_a_waiting_voucher_shows_on_the_schedule_and_can_be_withdrawn(
+    client, tenant_id, clerk, signer, transactional_db_session
+):
+    db = transactional_db_session
+    vendor = _party(db, tenant_id, "VENDOR", bank_account="0011223344")
+    invoice = _posted(db, tenant_id, vendor, "7000000", due=date(2039, 5, 10))
+    approval = draft_payment_voucher(db, clerk, [invoice.id])
+    db.commit()
+    row = next(
+        row for row in payment_schedule(db, tenant_id, date(2039, 5, 1), 30)["invoices"]
+        if row["invoice_id"] == str(invoice.id)
+    )
+    # Already in a voucher: a second one would be refused, so nothing is left to schedule.
+    assert (row["in_pending_voucher"], row["to_schedule"]) == ("7000000.00", "0.00")
+
+    mine = client.get("/api/v1/approvals/submitted", headers=login(client, clerk)).json()
+    assert next(item for item in mine if item["id"] == str(approval.id))["can_withdraw"]
+    bystander = person(db, "finance.journal.draft", "finance.journal.approve")
+    refused = client.post(f"/api/v1/finance/approvals/{approval.id}/withdraw", json={}, headers=login(client, bystander))
+    assert refused.status_code == 403
+
+    taken_back = client.post(
+        f"/api/v1/finance/approvals/{approval.id}/withdraw", json={"reason": "Nhầm hoá đơn"}, headers=login(client, clerk),
+    )
+    assert taken_back.status_code == 200, taken_back.text
+    db.expire_all()
+    assert db.get(WorkflowApproval, approval.id).status == "WITHDRAWN"
+    assert {p.status for p in db.query(FinPayment).filter(FinPayment.workflow_id == approval.workflow_id)} == {"CANCELLED"}
+    late = client.post(f"/api/v1/approvals/{approval.id}/action", json={"action": "APPROVE"}, headers=login(client, signer))
+    assert late.status_code == 409
+    # The invoice is free again.
+    assert draft_payment_voucher(db, clerk, [invoice.id]).payload["amount"] == "7000000.00"
+
+
+def test_the_top_signer_can_withdraw_a_reminder_and_the_customer_can_be_reminded_again(
+    client, tenant_id, clerk, signer, transactional_db_session
+):
+    db = transactional_db_session
+    customer = _party(db, tenant_id, "CUSTOMER", email="kt@khach.vn")
+    _posted(db, tenant_id, customer, "4000000", direction="OUT", due=date.today() - timedelta(days=10))
+    approval = draft_payment_reminder(db, clerk, customer, 2, company_name="X", as_of=date.today())
+    db.commit()
+    with pytest.raises(DraftRefused):
+        draft_payment_reminder(db, clerk, customer, 2, company_name="X", as_of=date.today())
+    taken_back = client.post(f"/api/v1/finance/approvals/{approval.id}/withdraw", json={}, headers=login(client, signer))
+    assert taken_back.status_code == 200, taken_back.text
+    db.expire_all()
+    assert draft_payment_reminder(db, clerk, customer, 2, company_name="X", as_of=date.today()).status == "WAITING"
+
+
+def test_a_reminder_lists_every_invoice_its_total_counts(tenant_id, clerk, transactional_db_session):
+    db = transactional_db_session
+    customer = _party(db, tenant_id, "CUSTOMER", email="nhieu@khach.vn")
+    for _ in range(55):
+        _posted(db, tenant_id, customer, "1000", direction="OUT", due=date.today() - timedelta(days=5))
+    approval = draft_payment_reminder(db, clerk, customer, 2, company_name="X", as_of=date.today())
+    assert approval.payload["body"].count("- Hoá đơn") == 55
+
+
+def test_a_refused_duplicate_names_the_waiting_draft_and_how_to_redo_it(tenant_id, clerk, transactional_db_session):
+    db = transactional_db_session
+    vendor = _party(db, tenant_id, "VENDOR", bank_account="0011223344")
+    invoice = _posted(db, tenant_id, vendor, "3000000")
+    context = ToolContext(db=db, actor=clerk)
+    request = DraftPaymentVoucherInput.model_construct(tenant_id=tenant_id, audit=None, invoice_ids=[invoice.id])
+    assert draft_voucher(context, request)["created"]
+    again = draft_voucher(context, request)
+    assert again["status"] == "REFUSED"
+    assert again["reply"].startswith("Chưa lập được phiếu chi. Hoá đơn PC số ")
+    assert "Duyệt phiếu chi 3.000.000 ₫" in again["reply"] and "Tôi đã gửi" in again["reply"]
+    assert again["reply"].endswith(".")
+
+
+def test_a_reminder_without_a_level_matches_how_overdue_the_debt_is(tenant_id, clerk, transactional_db_session):
+    db = transactional_db_session
+    late = _party(db, tenant_id, "CUSTOMER", email="tre@khach.vn")
+    _posted(db, tenant_id, late, "2000000", direction="OUT", due=date.today() - timedelta(days=5))
+    on_time = _party(db, tenant_id, "CUSTOMER", email="dung@khach.vn")
+    _posted(db, tenant_id, on_time, "2000000", direction="OUT", due=date.today())
+    assert draft_payment_reminder(db, clerk, late, None, company_name="X", as_of=date.today()).payload["level"] == 2
+    assert draft_payment_reminder(db, clerk, on_time, None, company_name="X", as_of=date.today()).payload["level"] == 1
+    # What the user asked for still wins.
+    asked = _party(db, tenant_id, "CUSTOMER", email="hoi@khach.vn")
+    _posted(db, tenant_id, asked, "2000000", direction="OUT", due=date.today() - timedelta(days=5))
+    reply = draft_reminder(ToolContext(db=db, actor=clerk), DraftPaymentReminderInput.model_construct(
+        tenant_id=tenant_id, audit=None, party=asked.tax_code, level=3,
+    ))
+    assert reply["reply"].startswith("Đã soạn thư nhắc nợ mức 3")

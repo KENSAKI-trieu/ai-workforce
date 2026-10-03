@@ -3,7 +3,7 @@
 import axios from "axios";
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { useRouter } from "next/navigation";
-import { AlertTriangle, CheckCircle2, Download, Edit3, Eye, Loader2, RefreshCw, Scale, Send, ShieldAlert, X, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Download, Edit3, Eye, Loader2, RefreshCw, Scale, Send, ShieldAlert, Undo2, X, XCircle } from "lucide-react";
 import Sidebar from "@/components/Sidebar";
 import ContractFileViewer, { ContractFile } from "@/components/legal/ContractFileViewer";
 import FinanceApprovalDetail, { FinancePayload, financeEditable, isFinanceApproval } from "@/components/finance/FinanceApprovalDetail";
@@ -21,13 +21,15 @@ interface ApprovalItem {
   requester?: string;
   data_sources: string[];
   expires_at?: string;
-  status?: "WAITING" | "APPROVED" | "REJECTED" | "EXPIRED";
+  status?: "WAITING" | "APPROVED" | "REJECTED" | "EXPIRED" | "WITHDRAWN";
   comments?: string | null;
   // Only on the requester's own list (/approvals/submitted).
   decided_at?: string | null;
   approver_name?: string | null;
   eligible_approver_count?: number;
   warning?: string | null;
+  // A finance draft holds its invoices or customer until decided; its requester may take it back.
+  can_withdraw?: boolean;
 }
 
 type Tab = "pending" | "submitted";
@@ -37,6 +39,7 @@ const STATUS_LABELS: Record<NonNullable<ApprovalItem["status"]>, string> = {
   APPROVED: "Đã phê duyệt",
   REJECTED: "Bị từ chối",
   EXPIRED: "Hết hạn",
+  WITHDRAWN: "Đã rút lại",
 };
 
 // What a contract-review approval carries (legal_approval_service + submit-approval).
@@ -149,6 +152,22 @@ export default function ApprovalsCenterPage() {
           ? "Payload chỉnh sửa phải là JSON hợp lệ."
           : errorMessage(reason),
       );
+    } finally {
+      setSubmitting(false);
+    }
+  };
+
+  const withdraw = async () => {
+    if (!selected) return;
+    const note = window.prompt("Rút lại yêu cầu này? Hoá đơn hoặc khách hàng trong đó sẽ được giải phóng để lập lại. Lý do (không bắt buộc):", "");
+    if (note === null) return;
+    setSubmitting(true);
+    setError(null);
+    try {
+      await api.post(`/api/v1/finance/approvals/${selected.id}/withdraw`, { reason: note || null });
+      await fetchApprovals();
+    } catch (reason) {
+      setError(errorMessage(reason));
     } finally {
       setSubmitting(false);
     }
@@ -287,7 +306,8 @@ export default function ApprovalsCenterPage() {
                         ? ` · ${selected.approver_name || ""}${selected.decided_at ? ` lúc ${new Date(selected.decided_at).toLocaleString("vi-VN")}` : ""}`
                         : null}
                       {selected.warning && <p style={{ margin: "6px 0 0", display: "flex", gap: 6 }}><AlertTriangle size={15} style={{ flexShrink: 0, marginTop: 2 }} />{selected.warning}</p>}
-                      {selected.status === "REJECTED" && selected.comments && <p style={{ margin: "6px 0 0" }}>Lý do: {selected.comments}</p>}
+                      {(selected.status === "REJECTED" || selected.status === "WITHDRAWN") && selected.comments && <p style={{ margin: "6px 0 0" }}>Lý do: {selected.comments}</p>}
+                      {selected.can_withdraw && <div style={{ marginTop: 10 }}><button disabled={submitting} className="ta-btn ta-btn-ghost" onClick={() => void withdraw()}><Undo2 size={15} /> Rút lại yêu cầu</button></div>}
                     </div>
                   )}
                   <div style={{ padding: 12, background: "#EEF2FF", borderRadius: 8, marginBottom: 14 }}>

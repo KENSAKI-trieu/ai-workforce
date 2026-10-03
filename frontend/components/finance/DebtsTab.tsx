@@ -7,7 +7,7 @@ import { apiError, formatVnd } from "@/components/finance/format";
 
 interface AgingParty { party_id: string | null; party: string; tax_code?: string | null; NOT_DUE: string; "1_30": string; "31_60": string; "61_90": string; OVER_90: string; total: string }
 interface Aging { kind: string; as_of: string; buckets: Record<string, string>; total: string; parties: AgingParty[] }
-interface ScheduleRow { invoice_id: string; party: string; series: string; number: string; due_date: string; overdue: boolean; remaining: string; already_scheduled: string; to_schedule: string }
+interface ScheduleRow { invoice_id: string; party: string; series: string; number: string; due_date: string; overdue: boolean; remaining: string; already_scheduled: string; in_pending_voucher: string; to_schedule: string }
 interface Schedule { invoices: ScheduleRow[]; total_to_schedule: string; until: string }
 interface Voucher { workflow_id: string; reference: string; status: string; total: string; invoice_count: number; created_at?: string | null }
 
@@ -142,7 +142,7 @@ export default function DebtsTab({ canDraft, canRemind }: { canDraft: boolean; c
                 <tr key={row.invoice_id} style={{ color: row.overdue ? "#B91C1C" : undefined }}>
                   {canDraft && <td><input type="checkbox" checked={picked.has(row.invoice_id)} disabled={!Number(row.to_schedule)} onChange={() => toggle(row.invoice_id)} aria-label="Chọn hoá đơn" /></td>}
                   <td>{row.party}</td><td>{row.series} số {row.number}</td><td>{row.due_date}{row.overdue ? " (quá hạn)" : ""}</td>
-                  <td style={num}>{formatVnd(row.remaining)}</td><td style={num}>{Number(row.already_scheduled) ? formatVnd(row.already_scheduled) : ""}</td>
+                  <td style={num}>{formatVnd(row.remaining)}</td><td style={num}>{Number(row.already_scheduled) ? formatVnd(row.already_scheduled) : ""}{Number(row.in_pending_voucher) ? `${Number(row.already_scheduled) ? " · " : ""}chờ duyệt ${formatVnd(row.in_pending_voucher)}` : ""}</td>
                 </tr>
               ))}
             </tbody>

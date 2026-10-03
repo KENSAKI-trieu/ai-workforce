@@ -18,7 +18,7 @@ from langgraph.runtime import Runtime
 from langgraph.types import interrupt
 
 from app.agents.base import notices
-from app.agents.base.figures import render_results, unsupported_figures
+from app.agents.base.figures import format_money, render_results, unsupported_figures
 from app.agents.base.decision import DecisionProvider
 from app.agents.base.state import WorkforceAgentState
 from app.governance.guardrails import is_tool_allowed, validate_grounded_output, validate_input
@@ -521,6 +521,17 @@ def _unsupported_figures(state: WorkforceAgentState) -> dict[str, Any] | None:
 
 
 def citation_verification(state: WorkforceAgentState) -> dict[str, Any]:
+    update = _verify_citations(state)
+    if state.get("numbers_from_tools") and "final_answer" not in update and not _answered_by_tool(state):
+        # The answer stands as the model wrote it; only how its amounts are written changes.
+        answer = str(state.get("final_answer") or "")
+        formatted = format_money(answer)
+        if formatted != answer:
+            update = {**update, "final_answer": formatted}
+    return update
+
+
+def _verify_citations(state: WorkforceAgentState) -> dict[str, Any]:
     # Any tool call used to skip this whole check, so an answer the model wrote after a
     # second search reached the user with citations nobody had checked.
     if _answered_by_tool(state) or not state.get("citation_required") or state.get("unanswered"):

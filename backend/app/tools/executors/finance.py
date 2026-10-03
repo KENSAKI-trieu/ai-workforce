@@ -12,7 +12,7 @@ from decimal import Decimal
 from typing import Any
 
 from fastapi import HTTPException
-from sqlalchemy import or_
+from sqlalchemy import and_, or_
 
 from app.agents.usage import _llm_usage_recorder
 from app.domains.finance.invoice_intake import serialize_invoice
@@ -30,6 +30,7 @@ from app.domains.finance.reports import (
     aging,
     budget_vs_actual,
     ledger_detail,
+    own_budget_department,
     payment_schedule,
     period_bounds,
     resolve_party,
@@ -85,11 +86,19 @@ def lookup_invoices(context: ToolContext, request: InvoiceLookupInput) -> dict[s
     if request.number:
         query = query.filter(FinInvoice.number == request.number.lstrip("0"))
     if request.party:
+        # The counterparty only: on a sales invoice the seller is the company itself, so
+        # matching seller names would return every sales invoice for its own name.
         term = request.party.strip()
+        pattern = f"%{term}%"
         query = query.outerjoin(FinParty, FinParty.id == FinInvoice.party_id).filter(or_(
             FinParty.tax_code == term,
-            FinParty.name.ilike(f"%{term}%"),
-            FinInvoice.seller_name.ilike(f"%{term}%"),
+            FinParty.name.ilike(pattern),
+            and_(FinInvoice.direction == "IN", or_(
+                FinInvoice.seller_tax_code == term, FinInvoice.seller_name.ilike(pattern),
+            )),
+            and_(FinInvoice.direction == "OUT", or_(
+                FinInvoice.buyer_tax_code == term, FinInvoice.buyer_name.ilike(pattern),
+            )),
         ))
     if request.period:
         start, end = period_bounds(request.period)
@@ -172,7 +181,9 @@ def get_budget_vs_actual(context: ToolContext, request: BudgetVsActualInput) -> 
     if "finance.ledger.view" not in granted:
         if "finance.budget.view_own" not in granted:
             raise HTTPException(status_code=403, detail="Access denied for tool 'budget_vs_actual'")
-        own = (context.actor.department or "").upper()
+        own = own_budget_department(context.actor)
+        if own is None:
+            return {"found": False, "message": "Tài khoản của bạn chưa gắn phòng ban nào nên chưa xem được ngân sách phòng mình."}
         if department and department.upper() != own:
             return {"found": False, "message": f"Bạn chỉ được xem ngân sách của phòng {own}."}
         department = own
@@ -186,13 +197,18 @@ def get_aging(context: ToolContext, request: AgingInput) -> dict[str, Any]:
             party_id = resolve_party(context.db, context.actor.tenant_id, request.party).id
         except PartyNotFound as exc:
             return {"found": False, "message": str(exc)}
-    return aging(
+    report = aging(
         context.db, context.actor.tenant_id,
         "OUT" if request.kind == "RECEIVABLE" else "IN",
         request.as_of or _today(),
         min_days_overdue=request.min_days_overdue,
         party_id=party_id,
     )
+    if party_id is None:
+        # Read as one customer's debt next to that customer's row; the key now says
+        # whose total it is.
+        report["total_all_parties"] = report.pop("total")
+    return report
 
 
 def get_payment_schedule(context: ToolContext, request: PaymentScheduleInput) -> dict[str, Any]:
@@ -202,12 +218,18 @@ def get_payment_schedule(context: ToolContext, request: PaymentScheduleInput) ->
 # --------------------------------------------------------------------------- drafts for approval
 
 
+def _refusal(what: str, exc: Exception) -> str:
+    """A refused draft is the whole answer, so it says what was not done and why."""
+    reason = str(exc).rstrip(". ")
+    return f"{what}. {reason[:1].upper()}{reason[1:]}."
+
+
 def draft_voucher(context: ToolContext, request: DraftPaymentVoucherInput) -> dict[str, Any]:
     """Terminal: a payment voucher waiting for whoever its amount requires."""
     try:
         approval = draft_payment_voucher(context.db, context.actor, list(request.invoice_ids))
     except DraftRefused as exc:
-        return {"status": "REFUSED", "created": False, "reply": str(exc)}
+        return {"status": "REFUSED", "created": False, "reply": _refusal("Chưa lập được phiếu chi", exc)}
     payload = approval.payload
     warnings = " Lưu ý: " + "; ".join(payload["warnings"]) + "." if payload.get("warnings") else ""
     return {
@@ -232,14 +254,14 @@ def draft_reminder(context: ToolContext, request: DraftPaymentReminderInput) -> 
             db, actor, party, request.level, company_name=tenant.name if tenant else "", as_of=_today(),
         )
     except (PartyNotFound, DraftRefused) as exc:
-        return {"status": "REFUSED", "created": False, "reply": str(exc)}
+        return {"status": "REFUSED", "created": False, "reply": _refusal("Chưa soạn được thư nhắc nợ", exc)}
     payload = approval.payload
     return {
         "status": "PENDING_APPROVAL",
         "created": True,
         "approval_id": str(approval.id),
         "reply": (
-            f"Đã soạn thư nhắc nợ mức {request.level} gửi {party.name} ({payload['recipient']}), "
+            f"Đã soạn thư nhắc nợ mức {payload['level']} gửi {party.name} ({payload['recipient']}), "
             f"tổng {format_vnd(Decimal(payload['amount']))}, và gửi duyệt. Thư chỉ được gửi đi khi "
             "người duyệt đồng ý."
         ),

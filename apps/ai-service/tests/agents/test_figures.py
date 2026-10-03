@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from app.agents.base.figures import figures_in, render_results, unsupported_figures
+from app.agents.base.figures import figures_in, format_money, render_results, unsupported_figures
 from app.agents.base.nodes import citation_verification
 from app.agents.finance.agent import POLICY as FINANCE_POLICY
 
@@ -76,3 +76,19 @@ def test_a_reply_citing_the_tool_it_read_is_not_withheld():
         assert "final_answer" not in citation_verification({**state, "citations": [{"source": citation}]})
     invented = citation_verification({**state, "citations": [{"source": "Quy_che_tai_chinh.pdf"}]})
     assert invented["errors"][-1]["error"] == "UNVERIFIED_CITATION"
+
+
+def test_amounts_are_written_the_vietnamese_way_without_changing_them():
+    assert format_money("Còn phải trả 198000000.00 ₫, đã lên lịch 0.00 ₫.") == "Còn phải trả 198.000.000 ₫, đã lên lịch 0 ₫."
+    assert format_money("Thực chi 62.000.000,00 ₫ (vượt 24,00%).") == "Thực chi 62.000.000 ₫ (vượt 24,00%)."
+    assert format_money("Lãi 1.234.567,50 VND") == "Lãi 1.234.567,50 VND"
+    # Not money: accounts, dates, invoice numbers and scaled figures stay as written.
+    untouched = "TK 331, hoá đơn 8812 ngày 08/10/2026, khoảng 1,23 tỷ."
+    assert format_money(untouched) == untouched
+
+
+def test_the_graph_reformats_a_verified_reply_only():
+    passed = citation_verification(_state("Số dư cuối kỳ là 125000000.00 ₫.", [BALANCE]))
+    assert passed["final_answer"] == "Số dư cuối kỳ là 125.000.000 ₫."
+    withheld = citation_verification(_state("Số dư cuối kỳ là 152000000.00 ₫.", [BALANCE]))
+    assert withheld["errors"][-1]["error"] == "UNSUPPORTED_FIGURES"

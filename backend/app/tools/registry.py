@@ -30,6 +30,8 @@ from app.tools.schemas import (
     ProposeJournalEntryInput,
     LeaveLookupInput,
     RAGSearchInput,
+    SpreadsheetAnalysisInput,
+    SpreadsheetListInput,
     SubmitApprovalInput,
     TrialBalanceInput,
 )
@@ -263,6 +265,8 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         draft_reminder,
         draft_voucher,
         get_trial_balance,
+        analyze_spreadsheet,
+        list_spreadsheets,
         lookup_invoices,
         propose_journal_entry,
     )
@@ -372,6 +376,27 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             "still needs a voucher (to_schedule). " + reading,
             PaymentScheduleInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
             "tool.finance.payment_schedule", get_payment_schedule, permission="finance.ar_ap.view",
+        ),
+        # A user's own uploaded file, not the books: no box on the ACL, and the executor
+        # reads only files the caller uploaded.
+        _definition(
+            "list_spreadsheets",
+            "The Excel/CSV files the user uploaded to analyse, newest first, with their "
+            "columns (name and kind: NUMBER, DATE, TEXT) and row counts. Call it before "
+            "analyze_spreadsheet when you do not know the columns.",
+            SpreadsheetListInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
+            "tool.finance.sheets", list_spreadsheets,
+        ),
+        _definition(
+            "analyze_spreadsheet",
+            "Compute on a file the user uploaded: sum, count, average, minimum or maximum of "
+            "one number column, optionally grouped by a column (by month, quarter or year for "
+            "a date column) and filtered. Rows labelled as totals in the file are already "
+            "left out. Name columns exactly as list_spreadsheets returned them. The figures "
+            "come from the user's file, not the company's books: say so. The reply shows a "
+            "chart of it. " + reading,
+            SpreadsheetAnalysisInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.sheet_analysis", analyze_spreadsheet,
         ),
         # Both terminal and approval-opening: nothing is paid or sent on this call.
         _definition(

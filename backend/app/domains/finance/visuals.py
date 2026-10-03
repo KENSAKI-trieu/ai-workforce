@@ -262,6 +262,41 @@ def ledger_chart(result: dict[str, Any]) -> list[dict[str, Any]]:
     )]
 
 
+OPERATION_LABELS = {"sum": "Tổng", "count": "Số dòng", "average": "Trung bình", "min": "Nhỏ nhất", "max": "Lớn nhất"}
+PERIOD_LABELS = {"day": "ngày", "month": "tháng", "quarter": "quý", "year": "năm"}
+
+
+def sheet_chart(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """An analysis of an uploaded file: by period a line, by category bars or a donut."""
+    groups = [item for item in result.get("groups") or [] if item.get("value") is not None]
+    if len(groups) < 2:
+        return []
+    operation = result["operation"]
+    measure = OPERATION_LABELS.get(operation, operation) + (f" {result['value_column']}" if result.get("value_column") else "")
+    by = result["group_by"] + (f" (theo {PERIOD_LABELS[result['period']]})" if result.get("period") else "")
+    values = [str(item["value"]) for item in groups]
+    categories = [item["group"] for item in groups]
+    over_time = result.get("period") is not None
+    parts_fit = operation in {"sum", "count"} and len(groups) <= MAX_PARTS and all(_d(value) > 0 for value in values)
+    if over_time:
+        chart, alternatives = "line", ["line", "bar", "table"]
+    elif parts_fit:
+        chart, alternatives = "pie", ["pie", "bar", "table"]
+    else:
+        chart, alternatives = "bar", ["bar", "table"]
+    filters = "; ".join(f"{item['column']} {item['op']} {item['value']}" for item in result.get("filters") or [])
+    spec = _spec(
+        f"{measure} theo {by}", chart, alternatives, categories,
+        [{"key": "value", "name": measure, "values": values}],
+        subtitle=f"File {result['file']}, {result['rows_used']} dòng" + (f"; lọc: {filters}" if filters else ""),
+        parts=[{"name": name, "value": value} for name, value in zip(categories, values)] if parts_fit else None,
+        source=result.get("source", ""),
+    )
+    if operation == "count":
+        spec["unit"] = "COUNT"
+    return [spec]
+
+
 # Gateway tool name -> builder. The same builders back the /finance pages.
 BUILDERS: dict[str, Callable[[dict[str, Any]], list[dict[str, Any]]]] = {
     "budget_vs_actual": budget_chart,
@@ -271,6 +306,7 @@ BUILDERS: dict[str, Callable[[dict[str, Any]], list[dict[str, Any]]]] = {
     "get_account_trend": trend_chart,
     "get_expense_breakdown": expense_chart,
     "get_ledger_detail": ledger_chart,
+    "analyze_spreadsheet": sheet_chart,
 }
 
 

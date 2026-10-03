@@ -2078,6 +2078,44 @@ class FinBudget(Base):
     )
 
 
+class FinSheet(Base):
+    """A spreadsheet someone uploaded to analyse: their own data, never the company's books.
+
+    Only its uploader reads it. The rows are kept as parsed (numbers as exact decimal
+    strings, dates as ISO) so every analysis reads the same cells; the file itself stays
+    sealed in storage so the sheet or header row can be chosen again.
+    """
+
+    __tablename__ = "fin_sheets"
+    __table_args__ = (Index("idx_fin_sheets_owner", "tenant_id", "created_by_id", "created_at"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    filename: Mapped[str] = mapped_column(String(255), nullable=False)
+    storage_key: Mapped[str] = mapped_column(Text, nullable=False)
+    sheet_names: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    sheet_name: Mapped[str] = mapped_column(String(255), nullable=False, default="")
+    # 1-based row of the column titles, as Excel numbers it.
+    header_row: Mapped[int] = mapped_column(Integer, nullable=False, default=1)
+    # [{"index", "name", "kind": NUMBER | DATE | TEXT}]
+    columns: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    rows: Mapped[list] = mapped_column(EncryptedJSONB, nullable=False, default=list)
+    # [{"row", "reason": TOTAL}] -- left out of every analysis.
+    skipped_rows: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
+    # Rows labelled "Tổng"/"Cộng" repeat the rows above them; the uploader can keep them.
+    skip_totals: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    row_count: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
 class FinPostingRule(Base):
     """Long-term memory: how this party's invoices were posted when an approver agreed."""
 

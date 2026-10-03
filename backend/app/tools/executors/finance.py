@@ -38,6 +38,7 @@ from app.domains.finance.reports import (
     resolve_party,
     trial_balance,
 )
+from app.domains.finance.sheets import SheetRejected, analyze, describe as describe_sheet, own_sheet, own_sheets
 from app.domains.platform.position_service import user_permissions
 from app.plugins.resolver import resolve_prompt_overlay
 from app.domains.platform.audit_service import (
@@ -62,6 +63,8 @@ from app.tools.schemas import (
     LedgerDetailInput,
     PaymentScheduleInput,
     ProposeJournalEntryInput,
+    SpreadsheetAnalysisInput,
+    SpreadsheetListInput,
     TrialBalanceInput,
 )
 
@@ -165,6 +168,33 @@ def get_expense_breakdown(context: ToolContext, request: ExpenseBreakdownInput) 
     return expense_breakdown(
         context.db, context.actor.tenant_id, request.from_period, request.to_period, group_by=request.group_by,
     )
+
+
+def list_spreadsheets(context: ToolContext, request: SpreadsheetListInput) -> dict[str, Any]:
+    """The files the user uploaded to analyse: their own only, newest first."""
+    from app.models.models import FinSheet
+
+    sheets = own_sheets(context.db, context.actor).order_by(FinSheet.created_at.desc()).limit(10).all()
+    if not sheets:
+        return {"found": False, "message": "Bạn chưa tải file Excel nào lên để phân tích (trang Tài chính, mục Phân tích Excel)."}
+    return {"sheets": [describe_sheet(sheet) for sheet in sheets], "source": "fin_sheets"}
+
+
+def analyze_spreadsheet(context: ToolContext, request: SpreadsheetAnalysisInput) -> dict[str, Any]:
+    sheet = own_sheet(context.db, context.actor, request.sheet_id)
+    if sheet is None:
+        return {"found": False, "message": "Không có file nào của bạn khớp; hãy tải file lên ở trang Tài chính, mục Phân tích Excel."}
+    try:
+        return analyze(
+            sheet,
+            operation=request.operation,
+            value_column=request.value_column,
+            group_by=request.group_by,
+            period=request.period,
+            filters=[item.model_dump() for item in request.filters],
+        )
+    except SheetRejected as exc:
+        return {"found": False, "message": str(exc), "columns": describe_sheet(sheet)["columns"]}
 
 
 def get_trial_balance(context: ToolContext, request: TrialBalanceInput) -> dict[str, Any]:

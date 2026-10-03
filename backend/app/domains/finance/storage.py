@@ -24,8 +24,24 @@ def _safe(value: str) -> str:
 
 
 def save_invoice_file(*, tenant_id: uuid.UUID, invoice_id: uuid.UUID, filename: str, data: bytes) -> str:
+    return _save(tenant_id, "invoices", invoice_id, filename, data)
+
+
+def save_sheet_file(*, tenant_id: uuid.UUID, sheet_id: uuid.UUID, filename: str, data: bytes) -> str:
+    return _save(tenant_id, "sheets", sheet_id, filename, data)
+
+
+def delete_stored_file(storage_key: str) -> None:
     root = _root()
-    directory = (root / str(tenant_id) / "invoices" / str(invoice_id)).resolve()
+    target = (root / storage_key).resolve()
+    if root not in target.parents:
+        raise ValueError("Invalid finance storage key")
+    target.unlink(missing_ok=True)
+
+
+def _save(tenant_id: uuid.UUID, kind: str, record_id: uuid.UUID, filename: str, data: bytes) -> str:
+    root = _root()
+    directory = (root / str(tenant_id) / kind / str(record_id)).resolve()
     if root not in directory.parents:
         raise ValueError("Invalid finance storage target")
     directory.mkdir(parents=True, exist_ok=True)
@@ -49,6 +65,10 @@ def save_invoice_file(*, tenant_id: uuid.UUID, invoice_id: uuid.UUID, filename: 
 
 
 def read_invoice_file(storage_key: str) -> bytes:
+    return read_stored_file(storage_key)
+
+
+def read_stored_file(storage_key: str) -> bytes:
     root = _root()
     target = (root / storage_key).resolve()
     if root not in target.parents:

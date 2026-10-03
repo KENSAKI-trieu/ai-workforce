@@ -48,6 +48,8 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "payment_schedule": "Lịch hoá đơn mua vào đến hạn thanh toán.",
     "get_account_trend": "Xem một tài khoản qua nhiều tháng, kèm biểu đồ.",
     "get_expense_breakdown": "Cơ cấu chi phí theo tài khoản hoặc phòng ban, kèm biểu đồ.",
+    "list_spreadsheets": "Liệt kê file Excel người dùng tự tải lên để phân tích.",
+    "analyze_spreadsheet": "Tính tổng, đếm, trung bình... trên file Excel người dùng tải lên, kèm biểu đồ.",
     "draft_payment_voucher": "Lập phiếu chi nháp gửi duyệt; không tự chuyển tiền.",
     "draft_payment_reminder": "Soạn thư nhắc nợ khách hàng gửi duyệt; chỉ gửi khi được duyệt.",
 }
@@ -76,6 +78,8 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "payment_schedule": "xem lịch thanh toán",
     "get_account_trend": "xem xu hướng tài khoản",
     "get_expense_breakdown": "xem cơ cấu chi phí",
+    "list_spreadsheets": "xem file Excel đã tải lên",
+    "analyze_spreadsheet": "phân tích file Excel",
     "draft_payment_voucher": "lập phiếu chi",
     "draft_payment_reminder": "soạn thư nhắc nợ",
 }

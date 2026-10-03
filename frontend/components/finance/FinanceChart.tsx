@@ -39,6 +39,7 @@ export interface ChartSpec {
   series: ChartSeries[];
   parts?: { name: string; value: string }[] | null;
   ordinal?: boolean;
+  unit?: "VND" | "COUNT";
 }
 
 const KIND_LABELS: Record<ChartKind, string> = {
@@ -89,9 +90,18 @@ function money(value: unknown): string {
   return formatVnd(Number(value));
 }
 
+function plainCount(value: unknown): string {
+  return Number(value).toLocaleString("vi-VN");
+}
+
 /** `width` is for containers that size to their content (a chat bubble), where 100% is nothing. */
 export default function FinanceChart({ spec, height = 280, width }: { spec: ChartSpec; height?: number; width?: number }) {
   const [kind, setKind] = useState<ChartKind>(spec.chart);
+  // A count of rows is not money: no ₫, and no "tr"/"tỷ" on its axis.
+  const counting = spec.unit === "COUNT";
+  const show = counting ? plainCount : money;
+  const tick = counting ? plainCount : compactVnd;
+  const amount = counting ? plainCount : formatVnd;
   const colors = useMemo(() => seriesColors(spec), [spec]);
   const rows = useMemo(() => spec.categories.map((category, index) => ({
     category,
@@ -110,8 +120,8 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
         <Chart data={rows} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
           <CartesianGrid stroke={GRID} vertical={false} />
           <XAxis dataKey="category" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} />
-          <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compactVnd} width={64} />
-          <Tooltip formatter={money} />
+          <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={tick} width={64} />
+          <Tooltip formatter={show} />
           {legend && <Legend wrapperStyle={{ fontSize: 12 }} itemSorter={null} />}
           {spec.series.map((series, index) => kind === "line" ? (
             <Line key={series.key} isAnimationActive={false} type="linear" dataKey={series.key} name={series.name} stroke={colors[index]}
@@ -129,16 +139,16 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
         <CartesianGrid stroke={GRID} vertical={horizontal} horizontal={!horizontal} />
         {horizontal ? (
           <>
-            <XAxis type="number" tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compactVnd} />
+            <XAxis type="number" tick={AXIS} tickLine={false} axisLine={false} tickFormatter={tick} />
             <YAxis type="category" dataKey="category" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} width={150} />
           </>
         ) : (
           <>
             <XAxis dataKey="category" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} />
-            <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compactVnd} width={64} />
+            <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={tick} width={64} />
           </>
         )}
-        <Tooltip formatter={money} cursor={{ fill: "rgba(100,116,139,0.08)" }} />
+        <Tooltip formatter={show} cursor={{ fill: "rgba(100,116,139,0.08)" }} />
         {legend && <Legend wrapperStyle={{ fontSize: 12 }} itemSorter={null} />}
         {spec.series.map((series, index) => (
           <Bar key={series.key} isAnimationActive={false} dataKey={series.key} name={series.name} fill={colors[index]} maxBarSize={32}
@@ -166,10 +176,10 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
       <BarChart data={steps} margin={{ top: 8, right: 16, left: 4, bottom: 4 }}>
         <CartesianGrid stroke={GRID} vertical={false} />
         <XAxis dataKey="category" tick={AXIS} tickLine={false} axisLine={{ stroke: GRID }} />
-        <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={compactVnd} width={64} />
+        <YAxis tick={AXIS} tickLine={false} axisLine={false} tickFormatter={tick} width={64} />
         <Tooltip
           cursor={{ fill: "rgba(100,116,139,0.08)" }}
-          formatter={(_value, _name, item) => [money((item?.payload as { signed?: number })?.signed), "Số tiền"]}
+          formatter={(_value, _name, item) => [show((item?.payload as { signed?: number })?.signed), "Số tiền"]}
         />
         <Bar dataKey="base" stackId="step" fill="transparent" legendType="none" tooltipType="none" isAnimationActive={false} />
         <Bar dataKey="amount" stackId="step" isAnimationActive={false} maxBarSize={48} radius={[4, 4, 0, 0]}>
@@ -188,7 +198,7 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
     <div style={{ display: "grid", gridTemplateColumns: "minmax(160px, 1fr) minmax(180px, 1.2fr)", gap: 12, alignItems: "center" }}>
       <ResponsiveContainer width="100%" height={height - 20}>
         <PieChart>
-          <Tooltip formatter={money} />
+          <Tooltip formatter={show} />
           <Pie data={parts.map((part) => ({ name: part.name, value: Number(part.value) }))} dataKey="value" nameKey="name"
             innerRadius="55%" outerRadius="88%" paddingAngle={1} stroke="#fff" strokeWidth={2} isAnimationActive={false}>
             {parts.map((part, index) => (
@@ -203,7 +213,7 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
             <span style={{ width: 10, height: 10, borderRadius: 2, background: spec.ordinal ? Object.values(ORDINAL)[index] ?? CATEGORICAL[index] : CATEGORICAL[index % CATEGORICAL.length] }} />
             <span style={{ color: "var(--text-body)" }}>{part.name}</span>
             <span style={{ color: "var(--text-dark)", whiteSpace: "nowrap" }}>
-              {formatVnd(part.value)}
+              {amount(part.value)}
               {partTotal > 0 && <small style={{ color: "var(--text-muted)" }}> · {(Number(part.value) * 100 / partTotal).toLocaleString("vi-VN", { maximumFractionDigits: 1 })}%</small>}
             </span>
           </li>
@@ -222,7 +232,7 @@ export default function FinanceChart({ spec, height = 280, width }: { spec: Char
           {spec.categories.map((category, index) => (
             <tr key={`${category}-${index}`}>
               <td>{category}</td>
-              {spec.series.map((series) => <td key={series.key} style={num}>{formatVnd(series.values[index])}</td>)}
+              {spec.series.map((series) => <td key={series.key} style={num}>{amount(series.values[index])}</td>)}
             </tr>
           ))}
         </tbody>

@@ -16,6 +16,8 @@ TOOLS: tuple[str, ...] = (
     "payment_schedule",
     "get_account_trend",
     "get_expense_breakdown",
+    "list_spreadsheets",
+    "analyze_spreadsheet",
     "draft_payment_voucher",
     "draft_payment_reminder",
 )

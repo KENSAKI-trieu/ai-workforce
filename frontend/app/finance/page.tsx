@@ -8,10 +8,11 @@ import BooksTab from "@/components/finance/BooksTab";
 import DataTab from "@/components/finance/DataTab";
 import DebtsTab from "@/components/finance/DebtsTab";
 import InvoicesTab from "@/components/finance/InvoicesTab";
+import SheetsTab from "@/components/finance/SheetsTab";
 import { currentPeriod } from "@/components/finance/format";
 import { useAuthStore, userCan } from "@/store/useAuthStore";
 
-type Tab = "invoices" | "books" | "debts" | "data";
+type Tab = "invoices" | "books" | "debts" | "sheets" | "data";
 
 /**
  * The books the Finance agent reads, for the people who keep them.
@@ -32,6 +33,8 @@ export default function FinancePage() {
       visible.push({ key: "books", label: "Sổ sách & báo cáo" });
     }
     if (userCan(user, "finance.ar_ap.view")) visible.push({ key: "debts", label: "Công nợ" });
+    // Anyone's own spreadsheet: no box needed, the server shows each person only their files.
+    visible.push({ key: "sheets", label: "Phân tích Excel" });
     if (userCan(user, "finance.import.manage")) visible.push({ key: "data", label: "Dữ liệu & cài đặt" });
     return visible;
   }, [user]);
@@ -92,6 +95,7 @@ export default function FinancePage() {
                 />
               )}
               {tab === "debts" && <DebtsTab canDraft={can("finance.journal.draft")} canRemind={can("finance.reminder.send")} />}
+              {tab === "sheets" && <SheetsTab />}
               {tab === "data" && <DataTab />}
             </>
           )}

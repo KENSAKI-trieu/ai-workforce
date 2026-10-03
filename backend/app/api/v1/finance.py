@@ -51,18 +51,30 @@ from app.domains.finance.reports import (
     period_bounds,
     trial_balance,
 )
+from app.domains.finance.sheets import (
+    SheetRejected,
+    analyze as analyze_rows,
+    create_sheet,
+    describe as describe_sheet,
+    own_sheet,
+    own_sheets,
+    preview,
+    reread_sheet,
+)
 from app.domains.finance.visuals import (
     aging_chart,
     balance_chart,
     budget_chart,
     expense_chart,
     schedule_chart,
+    sheet_chart,
     trend_chart,
 )
 from app.domains.platform.position_service import has_permission
-from app.domains.finance.storage import read_invoice_file
+from app.domains.finance.storage import delete_stored_file, read_invoice_file
 from app.domains.platform.audit_events import add_audit_event
 from app.models.models import (
+    FinSheet,
     FinAccount,
     FinImportBatch,
     FinInvoice,
@@ -840,3 +852,125 @@ def withdraw_draft(
     )
     db.commit()
     return {"id": str(approval.id), "status": approval.status}
+
+
+# --------------------------------------------------------------------------- sheets to analyse
+#
+# Someone's own spreadsheet: whoever is signed in may upload and analyse one, and only they
+# ever read it. Nothing here touches the books, so no finance box is required.
+
+
+class SheetCorrection(BaseModel):
+    sheet_name: str | None = Field(default=None, max_length=255)
+    header_row: int | None = Field(default=None, ge=1, le=10_000)
+    # {column index: NUMBER | DATE | TEXT}
+    kinds: dict[int, str] | None = None
+    skip_totals: bool | None = None
+
+
+class SheetAnalysisRequest(BaseModel):
+    operation: str = "sum"
+    value_column: str | None = Field(default=None, max_length=255)
+    group_by: str | None = Field(default=None, max_length=255)
+    period: str | None = None
+    filters: list[dict[str, str]] = Field(default_factory=list, max_length=5)
+
+
+def _own_sheet_or_404(db: Session, user: User, sheet_id: uuid.UUID):
+    sheet = own_sheet(db, user, sheet_id)
+    if sheet is None:
+        raise HTTPException(status_code=404, detail="Không tìm thấy file")
+    return sheet
+
+
+@router.post("/sheets", summary="Upload a spreadsheet of one's own to analyse")
+async def upload_sheet(
+    file: UploadFile = File(...),
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    filename = Path(file.filename or "bang-tinh.xlsx").name
+    data = await file.read()
+    try:
+        sheet = create_sheet(db, current_user, filename, data)
+    except SheetRejected as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    add_audit_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        actor_user=current_user,
+        agent_role="FINANCE",
+        action="finance.sheet.uploaded",
+        resource_type="FIN_SHEET",
+        resource_id=str(sheet.id),
+        after_data={"filename": filename, "rows": sheet.row_count},
+    )
+    db.commit()
+    return preview(sheet)
+
+
+@router.get("/sheets", summary="The spreadsheets one uploaded")
+def list_sheets(db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    sheets = own_sheets(db, current_user).order_by(FinSheet.created_at.desc()).limit(50).all()
+    return [describe_sheet(sheet) for sheet in sheets]
+
+
+@router.get("/sheets/{sheet_id}", summary="How a spreadsheet was read, with its first rows")
+def get_sheet(sheet_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    return preview(_own_sheet_or_404(db, current_user, sheet_id))
+
+
+@router.patch("/sheets/{sheet_id}", summary="Read a spreadsheet again with corrections")
+def correct_sheet(
+    sheet_id: uuid.UUID,
+    body: SheetCorrection,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    sheet = _own_sheet_or_404(db, current_user, sheet_id)
+    try:
+        reread_sheet(
+            sheet,
+            sheet_name=body.sheet_name,
+            header_row=body.header_row,
+            kinds=body.kinds,
+            skip_totals=sheet.skip_totals if body.skip_totals is None else body.skip_totals,
+        )
+    except SheetRejected as exc:
+        db.rollback()
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    db.commit()
+    return preview(sheet)
+
+
+@router.post("/sheets/{sheet_id}/analyze", summary="One fixed computation on a spreadsheet, with a chart")
+def analyze_sheet(
+    sheet_id: uuid.UUID,
+    body: SheetAnalysisRequest,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    sheet = _own_sheet_or_404(db, current_user, sheet_id)
+    try:
+        result = analyze_rows(
+            sheet,
+            operation=body.operation,
+            value_column=body.value_column or None,
+            group_by=body.group_by or None,
+            period=body.period or None,
+            filters=body.filters,
+        )
+    except SheetRejected as exc:
+        raise HTTPException(status_code=422, detail=str(exc)) from exc
+    return _with_charts(result, sheet_chart)
+
+
+@router.delete("/sheets/{sheet_id}", status_code=204, summary="Delete a spreadsheet and its file")
+def delete_sheet(sheet_id: uuid.UUID, db: Session = Depends(get_db), current_user: User = Depends(get_current_active_user)):
+    sheet = _own_sheet_or_404(db, current_user, sheet_id)
+    storage_key = sheet.storage_key
+    db.delete(sheet)
+    db.commit()
+    delete_stored_file(storage_key)
+    return Response(status_code=204)

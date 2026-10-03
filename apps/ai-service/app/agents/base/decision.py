@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
 from langchain_core.language_models.chat_models import BaseChatModel
@@ -13,6 +14,8 @@ from app.governance.middleware.observability import TelemetrySink
 from app.governance.middleware.stack import create_governed_agent
 from app.agents.base import notices
 from app.agents.base.state import WorkforceAgentState
+
+VIETNAM_TIME = timezone(timedelta(hours=7))
 
 
 class GraphDecision(BaseModel):
@@ -163,6 +166,9 @@ class LangChainDecisionProvider:
 
     def decide(self, state: WorkforceAgentState) -> GraphDecision:
         prompt = {
+            # Without it the model reads "tháng này", "quý trước", or a question naming no
+            # period against whatever year it guesses. Vietnam time: the users' calendar.
+            "today": datetime.now(VIETNAM_TIME).date().isoformat(),
             "intent": state.get("intent"),
             "selected_agent": state.get("selected_agent"),
             "domain_prompt": state.get("domain_prompt"),

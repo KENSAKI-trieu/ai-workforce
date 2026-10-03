@@ -197,6 +197,32 @@ class ExpenseBreakdownInput(TenantToolInput):
     )
 
 
+class SpreadsheetListInput(TenantToolInput):
+    pass
+
+
+class SheetFilter(BaseModel):
+    column: str = Field(min_length=1, max_length=255, description="Column name as list_spreadsheets returned it.")
+    op: Literal["eq", "contains", "gte", "lte"] = Field(
+        default="eq", description="eq equals, contains (text columns), gte at least, lte at most (numbers, dates dd/mm/yyyy).",
+    )
+    value: str = Field(max_length=255)
+
+
+class SpreadsheetAnalysisInput(TenantToolInput):
+    sheet_id: UUID | None = Field(default=None, description="Omit for the file the user uploaded last.")
+    operation: Literal["sum", "count", "average", "min", "max"]
+    value_column: str | None = Field(
+        default=None, max_length=255,
+        description="The number column to compute on, by its name; omit only to count rows.",
+    )
+    group_by: str | None = Field(default=None, max_length=255, description="Column to group the result by, by its name.")
+    period: Literal["day", "month", "quarter", "year"] | None = Field(
+        default=None, description="Only when group_by is a date column: group by month, quarter, year or day.",
+    )
+    filters: list[SheetFilter] = Field(default_factory=list, max_length=5)
+
+
 class TrialBalanceInput(TenantToolInput):
     period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Accounting period, YYYY-MM.")
     level: Literal[3, 4] = Field(default=3, description="3 for level-1 accounts, 4 for their sub-accounts.")

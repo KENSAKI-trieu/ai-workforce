@@ -30,7 +30,8 @@ interface Agent {
   role_code: string;
   system_prompt: string;
   prompt_overlay: string | null;
-  model_name: string;
+  // null runs the AI service's default model.
+  model_name: string | null;
   is_active: boolean;
   tools_access: string[];
   allowed_actions: string[];
@@ -75,6 +76,27 @@ interface ConfigurationOptions {
   // Tools granted to the agent that its role never uses; dropped on the next save.
   unsupported_grants?: string[];
 }
+
+interface ModelOption {
+  id: string;
+  provider: string;
+  label: string;
+  // Usage of a model without a pricing row is not counted on the cost page.
+  priced: boolean;
+}
+
+interface ModelOptions {
+  default: { provider: string; id: string } | null;
+  models: ModelOption[];
+  // Vendors whose model listing failed; only their configured default is offered.
+  errors: Record<string, string>;
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  gemini: "Google Gemini",
+  openai: "OpenAI",
+  bedrock: "Amazon Bedrock",
+};
 
 interface AgentDraft {
   name: string;
@@ -130,6 +152,9 @@ export default function AIEditorPage() {
   const [documentQuery, setDocumentQuery] = useState("");
   const [expandedCollections, setExpandedCollections] = useState<Set<string>>(new Set());
   const [expandedDocuments, setExpandedDocuments] = useState<Set<string>>(new Set());
+  const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState<string | null>(null);
 
   // "Cấu hình nhân viên AI" in org-structure; the server checks the same code.
   const canConfigure = userCan(user, "agents.configure");
@@ -152,6 +177,31 @@ export default function AIEditorPage() {
     }
   }, []);
 
+  const loadModels = useCallback(async (refresh = false) => {
+    setModelLoading(true);
+    setModelError(null);
+    try {
+      const { data } = await api.get<ModelOptions>("/api/v1/agents/model-options", {
+        params: refresh ? { refresh: true } : undefined,
+      });
+      setModelOptions(data);
+    } catch (reason) {
+      setModelError(messageFrom(reason));
+    } finally {
+      setModelLoading(false);
+    }
+  }, []);
+
+  const modelGroups = useMemo(() => {
+    const grouped = new Map<string, ModelOption[]>();
+    for (const model of modelOptions?.models || []) {
+      const items = grouped.get(model.provider) || [];
+      items.push(model);
+      grouped.set(model.provider, items);
+    }
+    return [...grouped.entries()];
+  }, [modelOptions]);
+
   const loadEditor = useCallback(async (role: string) => {
     if (!role) return;
     setEditorLoading(true);
@@ -169,7 +219,7 @@ export default function AIEditorPage() {
         name: agent.name,
         description: agent.description || "",
         prompt_overlay: agent.prompt_overlay ?? "",
-        model_name: agent.model_name,
+        model_name: agent.model_name ?? "",
         is_active: agent.is_active,
         tools: (agent.tools_access || []).filter(
           (tool) => !(agent.disallowed_actions || []).includes(tool) && offered.has(tool)
@@ -198,9 +248,12 @@ export default function AIEditorPage() {
       router.replace("/dashboard");
       return;
     }
-    const timer = window.setTimeout(() => void loadAgents(), 0);
+    const timer = window.setTimeout(() => {
+      void loadAgents();
+      void loadModels();
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [canConfigure, hasHydrated, isAuthenticated, loadAgents, router]);
+  }, [canConfigure, hasHydrated, isAuthenticated, loadAgents, loadModels, router]);
 
   useEffect(() => {
     if (!canConfigure || !selectedRole) return;
@@ -288,7 +341,8 @@ export default function AIEditorPage() {
         name: draft.name.trim(),
         description: draft.description.trim(),
         prompt_overlay: draft.prompt_overlay.trim(),
-        model_name: draft.model_name.trim(),
+        // Blank returns the agent to the AI service's default model.
+        model_name: draft.model_name,
         is_active: draft.is_active,
         tools_access: draft.tools,
         allowed_actions: draft.tools,
@@ -378,7 +432,46 @@ export default function AIEditorPage() {
                     </div>
                     <div className="stack-mobile" style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 12 }}>
                       <label style={{ display: "grid", gap: 5, fontSize: 11, fontWeight: 700 }}>Tên Agent<input className="ta-input" value={draft.name} onChange={(event) => setDraft({ ...draft, name: event.target.value })} /></label>
-                      <label style={{ display: "grid", gap: 5, fontSize: 11, fontWeight: 700 }}>Model<input className="ta-input" value={draft.model_name} onChange={(event) => setDraft({ ...draft, model_name: event.target.value })} /></label>
+                      <label style={{ display: "grid", gap: 5, fontSize: 11, fontWeight: 700 }}>
+                        <span style={{ display: "flex", alignItems: "center", justifyContent: "space-between", gap: 8 }}>
+                          Model
+                          <button type="button" onClick={() => void loadModels(true)} disabled={modelLoading} title="Lấy lại danh sách từ nhà cung cấp" style={{ display: "inline-flex", alignItems: "center", gap: 4, padding: 0, border: 0, background: "transparent", color: "var(--primary)", fontSize: 10, fontWeight: 600, cursor: "pointer" }}>
+                            <RefreshCw size={11} className={modelLoading ? "animate-spin" : ""} /> Làm mới
+                          </button>
+                        </span>
+                        <select
+                          className="ta-input"
+                          value={draft.model_name}
+                          disabled={modelLoading && !modelOptions}
+                          onChange={(event) => setDraft({ ...draft, model_name: event.target.value })}
+                        >
+                          <option value="">
+                            Mặc định hệ thống{modelOptions?.default ? ` (${modelOptions.default.id})` : ""}
+                          </option>
+                          {modelGroups.map(([provider, models]) => (
+                            <optgroup key={provider} label={PROVIDER_LABELS[provider] || provider}>
+                              {models.map((model) => (
+                                <option key={model.id} value={model.id}>
+                                  {model.label !== model.id ? `${model.label} — ${model.id}` : model.id}
+                                  {model.priced ? "" : " · chưa có bảng giá"}
+                                </option>
+                              ))}
+                            </optgroup>
+                          ))}
+                          {draft.model_name && !modelOptions?.models.some((model) => model.id === draft.model_name) && (
+                            <option value={draft.model_name}>{draft.model_name} (không có trong danh sách hiện tại)</option>
+                          )}
+                        </select>
+                        <span style={{ fontWeight: 400, fontSize: 10, lineHeight: 1.5, opacity: 0.75 }}>
+                          {modelLoading && !modelOptions
+                            ? "Đang lấy danh sách model từ nhà cung cấp…"
+                            : modelError
+                              ? modelError
+                              : Object.keys(modelOptions?.errors || {}).length
+                                ? `Không đọc được danh sách của ${Object.keys(modelOptions?.errors || {}).map((key) => PROVIDER_LABELS[key] || key).join(", ")}; chỉ hiện model mặc định của nhà cung cấp đó.`
+                                : "Lấy trực tiếp từ API của nhà cung cấp theo khoá đã cấu hình. Model chưa có bảng giá sẽ không được tính vào trang Chi phí."}
+                        </span>
+                      </label>
                     </div>
                     <label style={{ display: "grid", gap: 5, marginTop: 12, fontSize: 11, fontWeight: 700 }}>Mô tả<input className="ta-input" value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></label>
                     <label style={{ display: "grid", gap: 5, marginTop: 12, fontSize: 11, fontWeight: 700 }}>Quy ước riêng của công ty<textarea className="ta-input" value={draft.prompt_overlay} onChange={(event) => setDraft({ ...draft, prompt_overlay: event.target.value })} rows={6} placeholder="Để trống thì agent chạy đúng prompt gốc." style={{ resize: "vertical", lineHeight: 1.55 }} /><span style={{ fontWeight: 400, fontSize: 10, lineHeight: 1.5, opacity: 0.75 }}>Nối thêm vào cuối prompt trả lời mặc định, chỉ đổi cách diễn đạt. Muốn can thiệp định tuyến ý định thì dùng trang Plugin.</span></label>
@@ -494,7 +587,7 @@ export default function AIEditorPage() {
 
                   <div style={{ display: "flex", justifyContent: "flex-end", gap: 9, paddingBottom: 10 }}>
                     <button className="ta-btn" onClick={() => void loadEditor(selectedRole)} disabled={saving}><RefreshCw size={15} /> Hoàn tác</button>
-                    <button className="ta-btn ta-btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim() || !draft.model_name.trim()}><Save size={15} /> {saving ? "Đang lưu..." : "Lưu cấu hình"}</button>
+                    <button className="ta-btn ta-btn-primary" onClick={() => void save()} disabled={saving || !draft.name.trim()}><Save size={15} /> {saving ? "Đang lưu..." : "Lưu cấu hình"}</button>
                   </div>
                 </>
               )}

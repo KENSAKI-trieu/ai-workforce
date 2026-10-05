@@ -14,6 +14,7 @@ from pydantic import BaseModel, Field, ValidationError, model_validator
 from sqlalchemy import text
 from sqlalchemy.orm import Session
 
+from app.core.agent_models import using_model
 from app.core.database import get_db
 from app.core.tool_permissions import grant_decision
 from app.core.security import decode_internal_tool_token
@@ -501,7 +502,10 @@ def invoke_tool(
             text("SELECT set_config('statement_timeout', :budget, true)"),
             {"budget": str(int(definition.timeout_seconds * 1000))},
         )
-        result = definition.executor(ToolContext(db=db, actor=actor, agent=agent), validated)
+        # A tool that calls the LLM itself (journal proposals, invoice reading) runs on
+        # the model chosen for the agent invoking it, like the rest of the agent's turn.
+        with using_model(agent.model_name if agent else None):
+            result = definition.executor(ToolContext(db=db, actor=actor, agent=agent), validated)
         elapsed_ms = int((time.monotonic() - started) * 1000)
         add_audit_event(
             db,

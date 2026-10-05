@@ -17,6 +17,7 @@ from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, 
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
+from app.core.agent_models import agent_model_dependency
 from app.core.database import get_db
 from app.core.security import PermissionRequired, get_current_active_user
 from app.domains.finance import excel_import
@@ -88,7 +89,12 @@ from app.models.models import (
 )
 from app.plugins.resolver import resolve_prompt_overlay
 
-router = APIRouter(prefix="/finance", tags=["Finance"])
+# Invoice reading and journal proposals call the LLM; they run on the Finance agent's model.
+router = APIRouter(
+    prefix="/finance",
+    tags=["Finance"],
+    dependencies=[Depends(agent_model_dependency("FINANCE"))],
+)
 
 MAX_IMPORT_BYTES = 10 * 1024 * 1024
 _READERS = (

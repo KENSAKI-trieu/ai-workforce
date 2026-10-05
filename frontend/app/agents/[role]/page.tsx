@@ -40,7 +40,7 @@ interface Agent {
   role_code: string;
   system_prompt: string;
   prompt_overlay: string | null;
-  model_name: string;
+  model_name: string | null;
   is_active: boolean;
   tools_access: string[];
   allowed_actions: string[];

@@ -16,6 +16,7 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.clients.ai_service_client import AIServiceError
 from app.core.agent_engines import uses_langgraph
+from app.core.agent_models import bind_while_iterating
 from app.core.config import settings
 from app.core.security import get_current_active_user
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
@@ -353,7 +354,9 @@ def stream_chat_with_agent(
             })
 
     return StreamingResponse(
-        event_stream(),
+        # The HR gate and the deterministic fallback call the LLM from inside the stream;
+        # each step runs on the model chosen for this agent.
+        bind_while_iterating(event_stream(), agent.model_name),
         media_type="text/event-stream",
         headers={
             "Cache-Control": "no-cache, no-transform",

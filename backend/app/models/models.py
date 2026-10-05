@@ -369,7 +369,9 @@ class AIAgent(Base):
     # for. When the agent runs through LangGraph the text reaches the graph as the
     # tenant's conventions (plugins.resolver.tenant_graph_instructions).
     prompt_overlay: Mapped[str | None] = mapped_column(Text, nullable=True)
-    model_name: Mapped[str] = mapped_column(String(100), default="gpt-4o")
+    # The chat model this agent runs on; NULL runs the AI service's default. Applied
+    # per turn through app.core.agent_models.
+    model_name: Mapped[str | None] = mapped_column(String(100), nullable=True, default=None)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True)
     tools_access: Mapped[dict] = mapped_column(JSONB, default=list)
     allowed_actions: Mapped[dict] = mapped_column(JSONB, default=list)

@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from app.core.config import settings
+from app.core.llm.catalog import provider_for_model
 from app.core.llm.factory import configured_chat_models
 from app.governance.guardrails import is_tool_allowed
 from app.governance.middleware.context import AgentRuntimeContext
@@ -62,6 +63,7 @@ def build_runtime_context(
     tenant_instructions: str = "",
     disabled_tools: dict[str, str] | None = None,
     restricted_tools: dict[str, str] | None = None,
+    model: str | None = None,
 ) -> OrchestrationRuntimeContext:
     gateway = ToolGatewayClient(settings.BACKEND_TOOL_GATEWAY_URL, tool_jwt)
     try:
@@ -99,7 +101,13 @@ def build_runtime_context(
         allowed_tools=frozenset(tools),
         denied_tools=frozenset(denied_tools),
     )
-    models = configured_chat_models(max_retries=0)
+    # The agent's chosen model leads, served by its own vendor; the other vendors stay
+    # behind it as fallbacks with their defaults. A name no vendor claims is ignored
+    # rather than sent to the default vendor, which would only fail the first call.
+    provider = provider_for_model(model)
+    models = configured_chat_models(
+        provider=provider, model=model if provider else None, max_retries=0
+    )
     if models:
         contracts = [
             {

@@ -52,7 +52,7 @@ interface Agent {
   avatar_emoji: string;
   description: string;
   is_active: boolean;
-  model_name: string;
+  model_name: string | null;
 }
 
 interface ChatbotItem {

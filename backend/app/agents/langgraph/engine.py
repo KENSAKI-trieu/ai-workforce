@@ -9,6 +9,7 @@ from typing import Any, Iterator
 
 from sqlalchemy.orm import Session
 
+from app.core.agent_models import normalized_model_name
 from app.core.gateway_tools import (
     GATEWAY_TOOL_LABELS,
     disabled_gateway_tools,
@@ -151,6 +152,8 @@ class LangGraphEngine:
             # What the tenant added to this agent's reply prompt -- plugin appends and the
             # administrator's own text. The graph puts it after its own rules.
             "tenant_instructions": tenant_graph_instructions(db, user.tenant_id, agent.role_code),
+            # The chat model picked for this agent; None runs the AI service's default.
+            "model": normalized_model_name(agent.model_name),
         }
         if message is not None:
             payload.update({

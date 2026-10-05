@@ -271,7 +271,6 @@ def init_db():
                 "role_code": "CEO",
                 "name": "CEO Master Agent",
                 "avatar_emoji": "👔",
-                "model_name": "gpt-4o",
                 "description": "Điều phối công việc đa Agent, lập kế hoạch DAG và tổng hợp báo cáo chiến lược.",
                 "system_prompt": (
                     "You are the Chief Executive Officer (CEO) AI Agent of this digital enterprise.\n"
@@ -282,7 +281,6 @@ def init_db():
                 "role_code": "HR",
                 "name": "HR AI Employee",
                 "avatar_emoji": "🧑‍💼",
-                "model_name": "gpt-4o",
                 "description": "Quản lý nhân sự, tra cứu số ngày nghỉ phép, lập đơn nghỉ phép và giải đáp chính sách công ty.",
                 "system_prompt": (
                     "You are the Human Resources AI Agent.\n"
@@ -296,7 +294,6 @@ def init_db():
                 "role_code": "KNOWLEDGE",
                 "name": "Knowledge Base AI",
                 "avatar_emoji": "📚",
-                "model_name": "gpt-4o",
                 "description": "Truy xuất kho tri thức doanh nghiệp, trả lời chính xác có kèm trích dẫn tài liệu nguồn (Citations).",
                 "system_prompt": (
                     "You are the Knowledge Base AI Agent.\n"
@@ -308,7 +305,6 @@ def init_db():
                 "role_code": "LEGAL",
                 "name": "Legal Counsel AI",
                 "avatar_emoji": "⚖️",
-                "model_name": "gpt-4o",
                 "description": "Thẩm định hợp đồng, rà soát điều khoản rủi ro và xuất tài liệu chỉnh sửa.",
                 "system_prompt": "You are the Legal Counsel AI Agent. Review contracts, highlight risk clauses, and suggest redlines.",
             },
@@ -316,7 +312,6 @@ def init_db():
                 "role_code": "IT",
                 "name": "IT Support AI",
                 "avatar_emoji": "💻",
-                "model_name": "gpt-4o",
                 "description": "Hỗ trợ sự cố kỹ thuật, cấp quyền truy cập VPN/email và tạo Ticket Jira tự động.",
                 "system_prompt": "You are the IT Support AI Agent. Provide technical help and create Jira tickets when needed.",
             },
@@ -324,7 +319,6 @@ def init_db():
                 "role_code": "FINANCE",
                 "name": "Finance & Accounting AI",
                 "avatar_emoji": "💰",
-                "model_name": "gpt-4o",
                 "description": "Đọc hoá đơn điện tử, đối chiếu đơn mua hàng, đề xuất bút toán chờ duyệt và trả lời câu hỏi từ sổ sách.",
                 "system_prompt": "You are the Finance AI Agent. Answer from the company's books through your tools, and draft entries for human approval.",
             },
@@ -332,7 +326,6 @@ def init_db():
                 "role_code": "SALES",
                 "name": "Sales & CRM AI",
                 "avatar_emoji": "📈",
-                "model_name": "gpt-4o",
                 "description": "Tra cứu danh mục sản phẩm, tạo báo giá PDF và cập nhật lead vào CRM.",
                 "system_prompt": "You are the Sales AI Agent. Assist with inventory search, PDF quote generation, and lead management.",
             },
@@ -356,7 +349,6 @@ def init_db():
                     role_code=adata["role_code"],
                     name=adata["name"],
                     avatar_emoji=adata["avatar_emoji"],
-                    model_name=adata["model_name"],
                     description=adata["description"],
                     system_prompt=adata["system_prompt"],
                     is_active=True,

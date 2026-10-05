@@ -4,7 +4,13 @@ from __future__ import annotations
 
 from fastapi import HTTPException
 from app.models.models import AIAgent
-from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_CORE_TOOLS, HR_RETIRED_TOOLS
+from app.core.gateway_tools import GATEWAY_TOOL_LABELS
+from app.core.hr_capabilities import (
+    HR_CAPABILITY_LABELS,
+    HR_CONFIGURATION_VERSION,
+    HR_CORE_TOOLS,
+    HR_RETIRED_TOOLS,
+)
 from app.core.tool_permissions import grant_decision
 from app.plugins.resolver import EMPTY_RESTRICTION, SkillRestriction
 
@@ -98,27 +104,60 @@ def _grant_decision(agent: AIAgent, tool_name: str) -> str | None:
     )
 
 
+class ToolNotPermitted(HTTPException):
+    """The agent's configuration withholds a capability.
+
+    Still a 403 for the direct APIs that call `_require_tool`; the chat dispatch catches
+    it instead and answers in words, because a turn the user can read beats an error
+    banner quoting an internal tool name.
+    """
+
+    def __init__(self, tool_name: str, decision: str, detail: str) -> None:
+        super().__init__(status_code=403, detail=detail)
+        self.tool_name = tool_name
+        self.decision = decision
+
+
+def tool_label(tool_name: str) -> str:
+    return HR_CAPABILITY_LABELS.get(tool_name) or GATEWAY_TOOL_LABELS.get(tool_name) or tool_name
+
+
+def refusal_reply(exc: ToolNotPermitted) -> str:
+    """The chat answer for a capability the agent's configuration withholds."""
+    feature = tool_label(exc.tool_name)
+    if exc.decision == "PLUGIN":
+        cause = "một gói plugin đang cài cho trợ lý này đã thu hồi tính năng đó"
+        remedy = "gỡ hoặc chỉnh gói plugin"
+    else:
+        cause = "tính năng này đã bị tắt trong cấu hình của trợ lý"
+        remedy = "bật lại tính năng trong phần Cấu hình nhân viên AI"
+    return (
+        f"Tôi chưa thể {feature} cho bạn: {cause}. "
+        f"Nếu bạn cần dùng, hãy nhờ quản trị viên {remedy}."
+    )
+
+
 def _require_tool(agent: AIAgent, tool_name: str) -> None:
     decision = _grant_decision(agent, tool_name)
     if decision == "DENIED":
-        raise HTTPException(
-            status_code=403,
-            detail=f"AI Employee is explicitly forbidden from action '{tool_name}'",
+        raise ToolNotPermitted(
+            tool_name,
+            decision,
+            f"AI Employee is explicitly forbidden from action '{tool_name}'",
         )
     if decision == "NOT_GRANTED":
-        raise HTTPException(
-            status_code=403,
-            detail=f"AI Employee is not allowed to use tool '{tool_name}'",
+        raise ToolNotPermitted(
+            tool_name,
+            decision,
+            f"AI Employee is not allowed to use tool '{tool_name}'",
         )
     # Phrased differently so an operator can tell a plugin withdrawal apart from a
     # permission the agent never had.
     if decision == "PLUGIN":
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                f"An installed plugin withdraws tool '{tool_name}' "
-                "from this AI Employee"
-            ),
+        raise ToolNotPermitted(
+            tool_name,
+            decision,
+            f"An installed plugin withdraws tool '{tool_name}' from this AI Employee",
         )
 
 

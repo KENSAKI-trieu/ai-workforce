@@ -7,6 +7,7 @@ from typing import Any, Iterator
 
 import httpx
 
+from app.core.agent_models import selected_model
 from app.core.config import settings
 
 
@@ -53,6 +54,26 @@ class AIServiceClient:
                 json=payload,
                 headers=headers,
                 timeout=timeout if timeout is not None else self.timeout,
+            )
+            response.raise_for_status()
+            return response.json()
+        except httpx.HTTPStatusError as exc:
+            raise AIServiceError(
+                f"AI service request failed: {path}",
+                status_code=exc.response.status_code,
+            ) from exc
+        except httpx.RequestError as exc:
+            raise AIServiceError(f"AI service request failed: {path}") from exc
+
+    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+        if not self.enabled:
+            raise AIServiceError("AI service URL is not configured")
+        try:
+            response = httpx.get(
+                f"{self.base_url}{path}",
+                params=params,
+                headers=self.headers,
+                timeout=self.timeout,
             )
             response.raise_for_status()
             return response.json()
@@ -207,11 +228,18 @@ class AIServiceClient:
         model: str | None = None,
         timeout: float | None = None,
     ) -> dict[str, Any]:
+        if provider is None and model is None:
+            # The model chosen for the agent whose turn this is; see app.core.agent_models.
+            model = selected_model()
         return self._post("/v1/llm/generate", {
             "messages": messages,
             "provider": provider,
             "model": model,
         }, timeout=timeout)
+
+    def list_models(self, *, refresh: bool = False) -> dict[str, Any]:
+        """Chat models the AI service's vendors serve: {default, models, errors}."""
+        return self._get("/v1/llm/models", {"refresh": "true" if refresh else "false"})
 
     def run_orchestration(
         self,

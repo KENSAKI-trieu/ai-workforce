@@ -22,6 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
+from app.core.agent_models import agent_model_dependency
 from app.core.database import get_db
 from app.core.security import PermissionRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
@@ -73,6 +74,8 @@ from app.domains.incubating.it_service import handle_it_request
 from app.domains.incubating.sales_service import handle_sales_request
 
 router = APIRouter(tags=["Specialized Domain APIs"])
+# Legal work that calls the LLM runs on the model chosen for the Legal agent.
+LEGAL_MODEL = Depends(agent_model_dependency("LEGAL"))
 logger = logging.getLogger(__name__)
 
 
@@ -476,7 +479,7 @@ def validate_legal_document_endpoint(
 @router.post(
     "/legal/audit-contract",
     summary="Audit contract text for high-risk clauses",
-    dependencies=[_legal_tool_required("audit_contract_risk")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("audit_contract_risk")],
 )
 def audit_contract_endpoint(
     req: ContractAuditRequest,
@@ -525,7 +528,7 @@ def audit_contract_endpoint(
 @router.post(
     "/legal/review-document",
     summary="Extract and review a legal document",
-    dependencies=[_legal_tool_required("audit_contract_risk")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("audit_contract_risk")],
 )
 async def review_legal_document(
     file: UploadFile = File(...),
@@ -736,7 +739,7 @@ def _sse(event: str, data: dict[str, Any]) -> str:
 @router.post(
     "/legal/review-document/stream",
     summary="Review a legal document, streaming each pipeline stage over SSE",
-    dependencies=[_legal_tool_required("audit_contract_risk")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("audit_contract_risk")],
 )
 async def stream_review_legal_document(
     file: UploadFile = File(...),
@@ -981,7 +984,7 @@ def delete_contract_review_decision(
 @router.post(
     "/legal/compare-documents",
     summary="Compare two contract versions",
-    dependencies=[_legal_tool_required("compare_contract_versions")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("compare_contract_versions")],
 )
 async def compare_legal_documents(
     old_file: UploadFile = File(...),
@@ -997,7 +1000,7 @@ async def compare_legal_documents(
 @router.post(
     "/legal/privacy-check",
     summary="Detect personal and restricted data",
-    dependencies=[_legal_tool_required("check_sensitive_data")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("check_sensitive_data")],
 )
 async def privacy_check_document(
     file: UploadFile = File(...),
@@ -1016,7 +1019,7 @@ async def privacy_check_document(
 @router.post(
     "/legal/license-check",
     summary="Inspect a software dependency manifest",
-    dependencies=[_legal_tool_required("check_software_licenses")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("check_software_licenses")],
 )
 async def license_check_manifest(
     file: UploadFile = File(...),
@@ -1050,6 +1053,7 @@ def generate_legal_document_endpoint(
     # The agent's grant and the person's: this page used to check only the first, so
     # anyone could draft here what the Legal agent refused them in chat.
     dependencies=[
+        LEGAL_MODEL,
         _legal_tool_required("generate_legal_document"),
         Depends(PermissionRequired(LEGAL_DOCUMENT_GENERATE_PERMISSION)),
     ],
@@ -1324,7 +1328,7 @@ def _sync_waiting_approval(db: Session, review: ContractReview, decisions: list[
 @router.post(
     "/legal/contract-reviews/{review_id}/revised-document",
     summary="Write the accepted revisions into the uploaded contract file",
-    dependencies=[_legal_tool_required("audit_contract_risk")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("audit_contract_risk")],
 )
 def apply_contract_revisions_endpoint(
     review_id: str,
@@ -1399,7 +1403,7 @@ def download_original_contract(
 @router.post(
     "/legal/contract-reviews/{review_id}/submit-approval",
     summary="Send a contract review, with its revised file, to the approval center",
-    dependencies=[_legal_tool_required("audit_contract_risk")],
+    dependencies=[LEGAL_MODEL, _legal_tool_required("audit_contract_risk")],
 )
 def submit_contract_review_for_approval(
     review_id: str,

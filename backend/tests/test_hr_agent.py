@@ -441,8 +441,12 @@ def test_hr_export_checks_the_grant_before_asking_for_a_format(
         headers=ceo_token_headers,
     )
 
-    assert response.status_code == 403, response.text
-    assert "export_hr_directory" in response.json()["detail"]
+    # Refused in words rather than with an error naming the internal tool.
+    assert response.status_code == 200, response.text
+    data = response.json()
+    assert data["tools_executed"] == []
+    assert "xuất danh bạ nhân sự" in data["reply"]
+    assert "export_hr_directory" not in data["reply"]
 
 
 @pytest.mark.parametrize(

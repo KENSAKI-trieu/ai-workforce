@@ -16,9 +16,10 @@ import logging
 from app.core.database import sync_engine, Base, SyncSessionLocal
 from app.core.permissions import ROOT_POSITION_SLUG
 from app.core.security import get_password_hash
-from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
+from app.core.finance_capabilities import configuration_version_for
+from app.core.hr_capabilities import HR_CONFIGURATION_VERSION
 from app.models.models import Tenant, User, AIAgent, Department, UserMemory
-from app.domains.platform.auth_service import DEFAULT_DEPARTMENTS
+from app.domains.platform.auth_service import DEFAULT_AGENT_TOOLS, DEFAULT_DEPARTMENTS
 from app.domains.platform.position_service import (
     assign_position,
     backfill_tenant_user_positions,
@@ -158,13 +159,13 @@ def seed():
         # 4. AI Agents cho tenant Test Company
         # ────────────────────────────────────────────
         agents_data = [
-            {"role_code": "CEO",       "name": "CEO Master Agent",       "avatar_emoji": "👔", "model_name": "gpt-4o"},
-            {"role_code": "HR",        "name": "HR AI Employee",         "avatar_emoji": "🧑‍💼", "model_name": "gpt-4o"},
-            {"role_code": "KNOWLEDGE", "name": "Knowledge Base AI",      "avatar_emoji": "📚", "model_name": "gpt-4o"},
-            {"role_code": "LEGAL",     "name": "Legal Counsel AI",       "avatar_emoji": "⚖️",  "model_name": "gpt-4o"},
-            {"role_code": "IT",        "name": "IT Support AI",          "avatar_emoji": "💻", "model_name": "gpt-4o"},
-            {"role_code": "FINANCE",   "name": "Finance & Accounting AI","avatar_emoji": "💰", "model_name": "gpt-4o"},
-            {"role_code": "SALES",     "name": "Sales & CRM AI",         "avatar_emoji": "📈", "model_name": "gpt-4o"},
+            {"role_code": "CEO",       "name": "CEO Master Agent",       "avatar_emoji": "👔"},
+            {"role_code": "HR",        "name": "HR AI Employee",         "avatar_emoji": "🧑‍💼"},
+            {"role_code": "KNOWLEDGE", "name": "Knowledge Base AI",      "avatar_emoji": "📚"},
+            {"role_code": "LEGAL",     "name": "Legal Counsel AI",       "avatar_emoji": "⚖️"},
+            {"role_code": "IT",        "name": "IT Support AI",          "avatar_emoji": "💻"},
+            {"role_code": "FINANCE",   "name": "Finance & Accounting AI","avatar_emoji": "💰"},
+            {"role_code": "SALES",     "name": "Sales & CRM AI",         "avatar_emoji": "📈"},
         ]
 
         for adata in agents_data:
@@ -179,20 +180,16 @@ def seed():
                     role_code=adata["role_code"],
                     name=adata["name"],
                     avatar_emoji=adata["avatar_emoji"],
-                    model_name=adata["model_name"],
                     description=f"{adata['name']} cho Test Company",
                     system_prompt=f"You are the {adata['name']} AI Agent.",
                     is_active=True,
-                    # Derived from the executor's capability list rather than copied: this
-                    # list still granted the pre-split `get_employee_profile` name and two
-                    # capabilities the migration revokes on the first chat turn.
-                    tools_access=(
-                        default_hr_tools() if adata["role_code"] == "HR" else []
+                    # The same grants signup gives. Non-HR agents used to get none, stamped
+                    # with the current version, so no upgrade would ever fill them in.
+                    tools_access=DEFAULT_AGENT_TOOLS[adata["role_code"]],
+                    allowed_actions=DEFAULT_AGENT_TOOLS[adata["role_code"]],
+                    configuration_version=configuration_version_for(
+                        adata["role_code"], HR_CONFIGURATION_VERSION
                     ),
-                    allowed_actions=(
-                        default_hr_tools() if adata["role_code"] == "HR" else []
-                    ),
-                    configuration_version=HR_CONFIGURATION_VERSION,
                 )
                 db.add(agent)
                 logger.info(f"  ✅ Agent: {adata['role_code']}")

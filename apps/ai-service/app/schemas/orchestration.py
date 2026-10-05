@@ -42,6 +42,8 @@ class OrchestrationRequest(BaseModel):
     # What the tenant added to this agent's reply prompt; resolved by the backend's
     # plugin resolver. Tone and terminology only -- the graph places it after its rules.
     tenant_instructions: str = Field(default="", max_length=8000)
+    # The chat model the administrator picked for this agent; None runs the default.
+    model: str | None = Field(default=None, max_length=100)
 
 
 class OrchestrationResumeRequest(BaseModel):
@@ -57,6 +59,8 @@ class OrchestrationResumeRequest(BaseModel):
     disabled_tools: list[DisabledTool] = Field(default_factory=list, max_length=100)
     restricted_tools: list[DisabledTool] = Field(default_factory=list, max_length=100)
     tenant_instructions: str = Field(default="", max_length=8000)
+    # The chat model the administrator picked for this agent; None runs the default.
+    model: str | None = Field(default=None, max_length=100)
     resume: Any
 
 

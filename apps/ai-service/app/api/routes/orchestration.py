@@ -51,6 +51,7 @@ def _context_for(request: OrchestrationRequest, authorization: str | None):
         tenant_instructions=request.tenant_instructions,
         disabled_tools={item.name: item.label for item in request.disabled_tools},
         restricted_tools={item.name: item.label for item in request.restricted_tools},
+        model=request.model,
     )
 
 
@@ -145,6 +146,7 @@ def resume_orchestration(
             tenant_instructions=request.tenant_instructions,
             disabled_tools={item.name: item.label for item in request.disabled_tools},
             restricted_tools={item.name: item.label for item in request.restricted_tools},
+            model=request.model,
         )
         result = orchestration_engines.get().resume(
             request.resume,

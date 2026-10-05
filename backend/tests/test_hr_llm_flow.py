@@ -36,9 +36,11 @@ def no_plugin_overlay(monkeypatch):
     ``execute_agent_chat`` looks up the tenant's installed plugins, but the db and user
     here are bare fakes with no session behind them. These tests are about routing, so
     the lookup is stubbed to the "nothing installed" answer; the overlay itself is
-    covered in test_plugins.py.
+    covered in test_plugins.py. The agent's model choice is a lookup of the same kind and
+    is stubbed to "the default"; it is covered in test_agent_model_selection.py.
     """
     patch_chat(monkeypatch, "resolve_prompt_overlay", lambda *_a, **_k: None)
+    patch_chat(monkeypatch, "agent_model_name", lambda *_a, **_k: None)
 
 
 class FakeAIClient:

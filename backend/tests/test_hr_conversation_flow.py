@@ -351,10 +351,10 @@ def test_hr_stream_reports_a_phase_before_each_blocking_step(
     assert "event: complete" in response.text
 
 
-def test_hr_stream_reports_a_permission_refusal_with_its_detail(
+def test_hr_stream_answers_a_permission_refusal_in_words(
     client, employee_token_headers, transactional_db_session
 ):
-    """A 403 is an answer, not a crash; the stream must not flatten it to a generic error."""
+    """A withheld capability is an answer, not a crash -- and not an error banner either."""
     agent = hr_agent_for(transactional_db_session, "employee@company.com")
     original = list(agent.disallowed_actions or [])
     agent.disallowed_actions = sorted(set(original) | {"query_leave_balance"})
@@ -366,8 +366,10 @@ def test_hr_stream_reports_a_permission_refusal_with_its_detail(
             json={"agent_role": "HR", "message": "Tôi còn bao nhiêu ngày phép?"},
         )
         assert response.status_code == 200, response.text
-        assert "event: error" in response.text
-        assert "query_leave_balance" in response.text
+        assert "event: error" not in response.text
+        assert "event: complete" in response.text
+        assert "tra cứu quỹ phép" in response.text
+        assert "query_leave_balance" not in response.text
     finally:
         agent.disallowed_actions = original
         transactional_db_session.commit()

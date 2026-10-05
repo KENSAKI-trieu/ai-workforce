@@ -13,15 +13,16 @@ from typing import Dict, Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
+from app.core.agent_models import agent_model_name, using_model
 from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
 from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
-from app.core.finance_capabilities import upgrade_finance_grants
+from app.domains.platform.auth_service import upgrade_agent_grants
 from app.agents.langgraph.engine import LangGraphEngine
 from app.clients.ai_service_client import AIServiceError
 from app.plugins.resolver import resolve_skill_restriction
 from app.agents.hr.llm_flow import UsageReporter
-from app.agents.access import _attach_plugin_restriction
+from app.agents.access import ToolNotPermitted, _attach_plugin_restriction, refusal_reply
 from app.agents.hr.flow import run_hr_turn
 from app.agents.knowledge.flow import run_knowledge_turn
 from app.agents.legal.flow import run_legal_turn
@@ -49,18 +50,20 @@ def execute_agent_chat(
     # The HR gate calls back into the core below, so it is imported when used.
     from app.agents.hr.stream import stream_hr_chat_events
 
-    if role_code.upper() != "HR":
-        return _execute_agent_chat_core(
-            db, user, role_code, message, thread_id, allow_graph=allow_graph
-        )
+    # Every LLM call of the turn runs on the model chosen for this agent.
+    with using_model(agent_model_name(db, user.tenant_id, role_code)):
+        if role_code.upper() != "HR":
+            return _execute_agent_chat_core(
+                db, user, role_code, message, thread_id, allow_graph=allow_graph
+            )
 
-    response: Dict[str, Any] | None = None
-    for event in stream_hr_chat_events(db, user, role_code, message, thread_id):
-        if event["event"] == "complete":
-            response = event["response"]
-    if response is None:
-        raise RuntimeError("HR chat flow ended without a response")
-    return response
+        response: Dict[str, Any] | None = None
+        for event in stream_hr_chat_events(db, user, role_code, message, thread_id):
+            if event["event"] == "complete":
+                response = event["response"]
+        if response is None:
+            raise RuntimeError("HR chat flow ended without a response")
+        return response
 
 
 
@@ -91,9 +94,9 @@ def _execute_agent_chat_core(
         raise HTTPException(status_code=404, detail=f"Agent '{role_code_upper}' not found")
     if not agent.is_active:
         raise HTTPException(status_code=409, detail=f"Agent '{role_code_upper}' is inactive")
-    # A Finance row seeded before its tools existed catches up here, before the graph
-    # computes the grant from it. A no-op once the row carries the current version.
-    if upgrade_finance_grants(agent):
+    # A row seeded before its role's tools existed catches up here, before the graph or
+    # an executor computes the grant from it. A no-op once it carries the current version.
+    if upgrade_agent_grants(agent):
         db.commit()
 
     # Resolved once per turn, immediately after the row is loaded, so every later
@@ -146,6 +149,41 @@ def _execute_agent_chat_core(
                 raise
             logger.exception("LangGraph runtime failed; using the legacy deterministic executor")
 
+    try:
+        return _dispatch_deterministic(
+            db=db,
+            user=user,
+            agent=agent,
+            role_code_upper=role_code_upper,
+            message=message,
+            thread_id=thread_id,
+            response_data=response_data,
+            hr_intent_override=hr_intent_override,
+            leave_draft=leave_draft,
+            leave_cancel_request=leave_cancel_request,
+            on_llm_usage=on_llm_usage,
+        )
+    except ToolNotPermitted as exc:
+        # The agent's configuration withholds what this request needs. Said in words, as
+        # the graph does, instead of an error naming an internal tool.
+        response_data["reply"] = refusal_reply(exc)
+        return response_data
+
+
+def _dispatch_deterministic(
+    *,
+    db: Session,
+    user: User,
+    agent: AIAgent,
+    role_code_upper: str,
+    message: str,
+    thread_id: str | None,
+    response_data: Dict[str, Any],
+    hr_intent_override: str | None,
+    leave_draft: dict[str, Any] | None,
+    leave_cancel_request: bool,
+    on_llm_usage: UsageReporter | None,
+) -> Dict[str, Any]:
     # -----------------------------------------------------------------------
     # 1. HR Agent Processing
     # -----------------------------------------------------------------------

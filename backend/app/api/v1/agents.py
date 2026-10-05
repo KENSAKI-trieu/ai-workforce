@@ -2,14 +2,17 @@
 
 from typing import List, Optional
 
-from fastapi import APIRouter, Depends, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from app.clients.ai_service_client import AIServiceError, get_ai_service_client
+from app.core.agent_models import normalized_model_name
 from app.core.database import get_db
 from app.core.gateway_tools import GATEWAY_TOOL_DESCRIPTIONS
 from app.core.finance_capabilities import configuration_version_for
+from app.domains.platform.cost_calculator import UnsupportedModelPricingError, normalize_model_name
 from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
 from app.core.tool_permissions import canonical_tool_names
 from app.core.security import PermissionRequired, get_current_active_user
@@ -17,7 +20,11 @@ from app.domains.platform.position_service import has_permission
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
 from app.domains.knowledge.agent_knowledge_scope import existing_knowledge_targets, orphaned_selectors
-from app.domains.platform.auth_service import ensure_tenant_default_agents, supported_agent_tools
+from app.domains.platform.auth_service import (
+    ensure_tenant_default_agents,
+    supported_agent_tools,
+    upgrade_agent_grants,
+)
 
 router = APIRouter(prefix="/agents", tags=["AI Agents"])
 # Ticked in org-structure as "Cấu hình nhân viên AI"; it replaced the Owner/Admin/CEO role set.
@@ -61,7 +68,9 @@ class AIAgentUpdateRequest(BaseModel):
     # real; the old column is left untouched rather than migrated, because its stored
     # values are a mix of seed text and abandoned edits.
     prompt_overlay: Optional[str] = Field(None, max_length=8000)
-    model_name: Optional[str] = Field(None, min_length=2, max_length=100)
+    # One of the ids from GET /agents/model-options; blank or null returns the agent to
+    # the AI service's default model.
+    model_name: Optional[str] = Field(None, max_length=100)
     tools_access: Optional[list[str]] = None
     allowed_actions: Optional[list[str]] = None
     disallowed_actions: Optional[list[str]] = None
@@ -76,7 +85,40 @@ def _get_tenant_agent(db: Session, tenant_id, role_code: str) -> AIAgent:
     ).first()
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{role_code}' not found")
+    # A row seeded before its role's current tools existed catches up before it is shown:
+    # the configuration page would otherwise offer every switch unticked.
+    if upgrade_agent_grants(agent):
+        db.commit()
+        db.refresh(agent)
     return agent
+
+
+def _priced(model_id: str) -> bool:
+    try:
+        normalize_model_name(model_id)
+    except UnsupportedModelPricingError:
+        return False
+    return True
+
+
+def _model_options(*, refresh: bool = False) -> dict:
+    """What the AI service's vendors serve, read from their own model listings."""
+    try:
+        catalog = get_ai_service_client().list_models(refresh=refresh)
+    except AIServiceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Không lấy được danh sách model từ AI service; hãy thử lại sau.",
+        ) from exc
+    return {
+        "default": catalog.get("default"),
+        "models": [
+            # Usage of a model without a pricing row is not metered on the cost page.
+            {**item, "priced": _priced(str(item.get("id") or ""))}
+            for item in catalog.get("models") or []
+        ],
+        "errors": catalog.get("errors") or {},
+    }
 
 
 def _public_agent_response(agent: AIAgent, current_user: User) -> AIAgentResponse:
@@ -142,6 +184,16 @@ def list_agents(
 ) -> List[AIAgentResponse]:
     agents = ensure_tenant_default_agents(db, current_user.tenant_id)
     return [_public_agent_response(agent, current_user) for agent in agents]
+
+
+# Declared before "/{role_code}", which would otherwise claim this path.
+@router.get(
+    "/model-options",
+    summary="List the chat models an AI Employee can be set to run on",
+    dependencies=[Depends(PermissionRequired(AGENT_CONFIG_PERMISSION))],
+)
+def get_model_options(refresh: bool = Query(False)) -> dict:
+    return _model_options(refresh=refresh)
 
 
 @router.get("/{role_code}/stats", summary="Get AI Employee history, cost and success rate")
@@ -285,6 +337,17 @@ def update_agent(
 ) -> AIAgentResponse:
     agent = _get_tenant_agent(db, current_user.tenant_id, role_code)
     data = req.model_dump(exclude_unset=True)
+    if "model_name" in data:
+        data["model_name"] = normalized_model_name(data["model_name"])
+        # Only a change is checked: re-saving a model the vendor has since withdrawn must
+        # not make the rest of the configuration unsaveable.
+        if data["model_name"] is not None and data["model_name"] != agent.model_name:
+            offered = {item["id"] for item in _model_options()["models"]}
+            if data["model_name"] not in offered:
+                raise HTTPException(
+                    status_code=422,
+                    detail=f"Model không có trong danh sách khả dụng: {data['model_name']}",
+                )
     if "knowledge_access" in data:
         data["knowledge_access"] = _validate_knowledge_access(
             db,

@@ -49,6 +49,25 @@ HR_RETIRED_TOOLS: frozenset[str] = frozenset({
 HR_CONFIGURATION_VERSION = 8
 
 
+# What the user is told a capability is when it has been switched off for the agent.
+HR_CAPABILITY_LABELS: dict[str, str] = {
+    "rag_search": "tra cứu kho tri thức",
+    "get_employee_private_profile": "xem thông tin cá nhân nhân viên",
+    "get_employee_contract_summary": "xem tóm tắt hợp đồng lao động",
+    "get_employee_compensation_summary": "xem thông tin lương",
+    "get_employee_leave_summary": "xem tóm tắt nghỉ phép",
+    "get_employee_full_profile": "xem hồ sơ nhân viên",
+    "query_company_users_sql": "tra cứu danh bạ công ty",
+    "query_leave_balance": "tra cứu quỹ phép",
+    "request_leave": "tạo đơn nghỉ phép",
+    "create_onboarding_workflow": "khởi tạo quy trình onboarding",
+    "get_contract_expiry": "theo dõi hạn hợp đồng",
+    "list_pending_hr_approvals": "xem danh sách chờ duyệt",
+    "export_hr_directory": "xuất danh bạ nhân sự",
+}
+assert set(HR_CAPABILITY_LABELS) == HR_CORE_TOOLS, "every HR capability needs a user-facing label"
+
+
 def default_hr_tools() -> list[str]:
     """Grants for a freshly seeded HR agent, sorted so seeded rows compare cleanly."""
     return sorted(HR_CORE_TOOLS)

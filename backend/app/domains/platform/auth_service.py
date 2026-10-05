@@ -17,8 +17,10 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
 )
+from app.core.finance_capabilities import configuration_version_for, upgrade_finance_grants
 from app.core.gateway_tools import GATEWAY_TOOLS, with_gateway_grants
-from app.core.hr_capabilities import default_hr_tools
+from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
+from app.core.tool_permissions import canonical_tool_names
 from app.core.permissions import ROOT_POSITION_SLUG
 from app.models.models import Tenant, User, AIAgent, Department, RefreshToken
 from app.schemas.auth import RegisterRequest, LoginRequest, LoginResponse, UserInToken
@@ -103,24 +105,84 @@ DEFAULT_DEPARTMENTS = [
 ]
 
 
+# What the first seed granted every role alike, whatever its job.
+LEGACY_SEED_TOOLS = frozenset({"query_leave_balance", "request_leave", "rag_search"})
+
+
+def upgrade_agent_grants(agent: AIAgent) -> bool:
+    """Bring an agent row's grants up to the current version. Returns whether it changed.
+
+    Rows used to be upgraded only by `init_db`, which is a script run by hand and only
+    ever touched the demo tenant. Every other tenant kept whatever its signup seeded --
+    some with no tools at all, so every switch on the configuration page sat unticked and
+    the agent could do nothing. It now runs wherever an agent row is loaded for use.
+
+    Like the Finance upgrade, it adds only what the role's defaults gained since the row's
+    version, so a tool an administrator removed (which stamps the current version) stays
+    removed.
+    """
+    role = (agent.role_code or "").upper()
+    if role == "FINANCE":
+        return upgrade_finance_grants(agent)
+    if role == "HR":
+        # Imported here: the agents package imports this module.
+        from app.agents.access import _repair_hr_agent_capabilities
+
+        before = agent.configuration_version
+        _repair_hr_agent_capabilities(agent)
+        return agent.configuration_version != before
+    if role not in DEFAULT_AGENT_TOOLS or (agent.configuration_version or 1) >= HR_CONFIGURATION_VERSION:
+        return False
+    supported = supported_agent_tools(role)
+    defaults = set(DEFAULT_AGENT_TOOLS[role])
+    denied = set(canonical_tool_names(agent.disallowed_actions)) & supported
+    tools = set(canonical_tool_names(agent.tools_access))
+    allowed = set(canonical_tool_names(agent.allowed_actions))
+    if tools == LEGACY_SEED_TOOLS and allowed in (set(), LEGACY_SEED_TOOLS):
+        # The one-size seed: nothing in it was the operator's choice.
+        tools = allowed = defaults - denied
+    else:
+        additions = defaults - denied
+        tools |= additions
+        # An empty allow-list means "everything in tools_access"; filling it here would
+        # narrow the agent to just the additions.
+        if allowed:
+            allowed |= additions
+    # Names this role cannot use do nothing; the configuration page drops them anyway.
+    agent.tools_access = sorted(tools & supported)
+    agent.allowed_actions = sorted(allowed & supported)
+    agent.disallowed_actions = sorted(denied)
+    agent.configuration_version = HR_CONFIGURATION_VERSION
+    return True
+
+
+def _seeded_agent(tenant_id: uuid.UUID, agent_data: dict) -> AIAgent:
+    role_code = agent_data["role_code"]
+    return AIAgent(
+        tenant_id=tenant_id,
+        name=agent_data["name"],
+        role_code=role_code,
+        system_prompt=f"You are the {agent_data['name']} for this organization. {agent_data['description']}",
+        avatar_emoji=agent_data["avatar_emoji"],
+        description=agent_data["description"],
+        tools_access=DEFAULT_AGENT_TOOLS[role_code],
+        allowed_actions=DEFAULT_AGENT_TOOLS[role_code],
+        # Without a stamp the row read as version 1, so the upgrade treated a fresh agent
+        # as a legacy one.
+        configuration_version=configuration_version_for(role_code, HR_CONFIGURATION_VERSION),
+    )
+
+
 def ensure_tenant_default_agents(db: Session, tenant_id: uuid.UUID) -> list[AIAgent]:
     """Ensure that default AI agents exist for a given tenant_id. Auto-seed if missing."""
     agents = db.query(AIAgent).filter(AIAgent.tenant_id == tenant_id).all()
     if not agents:
         for agent_data in DEFAULT_AGENTS:
-            agent = AIAgent(
-                tenant_id=tenant_id,
-                name=agent_data["name"],
-                role_code=agent_data["role_code"],
-                system_prompt=f"You are the {agent_data['name']} for this organization. {agent_data['description']}",
-                avatar_emoji=agent_data["avatar_emoji"],
-                description=agent_data["description"],
-                tools_access=DEFAULT_AGENT_TOOLS[agent_data["role_code"]],
-                allowed_actions=DEFAULT_AGENT_TOOLS[agent_data["role_code"]],
-            )
-            db.add(agent)
+            db.add(_seeded_agent(tenant_id, agent_data))
         db.commit()
         agents = db.query(AIAgent).filter(AIAgent.tenant_id == tenant_id).all()
+    elif any([upgrade_agent_grants(agent) for agent in agents]):
+        db.commit()
     return agents
 
 
@@ -232,18 +294,7 @@ def register_user(
         db.add(Department(tenant_id=tenant.id, code=code, name=name))
 
     for agent_data in DEFAULT_AGENTS:
-        role_code = agent_data["role_code"]
-        agent = AIAgent(
-            tenant_id=tenant.id,
-            name=agent_data["name"],
-            role_code=role_code,
-            system_prompt=f"You are the {agent_data['name']} for this organization. {agent_data['description']}",
-            avatar_emoji=agent_data["avatar_emoji"],
-            description=agent_data["description"],
-            tools_access=DEFAULT_AGENT_TOOLS[role_code],
-            allowed_actions=DEFAULT_AGENT_TOOLS[role_code],
-        )
-        db.add(agent)
+        db.add(_seeded_agent(tenant.id, agent_data))
 
     # The company gets its own org tree from the first moment, so the founder has
     # something to rename and build on rather than a fixed vocabulary.

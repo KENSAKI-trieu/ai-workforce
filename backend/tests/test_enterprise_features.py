@@ -243,7 +243,12 @@ def test_agent_tool_policy_is_enforced(
             headers=employee_token_headers,
             json={"agent_role": "HR", "message": "Tôi còn bao nhiêu ngày phép?"},
         )
-        assert response.status_code == 403
+        # Still refused, now in words: no tool ran and no balance was read.
+        assert response.status_code == 200, response.text
+        data = response.json()
+        assert data["tools_executed"] == []
+        assert data["hr_card"] is None
+        assert "tra cứu quỹ phép" in data["reply"]
     finally:
         agent.disallowed_actions = original_denied
         transactional_db_session.commit()

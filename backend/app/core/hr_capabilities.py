@@ -30,6 +30,16 @@ HR_CORE_TOOLS: frozenset[str] = frozenset({
     "get_contract_expiry",
     "list_pending_hr_approvals",
     "export_hr_directory",
+    "list_leave_requests",
+    "cancel_leave_request",
+})
+
+# Capabilities added after version 8. An agent already on version 8 receives them once,
+# unless an operator explicitly denied them; nothing else on that row is touched, so a tool
+# the operator removed stays removed.
+HR_TOOLS_ADDED_IN_VERSION_9: frozenset[str] = frozenset({
+    "list_leave_requests",
+    "cancel_leave_request",
 })
 
 # Granted by older configurations but reachable from nowhere: no branch dispatches them
@@ -45,8 +55,14 @@ HR_RETIRED_TOOLS: frozenset[str] = frozenset({
 
 # Also the stamp init_db uses to decide whether a non-HR agent row still needs the gateway
 # tool grants composed into DEFAULT_AGENT_TOOLS. Version 8 exists for that repair: rows
-# created by the signup path before it carried capability names only.
-HR_CONFIGURATION_VERSION = 8
+# created by the signup path before it carried capability names only. Version 9 adds the
+# leave-request tools to HR only.
+HR_CONFIGURATION_VERSION = 9
+
+# Rows below this were seeded before every default grant existed, and init_db re-adds the
+# defaults to them. Rows at or above it carry an operator's choices, which a later version
+# bump must not overwrite: each newer version adds only its own tools, in the executor.
+DEFAULT_GRANTS_COMPLETE_VERSION = 8
 
 
 # What the user is told a capability is when it has been switched off for the agent.
@@ -64,6 +80,8 @@ HR_CAPABILITY_LABELS: dict[str, str] = {
     "get_contract_expiry": "theo dõi hạn hợp đồng",
     "list_pending_hr_approvals": "xem danh sách chờ duyệt",
     "export_hr_directory": "xuất danh bạ nhân sự",
+    "list_leave_requests": "xem đơn nghỉ và lịch nghỉ",
+    "cancel_leave_request": "rút đơn nghỉ phép",
 }
 assert set(HR_CAPABILITY_LABELS) == HR_CORE_TOOLS, "every HR capability needs a user-facing label"
 

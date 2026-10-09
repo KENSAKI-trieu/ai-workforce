@@ -6,7 +6,7 @@ import json
 import logging
 import re
 import unicodedata
-from collections.abc import Mapping
+from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
 from datetime import date
 from typing import Any, Literal
@@ -31,6 +31,7 @@ _report_usage = report_usage
 
 ACTION_INTENTS = frozenset({
     "ACTION_EXPORT",
+    "ACTION_LEAVE_CANCEL",
     "ACTION_LEAVE_REQUEST",
     "ACTION_ONBOARDING",
 })
@@ -40,6 +41,7 @@ ACTION_INTENTS = frozenset({
 # deterministic dispatcher does not implement.
 HR_INTENT_LABELS = frozenset({
     "ACTION_EXPORT",
+    "ACTION_LEAVE_CANCEL",
     "ACTION_LEAVE_REQUEST",
     "ACTION_ONBOARDING",
     "CONTRACT_EXPIRY",
@@ -47,6 +49,7 @@ HR_INTENT_LABELS = frozenset({
     "EMPLOYEE_LEAVE_STATUS_COUNT",
     "EMPLOYEE_SEARCH",
     "FULL_PROFILE",
+    "LEAVE_REQUEST_STATUS",
     "MANAGER_DIRECTORY",
     "PENDING_APPROVALS",
     "POLICY_QUERY",
@@ -186,6 +189,111 @@ def classify_leave_draft_turn(
             exc_info=True,
         )
     return fallback
+
+
+@dataclass(frozen=True)
+class LookupArguments:
+    """What a read-only HR lookup is about, as the model read it from the sentence."""
+
+    person: str | None = None
+    departments: tuple[str, ...] = ()
+    # The user's words for a department this company does not have.
+    unmatched_department: str | None = None
+    start_date: str | None = None
+    end_date: str | None = None
+    whose: Literal["SELF", "TEAM"] | None = None
+
+
+def _clean_text(value: Any, limit: int) -> str | None:
+    if not isinstance(value, str):
+        return None
+    cleaned = value.strip(" .?!")
+    return cleaned[:limit] if cleaned else None
+
+
+def extract_lookup_arguments(
+    raw_message: str,
+    *,
+    intent: str,
+    departments: Sequence[tuple[str, str]],
+    reference_date: date,
+    timezone_name: str,
+    client: AIServiceClient | None = None,
+    on_usage: UsageReporter | None = None,
+    prompts: Mapping[str, str] | None = None,
+) -> LookupArguments | None:
+    """Read the arguments of a lookup -- who, which departments, which days, whose.
+
+    The router only names the branch, and each branch used to parse its own arguments
+    with keyword rules: a colleague's name only after a fixed opening phrase ("X là ai?"
+    found nobody), a department only by its code or exact name ("phòng kế toán" missed
+    "Kế toán & Tài chính", "bên tài chính" listed the whole company). One call reads them
+    all by meaning. Every value only narrows a lookup whose scope comes from the actor: a
+    department code outside the tenant's list is never used as a filter, and a person is
+    a search term, not an identity. Returns None whenever the model cannot be used, and
+    the caller keeps the keyword rules.
+    """
+    ai_client = client or get_ai_service_client()
+    if not ai_client.enabled:
+        return None
+
+    known = {str(code).strip().upper(): code for code, _name in departments}
+    try:
+        result = ai_client.generate_text([
+            {"role": "system", "content": resolve_slot(prompts, "lookup_arguments")},
+            {
+                "role": "user",
+                "content": json.dumps(
+                    {
+                        "intent": intent,
+                        "reference_date": reference_date.isoformat(),
+                        "timezone": timezone_name,
+                        "departments": [
+                            {"code": code, "name": name} for code, name in departments
+                        ],
+                        "message": raw_message,
+                    },
+                    ensure_ascii=False,
+                ),
+            },
+        ])
+        if is_echo_provider(result):
+            return None
+        report_usage(on_usage, result)
+        payload = extract_json_object(str(result.get("content") or ""))
+        if payload is None:
+            return None
+        raw_departments = payload.get("departments") or []
+        if not isinstance(raw_departments, list):
+            return None
+        returned = [str(code).strip() for code in raw_departments if str(code).strip()]
+        codes = tuple(dict.fromkeys(
+            known[code.upper()] for code in returned if code.upper() in known
+        ))
+        unmatched = _clean_text(payload.get("unmatched_department"), 100)
+        if not codes and returned and unmatched is None:
+            # The model named a department it had no code for. Listing everyone under
+            # that question is the silent wrong answer this exists to stop.
+            unmatched = returned[0][:100]
+        start_date = _validated_iso_date(payload.get("start_date"))
+        end_date = _validated_iso_date(payload.get("end_date")) or start_date
+        if start_date and end_date and end_date < start_date:
+            start_date, end_date = end_date, start_date
+        whose = str(payload.get("whose") or "").strip().upper()
+        return LookupArguments(
+            person=_clean_text(payload.get("person"), 200),
+            departments=codes,
+            unmatched_department=unmatched,
+            start_date=start_date,
+            end_date=end_date,
+            whose=whose if whose in {"SELF", "TEAM"} else None,  # type: ignore[arg-type]
+        )
+    except (AIServiceError, TypeError, ValueError):
+        logger.warning(
+            "HR LLM lookup argument extraction failed; using keyword fallback",
+            exc_info=True,
+        )
+        return None
 
 
 def _validated_iso_date(value: Any) -> str | None:

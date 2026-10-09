@@ -12,8 +12,11 @@ from app.agents.hr.intent import _classify_hr_intent
 from tests.chat_patching import patch_chat
 from app.agents.hr.llm_flow import (
     HRRequestClassification,
+    LeaveDraftTurn,
+    LookupArguments,
     classify_hr_request,
     HR_INTENT_LABELS,
+    extract_lookup_arguments,
     extract_leave_request_slots,
     generate_grounded_hr_answer,
 )
@@ -510,3 +513,133 @@ def test_an_answer_reporting_no_evidence_is_not_given_sources():
     )
 
     assert "Nguồn:" not in result["reply"]
+
+
+def test_a_draft_continuation_read_by_the_draft_router_is_not_overruled(monkeypatch):
+    """The general router sees "Lý do là đi khám bệnh" without the draft and calls it a
+    question. The draft router, which saw the draft, had already said CONTINUE -- and
+    letting the first overrule it left every multi-turn leave draft unfinishable."""
+    captured = {}
+    patch_chat(monkeypatch, "_classify_hr_intent", lambda _message: "UNKNOWN")
+    patch_chat(monkeypatch, "_load_leave_draft",
+        lambda *_args: {"type": "LEAVE_REQUEST_DRAFT", "missing_fields": ["reason"]},
+    )
+    patch_chat(monkeypatch, "classify_leave_draft_turn",
+        lambda *_args, **_kwargs: LeaveDraftTurn("CONTINUE", "llm"),
+    )
+
+    def router(*_args, **_kwargs):
+        captured["router_called"] = True
+        return HRRequestClassification("QUESTION", "llm", "UNKNOWN")
+
+    patch_chat(monkeypatch, "classify_hr_request", router)
+
+    def fake_core(*_args, **kwargs):
+        captured["intent"] = kwargs["hr_intent_override"]
+        return {"reply": "", "citations": [], "tools_executed": [], "hr_card": None}
+
+    patch_chat(monkeypatch, "_execute_agent_chat_core", fake_core)
+
+    execute_agent_chat(
+        SimpleNamespace(),
+        SimpleNamespace(tenant_id=_TEST_TENANT_ID),
+        "HR",
+        "Lý do là đi khám bệnh",
+    )
+
+    assert captured["intent"] == "ACTION_LEAVE_REQUEST"
+    # Its answer could not change the outcome, so the call is not spent.
+    assert "router_called" not in captured
+
+
+DEPARTMENTS = (("FINANCE", "Kế toán & Tài chính"), ("IT", "Công nghệ thông tin"))
+
+
+def _lookup(content: str, message: str = "câu hỏi", intent: str = "EMPLOYEE_DIRECTORY"):
+    client = FakeAIClient({"provider": "gemini", "content": content})
+    result = extract_lookup_arguments(
+        message,
+        intent=intent,
+        departments=DEPARTMENTS,
+        reference_date=date(2026, 10, 1),
+        timezone_name="Asia/Ho_Chi_Minh",
+        client=client,  # type: ignore[arg-type]
+    )
+    return result, client
+
+
+def test_lookup_departments_are_read_from_the_tenant_list():
+    result, client = _lookup(
+        '{"departments":["finance","FINANCE"],"unmatched_department":null}',
+        "Bên mình có những ai làm bên tài chính?",
+    )
+
+    assert result == LookupArguments(departments=("FINANCE",))
+    sent = json.loads(client.calls[0][-1]["content"])
+    assert sent["message"] == "Bên mình có những ai làm bên tài chính?"
+    assert sent["intent"] == "EMPLOYEE_DIRECTORY"
+    assert sent["reference_date"] == "2026-10-01"
+    assert sent["departments"] == [
+        {"code": "FINANCE", "name": "Kế toán & Tài chính"},
+        {"code": "IT", "name": "Công nghệ thông tin"},
+    ]
+
+
+def test_a_department_code_the_company_lacks_is_never_used_as_a_filter():
+    """An invented code must not become "no filter", which would list everyone."""
+    result, _ = _lookup('{"departments":["LOGISTICS"],"unmatched_department":null}')
+
+    assert result == LookupArguments(unmatched_department="LOGISTICS")
+
+
+def test_departments_in_general_are_no_filter():
+    result, _ = _lookup('{"departments":[],"unmatched_department":null}')
+
+    assert result == LookupArguments()
+
+
+def test_lookup_reads_a_person_a_period_and_whose_requests():
+    result, _ = _lookup(
+        '{"person":"Phạm Văn Tech","start_date":"2026-10-12","end_date":null,'
+        '"whose":"team","departments":[]}',
+        intent="LEAVE_REQUEST_STATUS",
+    )
+
+    # A single day sets both ends; an unknown label for "whose" would be dropped.
+    assert result == LookupArguments(
+        person="Phạm Văn Tech",
+        start_date="2026-10-12",
+        end_date="2026-10-12",
+        whose="TEAM",
+    )
+
+
+def test_lookup_drops_malformed_dates_and_orders_a_reversed_period():
+    bad, _ = _lookup('{"start_date":"12/10/2026","whose":"EVERYONE"}')
+    reversed_period, _ = _lookup('{"start_date":"2026-10-20","end_date":"2026-10-12"}')
+
+    assert bad == LookupArguments()
+    assert (reversed_period.start_date, reversed_period.end_date) == (
+        "2026-10-12", "2026-10-20",
+    )
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        {"provider": "local", "content": "Local provider received: ..."},
+        {"provider": "gemini", "content": "không phải JSON"},
+        {"provider": "gemini", "content": '{"departments":"IT"}'},
+    ],
+)
+def test_lookup_extractor_hands_back_to_the_keywords_when_unusable(response):
+    result = extract_lookup_arguments(
+        "danh sách nhân viên phòng IT",
+        intent="EMPLOYEE_DIRECTORY",
+        departments=DEPARTMENTS,
+        reference_date=date(2026, 10, 1),
+        timezone_name="Asia/Ho_Chi_Minh",
+        client=FakeAIClient(response),  # type: ignore[arg-type]
+    )
+
+    assert result is None

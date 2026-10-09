@@ -15,6 +15,7 @@ from app.core.config import settings
 from app.core.security import get_password_hash
 from app.core.finance_capabilities import configuration_version_for, upgrade_finance_grants
 from app.core.hr_capabilities import (
+    DEFAULT_GRANTS_COMPLETE_VERSION,
     HR_CONFIGURATION_VERSION,
     HR_RETIRED_TOOLS,
 )
@@ -370,7 +371,9 @@ def init_db():
                 agent.tools_access = default_agent_tools[adata["role_code"]]
                 agent.allowed_actions = default_agent_tools[adata["role_code"]]
                 agent.configuration_version = HR_CONFIGURATION_VERSION
-            elif (agent.configuration_version or 1) < HR_CONFIGURATION_VERSION:
+            elif (agent.configuration_version or 1) < DEFAULT_GRANTS_COMPLETE_VERSION:
+                # Newer versions only add their own tools, in the executor's repair; a
+                # full re-add here would restore tools an operator removed since.
                 denied = set(agent.disallowed_actions or [])
                 additions = set(default_agent_tools[adata["role_code"]]) - denied
                 tools = set(agent.tools_access or []) | additions

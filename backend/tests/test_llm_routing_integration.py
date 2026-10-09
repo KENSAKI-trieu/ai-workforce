@@ -40,10 +40,16 @@ class ScriptedAIClient:
             answer = self.labels.get("perspective")
         elif "legal assistant" in system:
             answer = self.labels.get("legal_intent")
+        elif "intent router for an enterprise HR" in system:
+            # Checked before "leave request": the HR router's own label list says
+            # "cancel an actual leave request", so it used to be handed leave_turn.
+            answer = self.labels.get("hr_intent")
+        elif "extract leave-request fields" in system:
+            answer = self.labels.get("leave_slot")
+        elif "lookup arguments of one HR request" in system:
+            answer = self.labels.get("lookup")
         elif "leave request" in system:
             answer = self.labels.get("leave_turn")
-        elif "intent router for an enterprise HR" in system:
-            answer = self.labels.get("hr_intent")
         else:
             # The answer-synthesis slot: leave the governed reply untouched.
             return {"provider": "local", "content": ""}
@@ -243,3 +249,118 @@ def test_a_policy_question_mid_draft_is_not_filed_as_the_leave_reason(
     card = answered.get("hr_card") or {}
     assert card.get("reason") != question
     assert card.get("status") != "SUBMITTED"
+
+
+def test_a_leave_draft_can_be_finished_in_a_later_turn(
+    client, employee_token_headers, scripted_llm
+):
+    """The reason arrives alone, and the general router reads it as a question."""
+    fake = scripted_llm(
+        hr_intent={"kind": "ACTION", "intent": "ACTION_LEAVE_REQUEST"},
+        leave_slot={"start_date": "2031-03-10", "end_date": "2031-03-11", "reason": None},
+    )
+    opened = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": "Tôi muốn xin nghỉ từ 10/3/2031 đến 11/3/2031"},
+        headers=employee_token_headers,
+    ).json()
+    assert opened["hr_card"]["status"] == "COLLECTING"
+
+    fake.labels.update(
+        hr_intent={"kind": "QUESTION", "intent": "UNKNOWN"},
+        leave_turn={"turn": "CONTINUE"},
+        leave_slot={"start_date": None, "end_date": None, "reason": "đi khám bệnh"},
+    )
+    finished = client.post(
+        "/api/v1/agent/chat",
+        json={
+            "agent_role": "HR",
+            "message": "Lý do là đi khám bệnh",
+            "conversation_id": opened["conversation_id"],
+        },
+        headers=employee_token_headers,
+    ).json()
+
+    assert "request_leave" in [tool["tool_name"] for tool in finished["tools_executed"]]
+    assert finished["approval_card"] is not None
+    assert "đi khám bệnh" in finished["reply"]
+
+
+def test_the_router_names_a_department_the_keywords_cannot(
+    client, ceo_token_headers, scripted_llm
+):
+    scripted_llm(
+        hr_intent={"kind": "QUESTION", "intent": "EMPLOYEE_DIRECTORY"},
+        lookup={"departments": ["it"]},
+    )
+    message = "Bên mình có những ai làm mảng công nghệ?"
+
+    result = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": message},
+        headers=ceo_token_headers,
+    ).json()
+
+    card = result["hr_card"]
+    assert card["department_filter"] == ["IT"]
+    assert {item["employee"]["department"] for item in card["items"]} == {"IT"}
+
+
+def test_departments_in_general_list_every_manager(
+    client, ceo_token_headers, scripted_llm
+):
+    """"các phòng ban" used to read as a department name the company does not have."""
+    scripted_llm(
+        hr_intent={"kind": "QUESTION", "intent": "MANAGER_DIRECTORY"},
+        lookup={"departments": []},
+    )
+
+    result = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": "Ai đang làm sếp ở các phòng ban?"},
+        headers=ceo_token_headers,
+    ).json()
+
+    assert result["hr_card"]["directory_type"] == "MANAGERS"
+    assert result["hr_card"]["department_filter"] == []
+
+
+def test_a_department_the_company_lacks_is_reported(
+    client, ceo_token_headers, scripted_llm
+):
+    scripted_llm(
+        hr_intent={"kind": "QUESTION", "intent": "EMPLOYEE_DIRECTORY"},
+        lookup={"departments": [], "unmatched_department": "hậu cần"},
+    )
+
+    result = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": "Ai làm bên hậu cần?"},
+        headers=ceo_token_headers,
+    ).json()
+
+    assert result["hr_card"] is None
+    assert "không tìm thấy phòng ban" in result["reply"].lower()
+
+
+@pytest.mark.parametrize(
+    "message",
+    ["Phạm Văn Tech là ai?", "Email của anh Phạm Văn Tech là gì?"],
+)
+def test_the_router_names_the_colleague_the_keywords_cannot(
+    client, ceo_token_headers, scripted_llm, message
+):
+    """The keyword extractor only finds a name after a fixed opening phrase."""
+    scripted_llm(
+        hr_intent={"kind": "QUESTION", "intent": "EMPLOYEE_SEARCH"},
+        lookup={"person": "Phạm Văn Tech"},
+    )
+
+    result = client.post(
+        "/api/v1/agent/chat",
+        json={"agent_role": "HR", "message": message},
+        headers=ceo_token_headers,
+    ).json()
+
+    assert result["hr_card"]["employee"]["email"] == "it.lead@company.com"
+    assert result["tools_executed"][0]["input"]["query"] == "Phạm Văn Tech"

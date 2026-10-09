@@ -10,6 +10,7 @@ from app.core.hr_capabilities import (
     HR_CONFIGURATION_VERSION,
     HR_CORE_TOOLS,
     HR_RETIRED_TOOLS,
+    HR_TOOLS_ADDED_IN_VERSION_9,
 )
 from app.core.tool_permissions import grant_decision
 from app.plugins.resolver import EMPTY_RESTRICTION, SkillRestriction
@@ -71,6 +72,10 @@ def _repair_hr_agent_capabilities(agent: AIAgent) -> None:
         tools -= HR_RETIRED_TOOLS
         allowed -= HR_RETIRED_TOOLS
         denied -= HR_RETIRED_TOOLS
+    if version < 9:
+        added = HR_TOOLS_ADDED_IN_VERSION_9 - denied
+        tools |= added
+        allowed |= added
     agent.configuration_version = HR_CONFIGURATION_VERSION
     agent.tools_access = sorted(tools)
     agent.allowed_actions = sorted(allowed)

@@ -19,7 +19,11 @@ from app.core.security import (
 )
 from app.core.finance_capabilities import configuration_version_for, upgrade_finance_grants
 from app.core.gateway_tools import GATEWAY_TOOLS, with_gateway_grants
-from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, default_hr_tools
+from app.core.hr_capabilities import (
+    DEFAULT_GRANTS_COMPLETE_VERSION,
+    HR_CONFIGURATION_VERSION,
+    default_hr_tools,
+)
 from app.core.tool_permissions import canonical_tool_names
 from app.core.permissions import ROOT_POSITION_SLUG
 from app.models.models import Tenant, User, AIAgent, Department, RefreshToken
@@ -131,7 +135,10 @@ def upgrade_agent_grants(agent: AIAgent) -> bool:
         before = agent.configuration_version
         _repair_hr_agent_capabilities(agent)
         return agent.configuration_version != before
-    if role not in DEFAULT_AGENT_TOOLS or (agent.configuration_version or 1) >= HR_CONFIGURATION_VERSION:
+    # Versions after DEFAULT_GRANTS_COMPLETE_VERSION only add HR's own tools. Comparing
+    # with the HR version here re-added every default -- tools an administrator removed
+    # included -- to every other role each time HR's version went up.
+    if role not in DEFAULT_AGENT_TOOLS or (agent.configuration_version or 1) >= DEFAULT_GRANTS_COMPLETE_VERSION:
         return False
     supported = supported_agent_tools(role)
     defaults = set(DEFAULT_AGENT_TOOLS[role])

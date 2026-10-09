@@ -76,12 +76,12 @@ def test_profile_branches_record_what_the_policy_engine_released(
     assert "COMPENSATION" in entry["result"]["allowed_sections"]
 
 
-def test_leave_statistics_states_the_gap_then_searches(client, ceo_token_headers):
+def test_leave_statistics_are_counted_not_searched(client, ceo_token_headers):
+    """This used to admit there was no leave calendar and fall back to policy search."""
     data = chat(client, ceo_token_headers, "có bao nhiêu nhân viên đang nghỉ phép")
-    assert "chưa có tool" in data["reply"].lower()
-    assert tools(data) == ["rag_search"]
-    # The caveat must survive verbatim — it is the honest part of the answer.
-    assert data["reply"].startswith("HR Agent chưa có tool")
+    assert tools(data) == ["list_leave_requests"]
+    assert data["hr_card"]["type"] == "LEAVE_CALENDAR"
+    assert "chưa có tool" not in data["reply"].lower()
 
 
 @pytest.mark.parametrize(

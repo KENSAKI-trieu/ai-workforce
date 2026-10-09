@@ -42,6 +42,8 @@ TOOL_DESCRIPTIONS = {
     "get_contract_expiry": "Theo dõi hợp đồng và thời gian thử việc.",
     "list_pending_hr_approvals": "Liệt kê card chờ duyệt theo phạm vi quản lý.",
     "export_hr_directory": "Xuất danh bạ HR theo quyền ra Excel, PDF hoặc JSON.",
+    "list_leave_requests": "Tra cứu đơn nghỉ và lịch nghỉ: của chính mình, hoặc của người trong phạm vi khi có quyền xem dữ liệu nghỉ phép.",
+    "cancel_leave_request": "Rút đơn nghỉ của chính mình khi đơn còn chờ duyệt và trả lại ngày phép giữ chỗ.",
     "generate_and_execute_ceo_dag": "Lập và thực thi kế hoạch đa agent.",
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
     "compare_contract_versions": "So sánh điều khoản giữa hai phiên bản hợp đồng.",

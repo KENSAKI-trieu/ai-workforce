@@ -4,13 +4,21 @@ interface ChatMessageContentProps {
   content: string;
 }
 
+// Only links into this app ("/agents/MARKETING?campaign=…"): an answer's text comes from a
+// model, and an outside link in it would be one the user never asked for.
+const INTERNAL_LINK = /^\[([^\]\n]+)\]\((\/[^)\s]*)\)$/;
+
 function renderInlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
   return value
-    .split(/(\*\*.+?\*\*|`[^`\n]+`)/g)
+    .split(/(\*\*.+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\(\/[^)\s]*\))/g)
     .filter(Boolean)
     .map((part, index) => {
       const key = `${keyPrefix}-${index}`;
 
+      const link = part.match(INTERNAL_LINK);
+      if (link && !link[2].startsWith("//")) {
+        return <a key={key} href={link[2]} style={{ color: "#3C50E0", fontWeight: 650 }}>{link[1]}</a>;
+      }
       if (part.startsWith("**") && part.endsWith("**")) {
         return <strong key={key}>{part.slice(2, -2)}</strong>;
       }

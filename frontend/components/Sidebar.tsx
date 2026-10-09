@@ -10,6 +10,7 @@ import type { AppLocale } from "@/store/useLanguageStore";
 import api from "@/lib/api";
 import NotificationPanel from "@/components/NotificationPanel";
 import {
+  Megaphone,
   Bot,
   LayoutDashboard,
   LogOut,
@@ -56,6 +57,7 @@ const AGENTS = [
   { name: { vi: "Trợ lý Tài chính", ja: "財務エージェント" }, role: "FINANCE", emoji: "💰", icon: DollarSign, path: "/agents/FINANCE" },
   { name: { vi: "Trợ lý Kinh doanh", ja: "営業エージェント" }, role: "SALES", emoji: "📈", icon: TrendingUp, path: "/agents/SALES" },
   { name: { vi: "Trợ lý Tri thức", ja: "ナレッジエージェント" }, role: "KNOWLEDGE", emoji: "📚", icon: BookOpen, path: "/agents/KNOWLEDGE" },
+  { name: { vi: "Trợ lý Marketing", ja: "マーケティングエージェント" }, role: "MARKETING", emoji: "📣", icon: Megaphone, path: "/agents/MARKETING" },
 ];
 
 const SIDEBAR_TEXT = {

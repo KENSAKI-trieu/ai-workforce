@@ -7,6 +7,7 @@ import { AlertTriangle, CheckCircle2, Download, Edit3, Eye, Loader2, RefreshCw, 
 import Sidebar from "@/components/Sidebar";
 import ContractFileViewer, { ContractFile } from "@/components/legal/ContractFileViewer";
 import FinanceApprovalDetail, { FinancePayload, financeEditable, isFinanceApproval } from "@/components/finance/FinanceApprovalDetail";
+import MarketingApprovalDetail, { MarketingPayload, isMarketingApproval } from "@/components/marketing/MarketingApprovalDetail";
 import api from "@/lib/api";
 import { useAuthStore, userCan } from "@/store/useAuthStore";
 
@@ -365,6 +366,11 @@ export default function ApprovalsCenterPage() {
                     key={selected.id}
                     actionType={selected.action_type}
                     payload={selected.payload as FinancePayload}
+                    readOnly={readOnly}
+                    onEdit={(edited) => setEditedPayload(JSON.stringify(edited))}
+                  /> : isMarketingApproval(selected.action_type) ? <MarketingApprovalDetail
+                    key={selected.id}
+                    payload={selected.payload as MarketingPayload}
                     readOnly={readOnly}
                     onEdit={(edited) => setEditedPayload(JSON.stringify(edited))}
                   /> : selected.action_type === "LEGAL_DOCUMENT_APPROVAL" ? <div style={{ padding: 14, border: "1px solid #DBE4EC", borderRadius: 9, background: "#F8FAFC" }}>

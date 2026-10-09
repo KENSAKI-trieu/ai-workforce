@@ -13,7 +13,7 @@ level. No model writes to a customer.
 from __future__ import annotations
 
 import uuid
-from datetime import date, datetime, timezone
+from datetime import date, datetime, timedelta, timezone
 from decimal import Decimal
 from typing import Any
 
@@ -252,6 +252,40 @@ def _vn_date(iso: str) -> str:
     return date.fromisoformat(iso).strftime("%d/%m/%Y")
 
 
+# A level-2 letter gives the customer seven days; another one inside them reads as noise.
+RESEND_WINDOW_DAYS = 7
+VIETNAM_TIME = timezone(timedelta(hours=7))
+
+
+def _recently_sent(db: Session, party: FinParty, as_of: date) -> str | None:
+    """A warning when this customer was sent a reminder within the last few days.
+
+    Not a refusal: the debt may have grown, or the tone may need to change. The approver
+    and the requester are told, so a second letter in a week is a choice and not an accident.
+    """
+    sent = db.query(WorkflowApproval).filter(
+        WorkflowApproval.action_type == REMINDER_SEND,
+        WorkflowApproval.status == "APPROVED",
+        WorkflowApproval.payload["party_id"].astext == str(party.id),
+    ).order_by(WorkflowApproval.updated_at.desc()).first()
+    if sent is None:
+        return None
+    delivered = ((sent.payload or {}).get("delivery") or {}).get("sent_at")
+    try:
+        moment = datetime.fromisoformat(delivered) if delivered else sent.updated_at
+    except ValueError:
+        moment = sent.updated_at
+    if moment is None:
+        return None
+    day = moment.astimezone(VIETNAM_TIME).date() if moment.tzinfo else moment.date()
+    if (as_of - day).days >= RESEND_WINDOW_DAYS:
+        return None
+    return (
+        f"Khách hàng này đã được gửi thư nhắc nợ mức {(sent.payload or {}).get('level')} ngày "
+        f"{day:%d/%m/%Y}, chưa quá {RESEND_WINDOW_DAYS} ngày"
+    )
+
+
 def draft_payment_reminder(
     db: Session, actor: User, party: FinParty, level: int | None, *, company_name: str, as_of: date
 ) -> WorkflowApproval:
@@ -292,6 +326,7 @@ def draft_payment_reminder(
     )
     subject, body = _TEMPLATES[level]
     values = {"company": company_name, "party": party.name, "lines": lines, "total": format_vnd(Decimal(report["total"]))}
+    recent = _recently_sent(db, party, as_of)
     return open_finance_approval(
         db, actor,
         action_type=REMINDER_SEND,
@@ -307,6 +342,7 @@ def draft_payment_reminder(
             "recipient": party.email,
             "subject": subject.format(**values),
             "body": body.format(**values),
+            "warnings": [recent] if recent else [],
             "data_sources": [report["source"]],
         },
     )

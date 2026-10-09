@@ -439,9 +439,93 @@ def _amounts(ctx: _Context, row: int, record: dict[str, Any]) -> tuple[Decimal, 
     return debit, credit
 
 
+_ALREADY_IMPORTED = (
+    "File này (hoặc một phần của nó) đã được nhập trước đó. Bỏ các dòng đã có khỏi file, "
+    "hoặc hoàn tác lần nhập cũ ở mục Lịch sử nhập rồi nhập lại."
+)
+# Ledger lines checked against the books per query: an IN list stays a reasonable size.
+_CHUNK = 1000
+
+
+def _reject_known_lines(ctx: _Context, staged: list[tuple[int, FinLedgerLine]]) -> None:
+    """Refuse lines the books already hold, before anything is written.
+
+    Every ledger import used to be committed, so loading the same export twice --
+    re-sent by email, picked again from Downloads -- counted every voucher twice and no
+    balance was right any more. A voucher number on the same day is the same voucher; a
+    line without one is the same line when everything it says is the same.
+    """
+    vouchers: dict[tuple[str, date], int] = {}
+    loose: list[tuple[int, FinLedgerLine]] = []
+    for row, line in staged:
+        if line.voucher_no:
+            vouchers.setdefault((line.voucher_no, line.entry_date), row)
+        else:
+            loose.append((row, line))
+    known: set[tuple[str, date]] = set()
+    numbers = sorted({number for number, _ in vouchers})
+    for index in range(0, len(numbers), _CHUNK):
+        known.update(
+            (number, day) for number, day in ctx.db.query(FinLedgerLine.voucher_no, FinLedgerLine.entry_date).filter(
+                FinLedgerLine.tenant_id == ctx.tenant_id,
+                FinLedgerLine.source != "OPENING",
+                FinLedgerLine.voucher_no.in_(numbers[index:index + _CHUNK]),
+            ).distinct()
+        )
+    found = False
+    for key in sorted(known & vouchers.keys(), key=lambda item: vouchers[item]):
+        found = True
+        ctx.collector.add(
+            vouchers[key], "Số chứng từ", f"Chứng từ {key[0]} ngày {key[1]:%d/%m/%Y} đã có trong sổ"
+        )
+    if loose:
+        days = [line.entry_date for _, line in loose]
+
+        def signature(day, account, debit, credit, party_id, description):
+            return day, account, Decimal(debit), Decimal(credit), party_id, description or ""
+
+        existing = {
+            signature(*values) for values in ctx.db.query(
+                FinLedgerLine.entry_date, FinLedgerLine.account_code, FinLedgerLine.debit,
+                FinLedgerLine.credit, FinLedgerLine.party_id, FinLedgerLine.description,
+            ).filter(
+                FinLedgerLine.tenant_id == ctx.tenant_id,
+                FinLedgerLine.source != "OPENING",
+                FinLedgerLine.voucher_no.is_(None),
+                FinLedgerLine.entry_date >= min(days),
+                FinLedgerLine.entry_date <= max(days),
+            )
+        }
+        for row, line in loose:
+            if signature(line.entry_date, line.account_code, line.debit, line.credit, line.party_id, line.description) in existing:
+                found = True
+                ctx.collector.add(row, None, "Dòng này giống hệt một dòng đã có trong sổ")
+    if found:
+        ctx.collector.add(None, None, _ALREADY_IMPORTED)
+
+
+def _reject_second_opening(ctx: _Context) -> None:
+    """One set of opening balances: every later balance is carried forward from it.
+
+    A second set, of the same period or another, is added on top of the first, and every
+    account then opens with both.
+    """
+    loaded = ctx.db.query(FinLedgerLine.period).filter(
+        FinLedgerLine.tenant_id == ctx.tenant_id, FinLedgerLine.source == "OPENING",
+    ).order_by(FinLedgerLine.period).first()
+    if loaded is not None:
+        period = loaded[0]
+        ctx.collector.add(
+            None, "Kỳ",
+            f"Sổ đã có số dư đầu kỳ cho kỳ {period[5:7]}/{period[:4]}; số dư các kỳ sau được tính "
+            "tiếp từ đó. Muốn nhập lại thì hoàn tác lần nhập số dư cũ ở mục Lịch sử nhập trước.",
+        )
+
+
 def _ledger_like(ctx: _Context, rows: list[tuple[int, dict[str, Any]]]) -> list[Any]:
     opening = ctx.kind == "opening_balances"
     pending: list[Any] = []
+    staged: list[tuple[int, FinLedgerLine]] = []
     totals = [ZERO, ZERO]
     vouchers: dict[str, list[Decimal]] = defaultdict(lambda: [ZERO, ZERO])
     for row, record in rows:
@@ -466,7 +550,7 @@ def _ledger_like(ctx: _Context, rows: list[tuple[int, dict[str, Any]]]) -> list[
         if voucher_no:
             vouchers[voucher_no][0] += debit
             vouchers[voucher_no][1] += credit
-        pending.append(FinLedgerLine(
+        line = FinLedgerLine(
             tenant_id=ctx.tenant_id, period=period, entry_date=entry_date,
             account_code=account, debit=debit, credit=credit, party_id=party_id,
             department=_text(record.get("department"), 50) or None,
@@ -474,12 +558,18 @@ def _ledger_like(ctx: _Context, rows: list[tuple[int, dict[str, Any]]]) -> list[
             description=_text(record.get("description"), 2000) or ("Số dư đầu kỳ" if opening else ""),
             source="OPENING" if opening else "IMPORT",
             import_batch_id=ctx.batch_id,
-        ))
+        )
+        pending.append(line)
+        staged.append((row, line))
     for voucher_no, (debit, credit) in vouchers.items():
         if debit != credit:
             ctx.collector.add(None, "Số chứng từ", f"Chứng từ {voucher_no} không cân: Nợ {debit} ≠ Có {credit}")
     if not ctx.collector.errors and totals[0] != totals[1]:
         ctx.collector.add(None, None, f"File không cân: tổng Nợ {totals[0]} ≠ tổng Có {totals[1]}")
+    if opening:
+        _reject_second_opening(ctx)
+    elif staged:
+        _reject_known_lines(ctx, staged)
     return pending
 
 

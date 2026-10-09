@@ -182,6 +182,13 @@ export default function FinanceApprovalDetail({
       <div style={box}>
         {header}
         <p style={{ margin: "0 0 8px", fontSize: 13 }}><b>Gửi tới:</b> {payload.recipient}</p>
+        {(payload.warnings || []).length > 0 && (
+          <ul style={warningList}>
+            {(payload.warnings || []).map((warning) => (
+              <li key={warning} style={{ display: "flex", gap: 6 }}><AlertTriangle size={14} style={{ flexShrink: 0, marginTop: 2 }} />{warning}</li>
+            ))}
+          </ul>
+        )}
         {payload.delivery && (
           <p style={{ margin: "0 0 8px", fontSize: 13, color: payload.delivery.status === "FAILED" ? "#B91C1C" : "#047857" }}>
             {payload.delivery.status === "FAILED" ? `Gửi thất bại: ${payload.delivery.error}` : "Đã gửi"}

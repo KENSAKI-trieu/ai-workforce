@@ -15,6 +15,12 @@ from fastapi import HTTPException
 from sqlalchemy import and_, or_
 
 from app.agents.usage import _llm_usage_recorder
+from app.domains.finance.approvals import (
+    JOURNAL_APPROVAL,
+    PAYMENT_VOUCHER,
+    REMINDER_SEND,
+    can_approve_finance,
+)
 from app.domains.finance.invoice_intake import serialize_invoice
 from app.domains.finance.journal_proposal import (
     ProposalRefused,
@@ -31,6 +37,7 @@ from app.domains.finance.reports import (
     aging,
     budget_vs_actual,
     expense_breakdown,
+    income_statement,
     ledger_detail,
     own_budget_department,
     payment_schedule,
@@ -38,6 +45,7 @@ from app.domains.finance.reports import (
     resolve_party,
     trial_balance,
 )
+from app.domains.finance.settings import get_settings
 from app.domains.finance.sheets import SheetRejected, analyze, describe as describe_sheet, own_sheet, own_sheets
 from app.domains.platform.position_service import user_permissions
 from app.plugins.resolver import resolve_prompt_overlay
@@ -48,7 +56,7 @@ from app.domains.platform.audit_service import (
     get_cost_by_workflow,
     get_llm_cost_summary,
 )
-from app.models.models import FinInvoice, FinParty, Tenant
+from app.models.models import AgentWorkflow, FinInvoice, FinParty, FinPayment, Tenant, WorkflowApproval
 from app.tools.registry import ToolContext
 from app.tools.schemas import (
     AccountBalanceInput,
@@ -59,6 +67,8 @@ from app.tools.schemas import (
     DraftPaymentVoucherInput,
     ExpenseBreakdownInput,
     ExpenseLookupInput,
+    FinanceDraftsInput,
+    IncomeStatementInput,
     InvoiceLookupInput,
     LedgerDetailInput,
     PaymentScheduleInput,
@@ -166,8 +176,85 @@ def get_account_trend(context: ToolContext, request: AccountTrendInput) -> dict[
 
 def get_expense_breakdown(context: ToolContext, request: ExpenseBreakdownInput) -> dict[str, Any]:
     return expense_breakdown(
-        context.db, context.actor.tenant_id, request.from_period, request.to_period, group_by=request.group_by,
+        context.db, context.actor.tenant_id, request.from_period, request.to_period,
+        group_by=request.group_by, level=request.level, keyword=request.keyword,
     )
+
+
+def get_income_statement(context: ToolContext, request: IncomeStatementInput) -> dict[str, Any]:
+    chart = get_settings(context.db, context.actor.tenant_id).chart
+    return income_statement(
+        context.db, context.actor.tenant_id, request.from_period, request.to_period, chart=chart or "TT200",
+    )
+
+
+_DRAFT_KINDS = {"JOURNAL": JOURNAL_APPROVAL, "VOUCHER": PAYMENT_VOUCHER, "REMINDER": REMINDER_SEND}
+_KIND_LABELS = {JOURNAL_APPROVAL: "Bút toán", PAYMENT_VOUCHER: "Phiếu chi", REMINDER_SEND: "Thư nhắc nợ"}
+# What became of an approved voucher afterwards: only the bank transfer settles it.
+_PAYMENT_STATES = {"DRAFT": "chờ duyệt", "SCHEDULED": "đã duyệt, chưa chuyển tiền", "PAID": "đã chuyển tiền", "CANCELLED": "đã huỷ"}
+
+
+def list_finance_drafts(context: ToolContext, request: FinanceDraftsInput) -> dict[str, Any]:
+    """The finance drafts waiting or decided: journal entries, vouchers, reminders.
+
+    A voucher's approval is not its payment, so a voucher also says whether the money left.
+    """
+    db, actor = context.db, context.actor
+    query = db.query(WorkflowApproval).join(AgentWorkflow).filter(
+        AgentWorkflow.tenant_id == actor.tenant_id,
+        WorkflowApproval.action_type.in_(tuple(_KIND_LABELS)),
+    )
+    if request.kind:
+        query = query.filter(WorkflowApproval.action_type == _DRAFT_KINDS[request.kind])
+    if request.scope == "TO_DECIDE":
+        query = query.filter(WorkflowApproval.status == "WAITING")
+    elif request.status:
+        query = query.filter(WorkflowApproval.status == request.status)
+    if request.scope == "MINE":
+        query = query.filter(or_(
+            AgentWorkflow.initiator_id == actor.id,
+            WorkflowApproval.payload["requester_id"].astext == str(actor.id),
+        ))
+    approvals = query.order_by(AgentWorkflow.created_at.desc()).limit(500).all()
+    if request.scope == "TO_DECIDE":
+        approvals = [approval for approval in approvals if can_approve_finance(db, actor, approval)]
+    counts: dict[str, int] = {}
+    for approval in approvals:
+        counts[approval.status] = counts.get(approval.status, 0) + 1
+    shown = approvals[: request.limit]
+    payments: dict[Any, list[FinPayment]] = {}
+    vouchers = [approval.workflow_id for approval in shown if approval.action_type == PAYMENT_VOUCHER]
+    if vouchers:
+        for payment in db.query(FinPayment).filter(FinPayment.workflow_id.in_(vouchers)):
+            payments.setdefault(payment.workflow_id, []).append(payment)
+    items = []
+    for approval in shown:
+        payload = approval.payload or {}
+        item = {
+            "approval_id": str(approval.id),
+            "kind": _KIND_LABELS[approval.action_type],
+            "title": approval.workflow.title if approval.workflow else None,
+            "status": approval.status,
+            "amount": payload.get("amount"),
+            "requested_by": payload.get("requester_name"),
+            "created_at": approval.workflow.created_at.isoformat() if approval.workflow and approval.workflow.created_at else None,
+            "signer_needed": payload.get("required_permission_label"),
+        }
+        if approval.action_type == PAYMENT_VOUCHER:
+            states = {payment.status for payment in payments.get(approval.workflow_id, [])}
+            state = states.pop() if len(states) == 1 else None
+            item["payment"] = _PAYMENT_STATES.get(state or "", "nhiều trạng thái" if states else None)
+        if approval.action_type == REMINDER_SEND and payload.get("delivery"):
+            item["delivery"] = "đã gửi" if payload["delivery"].get("status") != "FAILED" else "gửi thất bại"
+        items.append(item)
+    return {
+        "scope": request.scope,
+        "count": len(approvals),
+        "shown": len(items),
+        "by_status": counts,
+        "drafts": items,
+        "source": "workflow_approvals FINANCE_*",
+    }
 
 
 def list_spreadsheets(context: ToolContext, request: SpreadsheetListInput) -> dict[str, Any]:
@@ -300,13 +387,16 @@ def draft_reminder(context: ToolContext, request: DraftPaymentReminderInput) -> 
     except (PartyNotFound, DraftRefused) as exc:
         return {"status": "REFUSED", "created": False, "reply": _refusal("Chưa soạn được thư nhắc nợ", exc)}
     payload = approval.payload
+    warnings = " Lưu ý: " + "; ".join(payload["warnings"]) + "." if payload.get("warnings") else ""
     return {
         "status": "PENDING_APPROVAL",
         "created": True,
         "approval_id": str(approval.id),
+        # The address stays on the approval card: the AI service masks every e-mail address
+        # in a tool result, so naming it here put "[REDACTED_EMAIL]" in front of the user.
         "reply": (
-            f"Đã soạn thư nhắc nợ mức {payload['level']} gửi {party.name} ({payload['recipient']}), "
-            f"tổng {format_vnd(Decimal(payload['amount']))}, và gửi duyệt. Thư chỉ được gửi đi khi "
-            "người duyệt đồng ý."
+            f"Đã soạn thư nhắc nợ mức {payload['level']} gửi {party.name} (tới email trong danh mục "
+            f"đối tượng), tổng {format_vnd(Decimal(payload['amount']))}, và gửi duyệt.{warnings} Thư chỉ "
+            "được gửi đi khi người duyệt đồng ý."
         ),
     }

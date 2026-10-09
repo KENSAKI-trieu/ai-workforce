@@ -13,9 +13,9 @@ from app.domains.finance.payments import DraftRefused, draft_payment_reminder, d
 from app.domains.finance.reports import payment_schedule
 from app.domains.finance.settings import get_settings, seed_chart
 from app.models.models import FinInvoice, FinLedgerLine, FinParty, FinPayment, User, WorkflowApproval
-from app.tools.executors.finance import draft_reminder, draft_voucher
+from app.tools.executors.finance import draft_reminder, draft_voucher, list_finance_drafts
 from app.tools.registry import ToolContext, tool_registry
-from app.tools.schemas import DraftPaymentReminderInput, DraftPaymentVoucherInput
+from app.tools.schemas import DraftPaymentReminderInput, DraftPaymentVoucherInput, FinanceDraftsInput
 from tests.finance_helpers import login, person, unique_tax_code
 
 
@@ -95,6 +95,33 @@ def test_a_voucher_goes_from_draft_to_scheduled_to_paid(client, tenant_id, clerk
     assert again.status_code == 409
 
 
+def test_drafts_are_listed_with_their_status_and_whose_decision_they_wait_for(
+    client, tenant_id, clerk, signer, transactional_db_session
+):
+    db = transactional_db_session
+    vendor = _party(db, tenant_id, "VENDOR", bank_account="0099887766")
+    voucher = draft_payment_voucher(db, clerk, [_posted(db, tenant_id, vendor, "4000000").id])
+    db.commit()
+
+    def drafts(user, **filters):
+        request = FinanceDraftsInput.model_construct(
+            tenant_id=tenant_id, audit=None, **{"kind": None, "status": None, "scope": "ALL", "limit": 20, **filters},
+        )
+        return list_finance_drafts(ToolContext(db=db, actor=user), request)
+
+    mine = drafts(clerk, scope="MINE", kind="VOUCHER")
+    [item] = [row for row in mine["drafts"] if row["approval_id"] == str(voucher.id)]
+    assert (item["kind"], item["status"], item["amount"], item["payment"]) == ("Phiếu chi", "WAITING", "4000000.00", "chờ duyệt")
+    # The requester never decides their own draft; the signer does.
+    assert str(voucher.id) not in {row["approval_id"] for row in drafts(clerk, scope="TO_DECIDE")["drafts"]}
+    assert str(voucher.id) in {row["approval_id"] for row in drafts(signer, scope="TO_DECIDE", limit=50)["drafts"]}
+    signed = client.post(f"/api/v1/approvals/{voucher.id}/action", json={"action": "APPROVE"}, headers=login(client, signer))
+    assert signed.status_code == 200, signed.text
+    [item] = [row for row in drafts(clerk, scope="MINE", kind="VOUCHER")["drafts"] if row["approval_id"] == str(voucher.id)]
+    # Approved is not paid: the transfer is still to be made.
+    assert (item["status"], item["payment"]) == ("APPROVED", "đã duyệt, chưa chuyển tiền")
+
+
 def test_a_voucher_is_for_one_vendor_and_posted_purchases_only(tenant_id, clerk, transactional_db_session):
     db = transactional_db_session
     one, other = _party(db, tenant_id, "VENDOR"), _party(db, tenant_id, "VENDOR")
@@ -132,6 +159,8 @@ def test_a_reminder_is_only_sent_once_approved_and_keeps_its_figures(
         DraftPaymentReminderInput.model_construct(tenant_id=tenant_id, audit=None, party=customer.tax_code, level=2),
     )
     assert result["created"], result
+    # The AI service masks e-mail addresses in tool results; the reply must not need one.
+    assert "ketoan@khachhang.vn" not in result["reply"]
     approval = db.get(WorkflowApproval, uuid.UUID(result["approval_id"]))
     assert "12.000.000 ₫" in approval.payload["body"]
     assert f"hạn {(date.today() - timedelta(days=40)).strftime('%d/%m/%Y')}" in approval.payload["body"]
@@ -148,6 +177,14 @@ def test_a_reminder_is_only_sent_once_approved_and_keeps_its_figures(
     assert approval.payload["subject"] == "Nhắc thanh toán"
     assert approval.payload["recipient"] == "ketoan@khachhang.vn"
     assert approval.payload["delivery"]["status"] == "ACCEPTED"
+    # Another letter within the week is allowed, and says so to whoever drafts and signs it.
+    resent = draft_reminder(
+        ToolContext(db=db, actor=clerk),
+        DraftPaymentReminderInput.model_construct(tenant_id=tenant_id, audit=None, party=customer.tax_code, level=2),
+    )
+    assert resent["created"], resent
+    assert "đã được gửi thư nhắc nợ mức 2" in resent["reply"]
+    assert db.get(WorkflowApproval, uuid.UUID(resent["approval_id"])).payload["warnings"]
 
 
 def test_a_reminder_needs_an_email_and_a_debt(tenant_id, clerk, transactional_db_session):

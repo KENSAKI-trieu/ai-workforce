@@ -192,9 +192,42 @@ class AccountTrendInput(TenantToolInput):
 class ExpenseBreakdownInput(TenantToolInput):
     from_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="First period, YYYY-MM.")
     to_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Last period, YYYY-MM; the same as from_period for one month.")
-    group_by: Literal["account", "department"] = Field(
-        default="account", description="account: by expense account (641, 642 ...). department: by department.",
+    group_by: Literal["account", "department", "month"] = Field(
+        default="account",
+        description=(
+            "account: by expense account (641, 642 ...). department: by department. month: "
+            "month by month over the range, each with its change from the month before."
+        ),
     )
+    level: Literal[3, 4] = Field(
+        default=3, description="With group_by account: 3 for 641, 642 ...; 4 for their sub-accounts (6421, 6428 ...).",
+    )
+    keyword: str | None = Field(
+        default=None, max_length=100,
+        description=(
+            "Only the lines whose description contains these words, for a kind of cost with "
+            "no account of its own (\"quảng cáo\", \"vận chuyển\"). Accents and case are ignored."
+        ),
+    )
+
+
+class IncomeStatementInput(TenantToolInput):
+    from_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="First period, YYYY-MM.")
+    to_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Last period, YYYY-MM; the same as from_period for one month.")
+
+
+class FinanceDraftsInput(TenantToolInput):
+    kind: Literal["JOURNAL", "VOUCHER", "REMINDER"] | None = Field(
+        default=None, description="JOURNAL journal entries, VOUCHER payment vouchers, REMINDER payment reminders; omit for all.",
+    )
+    status: Literal["WAITING", "APPROVED", "REJECTED", "WITHDRAWN"] | None = Field(
+        default=None, description="WAITING for a decision, APPROVED, REJECTED or WITHDRAWN; omit for any.",
+    )
+    scope: Literal["MINE", "TO_DECIDE", "ALL"] = Field(
+        default="ALL",
+        description="MINE: drafts the user sent. TO_DECIDE: drafts waiting for the user's own decision. ALL: every finance draft.",
+    )
+    limit: int = Field(default=20, ge=1, le=50)
 
 
 class SpreadsheetListInput(TenantToolInput):

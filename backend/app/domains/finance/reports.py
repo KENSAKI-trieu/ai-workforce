@@ -15,6 +15,7 @@ balance sheet reports them, not a debit of 70.
 from __future__ import annotations
 
 import io
+import unicodedata
 import uuid
 from collections import defaultdict
 from dataclasses import dataclass
@@ -23,11 +24,11 @@ from decimal import Decimal
 from typing import Any, Iterable
 
 from openpyxl import Workbook
-from sqlalchemy import and_, func, or_
+from sqlalchemy import and_, case, func, or_
 from sqlalchemy.orm import Session
 
 from app.domains.finance.charts import normal_balance
-from app.domains.finance.money import ZERO, normalize_period, plain
+from app.domains.finance.money import ZERO, format_vnd, normalize_period, plain
 from app.models.models import (
     FinAccount,
     FinBudget,
@@ -134,6 +135,33 @@ def _account(db: Session, tenant_id: uuid.UUID, code: str) -> FinAccount | None:
     return db.query(FinAccount).filter(FinAccount.tenant_id == tenant_id, FinAccount.code == code).first()
 
 
+def _vn_month(period: str) -> str:
+    return f"{period[5:7]}/{period[:4]}"
+
+
+def coverage_note(db: Session, tenant_id: uuid.UUID, period: str) -> str | None:
+    """What the books cannot say about `period`: before they begin, or after the last entry.
+
+    A balance asked for a month the books have nothing for is still a number -- zero, or
+    the last month's balance carried forward -- and read without this it passes for that
+    month's real figure.
+    """
+    first, last = db.query(
+        func.min(FinLedgerLine.period),
+        func.max(case((FinLedgerLine.source != "OPENING", FinLedgerLine.period))),
+    ).filter(FinLedgerLine.tenant_id == tenant_id).one()
+    if first is None:
+        return "Sổ sách chưa có số liệu nào."
+    if period < first:
+        return f"Sổ sách chỉ có số liệu từ kỳ {_vn_month(first)}; kỳ {_vn_month(period)} không có số liệu."
+    if last is not None and period > last:
+        return (
+            f"Sổ sách chưa có phát sinh nào sau kỳ {_vn_month(last)}: số dư kỳ {_vn_month(period)} "
+            "là số dư mang sang, chưa phải số liệu của kỳ đó."
+        )
+    return None
+
+
 def account_balance(db: Session, tenant_id: uuid.UUID, code: str, period: str) -> dict[str, Any]:
     period = normalize_period(period)
     account = _account(db, tenant_id, code)
@@ -159,6 +187,7 @@ def account_balance(db: Session, tenant_id: uuid.UUID, code: str, period: str) -
         "period_credit": plain(period_credit),
         "closing": _side_of(*_sides(closed.values(), two_sided)),
         "ledger_rows": int(rows or 0),
+        "note": coverage_note(db, tenant_id, period),
         "source": f"fin_ledger_lines account {code}* through {period}",
     }
 
@@ -209,6 +238,7 @@ def trial_balance(db: Session, tenant_id: uuid.UUID, period: str, *, level: int 
         "totals": {key: plain(value) for key, value in totals.items()},
         "balanced": totals["period_debit"] == totals["period_credit"]
         and totals["closing_debit"] == totals["closing_credit"],
+        "note": coverage_note(db, tenant_id, period),
         "source": f"fin_ledger_lines through {period}",
     }
 
@@ -230,7 +260,6 @@ def ledger_detail(
     running balance -- it would net one customer's debt against another's advance -- so
     its lines carry none; asking for one party gives it.
     """
-    period = f"{start.year:04d}-{start.month:02d}"
     conditions = [_under(code)]
     if party_id:
         conditions.append(FinLedgerLine.party_id == party_id)
@@ -240,13 +269,21 @@ def ledger_detail(
         FinLedgerLine.source != "OPENING",
     )
     split = _two_sided(code) and party_id is None
+    # Opening balances are dated the first day of the period they were loaded for. One
+    # dated inside the range -- the books start mid-year and the question reaches back
+    # before that -- still opens it: there is nothing earlier, and leaving it out dropped
+    # the whole balance (a payable of 350 read as 130).
     opened, closed = _closing_nets(
         _detail_sums(
             db, tenant_id, *conditions,
-            or_(FinLedgerLine.entry_date < start, and_(FinLedgerLine.period == period, FinLedgerLine.source == "OPENING")),
+            or_(
+                and_(FinLedgerLine.entry_date < start, FinLedgerLine.source != "OPENING"),
+                and_(FinLedgerLine.source == "OPENING", FinLedgerLine.entry_date <= end),
+            ),
         ),
         _detail_sums(db, tenant_id, *conditions, *in_range),
     )
+    books_start = db.query(func.min(FinLedgerLine.entry_date)).filter(FinLedgerLine.tenant_id == tenant_id).scalar()
     range_debit, range_credit = _sums(db, tenant_id, *conditions, *in_range)
     running = sum(opened.values(), ZERO)
     query = db.query(FinLedgerLine).filter(
@@ -277,6 +314,11 @@ def ledger_detail(
         "lines": lines,
         "line_count": total,
         "truncated": total > len(lines),
+        "note": (
+            f"Sổ sách bắt đầu từ {books_start:%d/%m/%Y}: trước đó không có số liệu, nên số dư "
+            "đầu kỳ là số dư nhập lúc bắt đầu sổ."
+            if books_start is not None and books_start > start else None
+        ),
         "source": f"fin_ledger_lines account {code}* {start.isoformat()}..{end.isoformat()}",
     }
 
@@ -304,6 +346,10 @@ def budget_vs_actual(
             "budget": plain(budget.amount),
             "actual": plain(actual),
             "variance": plain(variance),
+            # Both sides of the variance by name: read alone, a variance of -28 was
+            # reported as "28 left, minus" -- a negative amount still to spend.
+            "remaining": plain(max(-variance, ZERO)),
+            "over_amount": plain(max(variance, ZERO)),
             "used_percent": plain(actual * 100 / budget.amount) if budget.amount else None,
             # Given outright so a reply never has to work a percentage out itself.
             "over_percent": plain(variance * 100 / budget.amount) if budget.amount and variance > 0 else None,
@@ -311,6 +357,7 @@ def budget_vs_actual(
         })
         totals["budget"] += budget.amount
         totals["actual"] += actual
+    total_variance = totals["actual"] - totals["budget"]
     return {
         "period": period,
         "department": department.upper() if department else None,
@@ -318,7 +365,9 @@ def budget_vs_actual(
         "totals": {
             "budget": plain(totals["budget"]),
             "actual": plain(totals["actual"]),
-            "variance": plain(totals["actual"] - totals["budget"]),
+            "variance": plain(total_variance),
+            "remaining": plain(max(-total_variance, ZERO)),
+            "over_amount": plain(max(total_variance, ZERO)),
         },
         "source": f"fin_budgets + fin_ledger_lines {period}",
     }
@@ -451,6 +500,10 @@ def aging(
         })
     party_rows = sorted(parties.values(), key=lambda row: row["total"], reverse=True)
     invoices.sort(key=lambda row: row["days_overdue"], reverse=True)
+    # Against part of a party's debts the ledger has nothing to compare with.
+    ledger = None if min_days_overdue is not None else _ledger_check(
+        db, tenant_id, direction, as_of, party_id, party_rows, names,
+    )
     return {
         "kind": "RECEIVABLE" if direction == "OUT" else "PAYABLE",
         "as_of": as_of.isoformat(),
@@ -462,8 +515,79 @@ def aging(
         ],
         "invoices": invoices[:invoice_limit] if invoice_limit else invoices,
         "invoice_count": len(invoices),
-        "source": f"fin_invoices POSTED {direction} - fin_payments PAID, as of {as_of.isoformat()}",
+        "ledger_differences": ledger,
+        "source": f"fin_invoices POSTED {direction} - fin_payments PAID, as of {as_of.isoformat()}"
+        + (f"; fin_ledger_lines {CONTROL_ACCOUNTS[direction]}* by party" if ledger is not None else ""),
     }
+
+
+# The account each side's debts sit on in the ledger.
+CONTROL_ACCOUNTS = {"OUT": "131", "IN": "331"}
+
+
+def _ledger_check(
+    db: Session,
+    tenant_id: uuid.UUID,
+    direction: str,
+    as_of: date,
+    party_id: uuid.UUID | None,
+    party_rows: list[dict[str, Any]],
+    parties: dict[uuid.UUID, FinParty],
+) -> list[dict[str, Any]] | None:
+    """Parties whose open invoices and ledger balance (131 or 331) disagree.
+
+    Aging reads invoices, so money received or paid that was never matched to an invoice
+    -- a customer's advance, a payment booked straight to the ledger -- leaves the invoice
+    open while the ledger has it settled. Read alone, aging then reports the customer who
+    paid in advance as owing the full invoice. None when the ledger does not follow
+    parties on this account at all, as then every party would differ.
+    """
+    control = CONTROL_ACCOUNTS[direction]
+    conditions = [
+        FinLedgerLine.tenant_id == tenant_id,
+        _under(control),
+        FinLedgerLine.party_id.isnot(None),
+        FinLedgerLine.entry_date <= as_of,
+    ]
+    if db.query(FinLedgerLine.id).filter(*conditions).first() is None:
+        return None
+    if party_id:
+        conditions.append(FinLedgerLine.party_id == party_id)
+    nets = {
+        key: Decimal(debit or 0) - Decimal(credit or 0)
+        for key, debit, credit in db.query(
+            FinLedgerLine.party_id, func.sum(FinLedgerLine.debit), func.sum(FinLedgerLine.credit),
+        ).filter(*conditions).group_by(FinLedgerLine.party_id)
+    }
+    open_by_party = {row["party_id"]: row["total"] for row in party_rows if row["party_id"]}
+    differences = []
+    for key in sorted(set(nets) | {uuid.UUID(value) for value in open_by_party}, key=str):
+        net = nets.get(key, ZERO)
+        # What the party owes us (131) or we owe them (331), as the ledger has it.
+        owed = net if direction == "OUT" else -net
+        on_invoices = open_by_party.get(str(key), ZERO)
+        if owed == on_invoices:
+            continue
+        party = parties.get(key)
+        if owed < 0:
+            reading = (
+                f"sổ cái TK {control} ghi {'khách trả trước' if direction == 'OUT' else 'đã ứng trước cho nhà cung cấp'} "
+                f"{format_vnd(-owed)}"
+            )
+        else:
+            reading = f"sổ cái TK {control} ghi còn {'phải thu' if direction == 'OUT' else 'phải trả'} {format_vnd(owed)}"
+        differences.append({
+            "party_id": str(key),
+            "party": party.name if party else None,
+            "tax_code": party.tax_code if party else None,
+            "open_on_invoices": plain(on_invoices),
+            "ledger_balance": _side(net),
+            "note": (
+                f"Theo hoá đơn còn {format_vnd(on_invoices)}, nhưng {reading}: có khoản thu/chi "
+                "chưa được cấn trừ với hoá đơn, hoặc hoá đơn chưa được nhập."
+            ),
+        })
+    return differences
 
 
 def payment_schedule(db: Session, tenant_id: uuid.UUID, as_of: date, horizon_days: int) -> dict[str, Any]:
@@ -549,6 +673,46 @@ def account_trend(db: Session, tenant_id: uuid.UUID, code: str, start: str, end:
 EXPENSE_PREFIXES = ("6", "8")
 
 
+def _period_range(periods: list[str]):
+    return and_(
+        FinLedgerLine.period >= periods[0], FinLedgerLine.period <= periods[-1],
+        FinLedgerLine.source != "OPENING",
+    )
+
+
+def _closing_vouchers(db: Session, tenant_id: uuid.UUID, in_range) -> set[tuple[Any, Any]]:
+    """(voucher, day) of every period-end close to 911 in the range: not income, not spending."""
+    return {
+        (voucher, day)
+        for voucher, day in db.query(FinLedgerLine.voucher_no, FinLedgerLine.entry_date).filter(
+            FinLedgerLine.tenant_id == tenant_id, in_range,
+            FinLedgerLine.account_code.like("911%"), FinLedgerLine.voucher_no.isnot(None),
+        ).distinct()
+    }
+
+
+def fold_text(value: Any) -> str:
+    """Lower case without Vietnamese accents, so "Quảng cáo" finds "QUANG CAO" and back.
+
+    Done here rather than in SQL: ILIKE folds non-ASCII case only under some database
+    locales, and nothing folds accents without an extension.
+    """
+    text = unicodedata.normalize("NFD", str(value or "")).replace("đ", "d").replace("Đ", "D")
+    return " ".join("".join(ch for ch in text if unicodedata.category(ch) != "Mn").lower().split())
+
+
+def _change(previous: Decimal | None, current: Decimal) -> dict[str, Any]:
+    """How a month moved from the one before, given outright: a reply never works it out."""
+    if previous is None:
+        return {"change": None, "change_amount": None, "change_percent": None}
+    difference = current - previous
+    return {
+        "change": "INCREASE" if difference > 0 else "DECREASE" if difference < 0 else "SAME",
+        "change_amount": plain(abs(difference)),
+        "change_percent": plain(abs(difference) * 100 / abs(previous)) if previous else None,
+    }
+
+
 def expense_breakdown(
     db: Session,
     tenant_id: uuid.UUID,
@@ -557,57 +721,168 @@ def expense_breakdown(
     *,
     group_by: str = "account",
     level: int = 3,
+    keyword: str | None = None,
 ) -> dict[str, Any]:
-    """What was spent between two periods, by expense account or by department."""
+    """What was spent between two periods, by expense account, department or month.
+
+    `keyword` keeps the lines whose description contains it: a cost the chart of accounts
+    has no account for -- advertising, freight -- is only findable by what the line says.
+    """
     periods = periods_between(start, end)
-    in_range = and_(
-        FinLedgerLine.period >= periods[0], FinLedgerLine.period <= periods[-1],
-        FinLedgerLine.source != "OPENING",
-    )
-    closing_vouchers = db.query(FinLedgerLine.voucher_no, FinLedgerLine.entry_date).filter(
-        FinLedgerLine.tenant_id == tenant_id, in_range,
-        FinLedgerLine.account_code.like("911%"), FinLedgerLine.voucher_no.isnot(None),
-    ).distinct().all()
-    closing = {(voucher, day) for voucher, day in closing_vouchers}
-    key = (
-        func.substr(FinLedgerLine.account_code, 1, level)
-        if group_by == "account"
-        else func.coalesce(func.upper(FinLedgerLine.department), "")
-    )
+    in_range = _period_range(periods)
+    closing = _closing_vouchers(db, tenant_id, in_range)
+    if group_by == "account":
+        key = func.substr(FinLedgerLine.account_code, 1, level)
+    elif group_by == "month":
+        key = FinLedgerLine.period
+    else:
+        key = func.coalesce(func.upper(FinLedgerLine.department), "")
+    wanted = fold_text(keyword) if keyword and keyword.strip() else None
+    columns = [key, FinLedgerLine.voucher_no, FinLedgerLine.entry_date]
+    if wanted:
+        columns.append(FinLedgerLine.description)
     sums: dict[str, Decimal] = defaultdict(lambda: ZERO)
-    for group, voucher, day, debit, credit in db.query(
-        key, FinLedgerLine.voucher_no, FinLedgerLine.entry_date,
-        func.sum(FinLedgerLine.debit), func.sum(FinLedgerLine.credit),
+    for group, voucher, day, *rest in db.query(
+        *columns, func.sum(FinLedgerLine.debit), func.sum(FinLedgerLine.credit),
     ).filter(
         FinLedgerLine.tenant_id == tenant_id, in_range,
         or_(*(FinLedgerLine.account_code.like(f"{prefix}%") for prefix in EXPENSE_PREFIXES)),
-    ).group_by(key, FinLedgerLine.voucher_no, FinLedgerLine.entry_date):
+    ).group_by(*columns):
         if (voucher, day) in closing:
             continue
+        if wanted:
+            description, debit, credit = rest
+            if wanted not in fold_text(description):
+                continue
+        else:
+            debit, credit = rest
         sums[group or ""] += Decimal(debit or 0) - Decimal(credit or 0)
-    names = {
-        account.code: account.name
-        for account in db.query(FinAccount).filter(FinAccount.tenant_id == tenant_id)
-    } if group_by == "account" else {}
     total = sum(sums.values(), ZERO)
-    rows = [
-        {
-            "key": group,
-            "name": names.get(group) if group_by == "account" else (group or "Chưa gắn phòng ban"),
-            "amount": plain(amount),
-            # Given outright so a reply never has to work a share out itself.
-            "share_percent": plain(amount * 100 / total) if total > 0 else None,
-        }
-        for group, amount in sorted(sums.items(), key=lambda item: item[1], reverse=True)
-        if amount != 0
-    ]
+    if group_by == "month":
+        # Every month of the range, in order, an empty one as zero: a month with no such
+        # cost is part of the comparison, not a gap in it.
+        rows, previous = [], None
+        for period in periods:
+            amount = sums.get(period, ZERO)
+            rows.append({"key": period, "name": _vn_month(period), "amount": plain(amount), **_change(previous, amount)})
+            previous = amount
+    else:
+        names = {
+            account.code: account.name
+            for account in db.query(FinAccount).filter(FinAccount.tenant_id == tenant_id)
+        } if group_by == "account" else {}
+        rows = [
+            {
+                "key": group,
+                "name": names.get(group) if group_by == "account" else (group or "Chưa gắn phòng ban"),
+                "amount": plain(amount),
+                # Given outright so a reply never has to work a share out itself.
+                "share_percent": plain(amount * 100 / total) if total > 0 else None,
+            }
+            for group, amount in sorted(sums.items(), key=lambda item: item[1], reverse=True)
+            if amount != 0
+        ]
     return {
         "from": periods[0],
         "to": periods[-1],
         "group_by": group_by,
+        "level": level if group_by == "account" else None,
+        "keyword": keyword.strip() if wanted else None,
         "rows": rows,
         "total": plain(total),
-        "source": f"fin_ledger_lines accounts 6*, 8* {periods[0]}..{periods[-1]} excluding closes to 911",
+        "source": (
+            f"fin_ledger_lines accounts 6*, 8* {periods[0]}..{periods[-1]} excluding closes to 911"
+            + (f", description contains “{keyword.strip()}”" if wanted else "")
+        ),
+    }
+
+
+@dataclass(frozen=True)
+class StatementLine:
+    code: str
+    label: str
+    # (account prefix, sign): +1 adds debit minus credit, -1 adds credit minus debit.
+    accounts: tuple[tuple[str, int], ...] = ()
+    # Lines computed from others: (code, sign).
+    formula: tuple[tuple[str, int], ...] = ()
+
+
+def _statement_lines(chart: str) -> tuple[StatementLine, ...]:
+    """Báo cáo kết quả hoạt động kinh doanh, in the order and numbering of form B02.
+
+    TT133 has no 641 and no 521: selling costs are 6421 under 642, and deductions are
+    debited to 511 directly, which the net of 511 already takes off.
+    """
+    if chart == "TT133":
+        selling, admin = (("6421", 1),), (("642", 1), ("6421", -1))
+    else:
+        selling, admin = (("641", 1),), (("642", 1),)
+    return (
+        StatementLine("01", "Doanh thu bán hàng và cung cấp dịch vụ", (("511", -1),)),
+        StatementLine("02", "Các khoản giảm trừ doanh thu", (("521", 1),)),
+        StatementLine("10", "Doanh thu thuần", formula=(("01", 1), ("02", -1))),
+        StatementLine("11", "Giá vốn hàng bán", (("632", 1),)),
+        StatementLine("20", "Lợi nhuận gộp", formula=(("10", 1), ("11", -1))),
+        StatementLine("21", "Doanh thu hoạt động tài chính", (("515", -1),)),
+        StatementLine("22", "Chi phí tài chính", (("635", 1),)),
+        StatementLine("25", "Chi phí bán hàng", selling),
+        StatementLine("26", "Chi phí quản lý doanh nghiệp", admin),
+        StatementLine("30", "Lợi nhuận thuần từ hoạt động kinh doanh",
+                      formula=(("20", 1), ("21", 1), ("22", -1), ("25", -1), ("26", -1))),
+        StatementLine("31", "Thu nhập khác", (("711", -1),)),
+        StatementLine("32", "Chi phí khác", (("811", 1),)),
+        StatementLine("40", "Lợi nhuận khác", formula=(("31", 1), ("32", -1))),
+        StatementLine("50", "Tổng lợi nhuận kế toán trước thuế", formula=(("30", 1), ("40", 1))),
+        StatementLine("51", "Chi phí thuế thu nhập doanh nghiệp", (("821", 1),)),
+        StatementLine("60", "Lợi nhuận sau thuế thu nhập doanh nghiệp", formula=(("50", 1), ("51", -1))),
+    )
+
+
+def income_statement(db: Session, tenant_id: uuid.UUID, start: str, end: str, *, chart: str = "TT200") -> dict[str, Any]:
+    """Kết quả kinh doanh between two periods, from the ledger's movements.
+
+    Read from the revenue and expense lines themselves, period-end closes to 911 left
+    out: a company that closes every month and one that never closes get the same figures.
+    """
+    periods = periods_between(start, end)
+    in_range = _period_range(periods)
+    closing = _closing_vouchers(db, tenant_id, in_range)
+    nets: dict[str, Decimal] = defaultdict(lambda: ZERO)
+    for code, voucher, day, debit, credit in db.query(
+        FinLedgerLine.account_code, FinLedgerLine.voucher_no, FinLedgerLine.entry_date,
+        func.sum(FinLedgerLine.debit), func.sum(FinLedgerLine.credit),
+    ).filter(
+        FinLedgerLine.tenant_id == tenant_id, in_range,
+        or_(*(FinLedgerLine.account_code.like(f"{prefix}%") for prefix in ("5", "6", "7", "8"))),
+    ).group_by(FinLedgerLine.account_code, FinLedgerLine.voucher_no, FinLedgerLine.entry_date):
+        if (voucher, day) in closing:
+            continue
+        nets[code] += Decimal(debit or 0) - Decimal(credit or 0)
+    values: dict[str, Decimal] = {}
+    rows = []
+    for line in _statement_lines(chart):
+        if line.formula:
+            amount = sum((values[code] * sign for code, sign in line.formula), ZERO)
+        else:
+            amount = sum(
+                (net * sign for prefix, sign in line.accounts for code, net in nets.items() if code.startswith(prefix)),
+                ZERO,
+            )
+        values[line.code] = amount
+        rows.append({"code": line.code, "label": line.label, "amount": plain(amount), "subtotal": bool(line.formula)})
+    note = coverage_note(db, tenant_id, periods[-1])
+    if not any(code.startswith(("5", "7")) for code in nets):
+        note = (note + " " if note else "") + "Sổ sách không có dòng doanh thu nào trong khoảng này."
+    return {
+        "from": periods[0],
+        "to": periods[-1],
+        "chart_of_accounts": chart,
+        "rows": rows,
+        "revenue_net": plain(values["10"]),
+        "profit_before_tax": plain(values["50"]),
+        "profit_after_tax": plain(values["60"]),
+        "note": note,
+        "source": f"fin_ledger_lines accounts 5*-8* {periods[0]}..{periods[-1]} excluding closes to 911",
     }
 
 

@@ -13,7 +13,7 @@ from datetime import date
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Depends, File, HTTPException, Request, Response, UploadFile
+from fastapi import APIRouter, Depends, File, HTTPException, Query, Request, Response, UploadFile
 from pydantic import BaseModel, Field
 from sqlalchemy.orm import Session
 
@@ -46,6 +46,7 @@ from app.domains.finance.reports import (
     aging,
     budget_vs_actual,
     expense_breakdown,
+    income_statement,
     journal_workbook,
     own_budget_department,
     payment_schedule,
@@ -67,6 +68,7 @@ from app.domains.finance.visuals import (
     balance_chart,
     budget_chart,
     expense_chart,
+    income_chart,
     schedule_chart,
     sheet_chart,
     trend_chart,
@@ -694,21 +696,40 @@ def report_account_trend(
     )
 
 
-@router.get("/reports/expenses", summary="Expenses by account or department, with a chart")
+@router.get("/reports/expenses", summary="Expenses by account, department or month, with a chart")
 def report_expenses(
     from_period: str,
     to_period: str,
     group_by: str = "account",
+    level: int = 3,
+    keyword: str | None = Query(default=None, max_length=100),
     db: Session = Depends(get_db),
     current_user: User = Depends(PermissionRequired("finance.ledger.view")),
 ):
-    if group_by not in {"account", "department"}:
-        raise HTTPException(status_code=422, detail="group_by must be account or department")
+    if group_by not in {"account", "department", "month"}:
+        raise HTTPException(status_code=422, detail="group_by must be account, department or month")
     return _with_charts(
         expense_breakdown(
-            db, current_user.tenant_id, _period_or_422(from_period), _period_or_422(to_period), group_by=group_by,
+            db, current_user.tenant_id, _period_or_422(from_period), _period_or_422(to_period),
+            group_by=group_by, level=4 if level == 4 else 3, keyword=keyword,
         ),
         expense_chart,
+    )
+
+
+@router.get("/reports/income-statement", summary="Income statement between two periods, with a chart")
+def report_income_statement(
+    from_period: str,
+    to_period: str,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(PermissionRequired("finance.ledger.view")),
+):
+    chart = get_settings(db, current_user.tenant_id).chart or "TT200"
+    return _with_charts(
+        income_statement(
+            db, current_user.tenant_id, _period_or_422(from_period), _period_or_422(to_period), chart=chart,
+        ),
+        income_chart,
     )
 
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import re
 from datetime import datetime, timedelta, timezone
 from typing import Any, Protocol
 
@@ -16,6 +17,30 @@ from app.agents.base import notices
 from app.agents.base.state import WorkforceAgentState
 
 VIETNAM_TIME = timezone(timedelta(hours=7))
+
+# Words that mark a message as English, and Vietnamese words that outvote them. Only an
+# English message gets a hint: everything else is left to the model as before.
+_ENGLISH_WORDS = frozenset(
+    "what which who whom whose when where why how is are was were the an of to for and by "
+    "much many show me please total did does do our we us my this that these those from with".split()
+)
+_VIETNAMESE_WORDS = frozenset(
+    "là của cho tôi có không và bao nhiêu nào được những các này đã đang sẽ thì mà với theo "
+    "hãy giúp xem bạn chúng ta mình".split()
+)
+
+
+def reply_language(text: str) -> str | None:
+    """"English" when the user's message is plainly English, else None.
+
+    The books, the tool results and most of the prompt are Vietnamese, and a small model
+    followed them rather than a rule to answer in the user's language: an English question
+    got a Vietnamese answer. A Vietnamese name inside an English question stays English.
+    """
+    words = re.findall(r"[^\W\d_]+", text.lower())
+    english = sum(word in _ENGLISH_WORDS for word in words)
+    vietnamese = sum(word in _VIETNAMESE_WORDS for word in words)
+    return "English" if english >= 2 and english > vietnamese else None
 
 
 class GraphDecision(BaseModel):
@@ -98,6 +123,8 @@ def decision_system_prompt(
         "orchestration tells the user the documents do not cover it."
         "\n\nWhen final_step is true, no tool can run any more: return a final answer "
         "from what you already have, or answerable false."
+        "\n\nWhen the input has reply_language, write final_answer in that language, "
+        "keeping names, account numbers and amounts exactly as the sources give them."
     )
     if restricted_tools:
         # Filtered out of the contracts by the gateway's role ACL, so the model never saw
@@ -178,6 +205,17 @@ class LangChainDecisionProvider:
             "user_messages": state.get("messages", []),
             "final_step": bool(state.get("final_step")),
         }
+        latest = next(
+            (
+                str(message.get("content") or "")
+                for message in reversed(state.get("messages") or [])
+                if str(message.get("role", "")).lower() in {"user", "human"}
+            ),
+            "",
+        )
+        language = reply_language(latest)
+        if language:
+            prompt["reply_language"] = language
         result = self.agent.invoke(
             {"messages": [{"role": "user", "content": json.dumps(prompt, ensure_ascii=False, default=str)}]},
             context=self.runtime_context,

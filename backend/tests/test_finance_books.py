@@ -151,6 +151,40 @@ def test_a_balanced_ledger_imports_and_can_be_undone(client, manager_headers, tr
     assert client.delete(f"/api/v1/finance/import/batches/{batch_id}", headers=manager_headers).status_code == 409
 
 
+def test_the_same_ledger_file_is_not_imported_twice(client, manager_headers, transactional_db_session):
+    voucher = f"DUP{uuid.uuid4().hex[:6]}"
+    rows = [
+        ("07/09/2026", voucher, "Trả tiền điện", "6427", "2.000.000", None, None),
+        ("07/09/2026", voucher, "Trả tiền điện", "1121", None, "2.000.000", None),
+        # Lines without a voucher number are the same line when everything they say is.
+        ("08/09/2026", None, f"Phí ngân hàng {voucher}", "6428", "11.000", None, None),
+        ("08/09/2026", None, f"Phí ngân hàng {voucher}", "1121", None, "11.000", None),
+    ]
+    first = upload(client, manager_headers, "ledger", xlsx(LEDGER_HEADER, rows))
+    assert first.status_code == 200, first.text
+    before = transactional_db_session.query(FinLedgerLine).count()
+    again = upload(client, manager_headers, "ledger", xlsx(LEDGER_HEADER, rows))
+    assert again.status_code == 422
+    errors = again.json()["detail"]["errors"]
+    assert any(f"Chứng từ {voucher} ngày 07/09/2026 đã có trong sổ" in error["message"] for error in errors)
+    assert sum("giống hệt một dòng đã có" in error["message"] for error in errors) == 2
+    assert transactional_db_session.query(FinLedgerLine).count() == before
+    # Undone, the same file goes in again.
+    assert client.delete(f"/api/v1/finance/import/batches/{first.json()['id']}", headers=manager_headers).status_code == 200
+    assert upload(client, manager_headers, "ledger", xlsx(LEDGER_HEADER, rows)).status_code == 200
+
+
+def test_a_second_set_of_opening_balances_is_refused(client, manager_headers, transactional_db_session):
+    header = ("Kỳ (YYYY-MM)", "Số TK", "Dư Nợ", "Dư Có")
+    data = xlsx(header, [("2026-01", "1111", "5.000.000", None), ("2026-01", "411", None, "5.000.000")])
+    first = upload(client, manager_headers, "opening_balances", data)
+    # The workspace may already hold opening balances (a seeded demo); then the first is refused too.
+    assert first.status_code in (200, 422), first.text
+    second = upload(client, manager_headers, "opening_balances", data)
+    assert second.status_code == 422
+    assert any("đã có số dư đầu kỳ" in error["message"] for error in second.json()["detail"]["errors"])
+
+
 def test_an_unbalanced_voucher_rejects_the_whole_file(client, manager_headers, transactional_db_session):
     before = transactional_db_session.query(FinLedgerLine).count()
     data = xlsx(LEDGER_HEADER, [

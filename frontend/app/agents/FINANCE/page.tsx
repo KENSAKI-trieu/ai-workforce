@@ -76,6 +76,8 @@ const TOOL_LABELS: Record<string, string> = {
   get_trial_balance: "Bảng cân đối phát sinh",
   get_ledger_detail: "Sổ chi tiết",
   get_expense_breakdown: "Cơ cấu chi phí",
+  get_income_statement: "Kết quả kinh doanh",
+  list_finance_drafts: "Phiếu đã gửi duyệt",
   budget_vs_actual: "Ngân sách",
   ar_ap_aging: "Tuổi nợ",
   payment_schedule: "Lịch trả tiền",

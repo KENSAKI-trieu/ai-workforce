@@ -8,7 +8,16 @@ from decimal import Decimal
 
 import pytest
 
-from app.domains.finance.reports import account_balance, aging, ledger_detail, payment_schedule, trial_balance
+from app.domains.finance.reports import (
+    account_balance,
+    aging,
+    expense_breakdown,
+    income_statement,
+    ledger_detail,
+    payment_schedule,
+    trial_balance,
+)
+from app.domains.finance.visuals import expense_chart, income_chart
 from app.domains.finance.settings import get_settings, seed_chart
 from app.models.models import FinBudget, FinInvoice, FinLedgerLine, FinParty, FinPayment, User
 from app.tools.executors.finance import get_budget_vs_actual, lookup_invoices
@@ -99,6 +108,8 @@ def test_someone_with_only_their_own_budget_box_sees_only_their_department(tenan
     own = ask(marketer)
     assert [row["department"] for row in own["rows"]] == ["MARKETING"]
     assert own["rows"][0]["over_budget"] and own["rows"][0]["over_percent"] == "20.00"
+    # Both sides by name: a variance alone read as "-10 left".
+    assert (own["rows"][0]["over_amount"], own["rows"][0]["remaining"]) == ("10000000.00", "0.00")
     refused = ask(marketer, "SALES")
     assert refused["found"] is False
     controller = person(db, "finance.ledger.view")
@@ -270,3 +281,128 @@ def test_invoices_are_found_by_their_counterparty_not_by_the_company_itself(tena
     assert find(f"Chính {marker}") == 0
     assert find(f"Khách {marker}") == 1
     assert find(customer.tax_code) == 1
+
+
+def test_a_range_reaching_before_the_books_start_still_opens_with_the_loaded_balance(tenant_id, transactional_db_session):
+    db = transactional_db_session
+    vendor = FinParty(tenant_id=tenant_id, kind="VENDOR", tax_code=unique_tax_code(), name="NCC đầu kỳ giữa năm")
+    db.add(vendor)
+    db.flush()
+    account = _unique("3318")
+    # The books start in August: its opening balance is dated 01/08.
+    _line(db, tenant_id, account, date(2045, 8, 1), credit="220000000", source="OPENING", party_id=vendor.id)
+    _line(db, tenant_id, account, date(2045, 9, 3), credit="120000000", party_id=vendor.id)
+    _line(db, tenant_id, account, date(2045, 9, 25), debit="100000000", party_id=vendor.id)
+    db.commit()
+    # Asked from 01/01, the opening balance used to drop out: 20 instead of 240.
+    year = ledger_detail(db, tenant_id, account, date(2045, 1, 1), date(2045, 12, 31), party_id=vendor.id)
+    assert year["opening"] == {"debit": "0.00", "credit": "220000000.00"}
+    assert (year["period_debit"], year["period_credit"]) == ("100000000.00", "120000000.00")
+    assert year["closing"] == {"debit": "0.00", "credit": "240000000.00"}
+    september = ledger_detail(db, tenant_id, account, date(2045, 9, 1), date(2045, 9, 30), party_id=vendor.id)
+    assert september["closing"] == year["closing"]
+    # A range wholly before the opening balance has nothing to open with.
+    before = ledger_detail(db, tenant_id, account, date(2045, 1, 1), date(2045, 6, 30), party_id=vendor.id)
+    assert before["closing"] == {"debit": "0.00", "credit": "0.00"}
+
+
+def test_a_range_before_the_first_entry_says_the_books_start_later(tenant_id, transactional_db_session):
+    db = transactional_db_session
+    _line(db, tenant_id, "1121", date(2045, 9, 2), debit="1")
+    db.commit()
+    detail = ledger_detail(db, tenant_id, "1121", date(1990, 1, 1), date(1990, 12, 31))
+    assert detail["note"] and "bắt đầu từ" in detail["note"]
+    assert ledger_detail(db, tenant_id, "1121", date(2045, 9, 1), date(2045, 9, 30))["note"] is None
+
+
+def test_a_month_after_the_last_entry_is_flagged_as_carried_forward(tenant_id, transactional_db_session):
+    db = transactional_db_session
+    _line(db, tenant_id, "1121", date(2045, 9, 2), debit="1")
+    db.commit()
+    assert "chưa có phát sinh nào sau kỳ" in account_balance(db, tenant_id, "511", "2099-12")["note"]
+    assert "chưa có phát sinh nào sau kỳ" in trial_balance(db, tenant_id, "2099-12")["note"]
+    assert "chỉ có số liệu từ kỳ" in account_balance(db, tenant_id, "511", "1990-01")["note"]
+    assert account_balance(db, tenant_id, "1121", "2045-09")["note"] is None
+
+
+def test_aging_says_when_the_ledger_has_a_customer_advance_the_invoices_miss(tenant_id, transactional_db_session):
+    db = transactional_db_session
+    customer = FinParty(tenant_id=tenant_id, kind="CUSTOMER", tax_code=unique_tax_code(), name="Khách ứng trước")
+    db.add(customer)
+    db.flush()
+    db.add(FinInvoice(
+        tenant_id=tenant_id, direction="OUT", party_id=customer.id, seller_tax_code="", series="UT", number="1",
+        issue_date=date(2046, 1, 5), due_date=date(2046, 2, 5), status="POSTED",
+        amount_before_tax=Decimal("90000000"), vat_amount=Decimal("0"), total_amount=Decimal("90000000"),
+    ))
+    # Booked to the ledger, never matched to the invoice: 120 received against 90 owed.
+    _line(db, tenant_id, "131", date(2046, 1, 5), debit="90000000", party_id=customer.id)
+    _line(db, tenant_id, "131", date(2046, 1, 20), credit="120000000", party_id=customer.id)
+    db.commit()
+    report = aging(db, tenant_id, "OUT", date(2046, 3, 1), party_id=customer.id)
+    assert report["total"] == "90000000.00"
+    [difference] = report["ledger_differences"]
+    assert difference["open_on_invoices"] == "90000000.00"
+    assert difference["ledger_balance"] == {"debit": "0.00", "credit": "30000000.00"}
+    assert "trả trước 30.000.000 ₫" in difference["note"]
+    # A party whose ledger agrees is not listed; nothing is compared when only part is shown.
+    _line(db, tenant_id, "131", date(2046, 1, 21), debit="120000000", party_id=customer.id)
+    db.commit()
+    assert aging(db, tenant_id, "OUT", date(2046, 3, 1), party_id=customer.id)["ledger_differences"] == []
+    assert aging(db, tenant_id, "OUT", date(2046, 3, 1), party_id=customer.id, min_days_overdue=1)["ledger_differences"] is None
+
+
+def _described(db, tenant_id, account, day, amount, description, voucher=None):
+    for code, debit, credit in ((account, amount, "0"), ("1121", "0", amount)):
+        db.add(FinLedgerLine(
+            tenant_id=tenant_id, period=f"{day.year:04d}-{day.month:02d}", entry_date=day, account_code=code,
+            debit=Decimal(debit), credit=Decimal(credit), source="IMPORT", description=description, voucher_no=voucher,
+        ))
+
+
+def test_a_cost_without_an_account_of_its_own_is_found_by_its_description(tenant_id, transactional_db_session):
+    db = transactional_db_session
+    _described(db, tenant_id, "6428", date(2047, 1, 5), "35000000", "Chạy quảng cáo Google Ads")
+    _described(db, tenant_id, "6421", date(2047, 1, 8), "60000000", "Lương nhân viên")
+    _described(db, tenant_id, "6428", date(2047, 2, 2), "12000000", "QUANG CAO Facebook thang 2")
+    db.commit()
+    by_month = expense_breakdown(db, tenant_id, "2047-01", "2047-02", group_by="month", keyword="quảng cáo")
+    assert [(row["key"], row["amount"]) for row in by_month["rows"]] == [("2047-01", "35000000.00"), ("2047-02", "12000000.00")]
+    february = by_month["rows"][1]
+    assert (february["change"], february["change_amount"], february["change_percent"]) == ("DECREASE", "23000000.00", "65.71")
+    assert by_month["total"] == "47000000.00"
+    by_account = expense_breakdown(db, tenant_id, "2047-01", "2047-01", level=4)
+    assert {row["key"]: row["amount"] for row in by_account["rows"]} == {"6421": "60000000.00", "6428": "35000000.00"}
+    chart = expense_chart(by_month)
+    assert chart and chart[0]["chart"] == "bar" and chart[0]["categories"] == ["01/2047", "02/2047"]
+
+
+def test_the_income_statement_works_profit_out_line_by_line(tenant_id, transactional_db_session):
+    db = transactional_db_session
+    day = date(2048, 5, 10)
+    for account, debit, credit in (
+        ("511", "0", "200000000"), ("632", "120000000", "0"), ("641", "10000000", "0"), ("6421", "15000000", "0"),
+        ("515", "0", "5000000"), ("635", "2000000", "0"), ("711", "0", "3000000"), ("811", "1000000", "0"),
+        ("821", "12000000", "0"),
+    ):
+        _line(db, tenant_id, account, day, debit=debit, credit=credit)
+    # A period-end close moves revenue to 911; it is not a sale being reversed.
+    for code, debit, credit in (("511", "200000000", "0"), ("911", "0", "200000000")):
+        db.add(FinLedgerLine(
+            tenant_id=tenant_id, period="2048-05", entry_date=date(2048, 5, 31), account_code=code,
+            debit=Decimal(debit), credit=Decimal(credit), source="IMPORT", voucher_no="KC0548", description="Kết chuyển",
+        ))
+    db.commit()
+    report = income_statement(db, tenant_id, "2048-05", "2048-05")
+    lines = {row["code"]: row["amount"] for row in report["rows"]}
+    assert lines["10"] == "200000000.00"
+    assert lines["20"] == "80000000.00"
+    assert lines["30"] == "58000000.00"
+    assert lines["40"] == "2000000.00"
+    assert (report["profit_before_tax"], report["profit_after_tax"]) == ("60000000.00", "48000000.00")
+    # TT133 has no 641: selling costs are 6421, the rest of 642 is administration.
+    small = {row["code"]: row["amount"] for row in income_statement(db, tenant_id, "2048-05", "2048-05", chart="TT133")["rows"]}
+    assert (small["25"], small["26"]) == ("15000000.00", "0.00")
+    chart = income_chart(report)
+    assert chart[0]["chart"] == "waterfall"
+    assert chart[0]["series"][0]["values"][0] == "200000000.00" and chart[0]["series"][0]["values"][-1] == "48000000.00"

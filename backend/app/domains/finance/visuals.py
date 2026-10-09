@@ -226,6 +226,22 @@ def trend_chart(result: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def expense_chart(result: dict[str, Any]) -> list[dict[str, Any]]:
+    span = _month(result["from"]) if result["from"] == result["to"] else f"{_month(result['from'])}–{_month(result['to'])}"
+    keyword = f" “{result['keyword']}”" if result.get("keyword") else ""
+    subtitle = "Không tính bút toán kết chuyển sang TK 911" + (
+        f"; chỉ các dòng có diễn giải chứa “{result['keyword']}”" if keyword else ""
+    )
+    if result.get("group_by") == "month":
+        # Months are a sequence, not parts of a whole: bars in order, never a donut.
+        rows = result.get("rows") or []
+        if len(rows) < 2 or not any(_d(row["amount"]) for row in rows):
+            return []
+        return [_spec(
+            f"Chi phí{keyword} theo tháng {span}", "bar", ["bar", "line", "table"],
+            [row["name"] for row in rows],
+            [{"key": "amount", "name": "Chi phí", "values": [row["amount"] for row in rows]}],
+            subtitle=subtitle, source=result.get("source", ""),
+        )]
     rows = [row for row in result.get("rows") or [] if _d(row["amount"]) > 0]
     if not rows:
         return []
@@ -234,14 +250,36 @@ def expense_chart(result: dict[str, Any]) -> list[dict[str, Any]]:
         (f"{row['key']} {row['name']}" if by_account and row.get("name") else row["name"] or row["key"])
         for row in rows
     ]
-    span = _month(result["from"]) if result["from"] == result["to"] else f"{_month(result['from'])}–{_month(result['to'])}"
     many = len(rows) > MAX_PARTS
     return [_spec(
-        f"Cơ cấu chi phí {span} theo {'tài khoản' if by_account else 'phòng ban'}",
+        f"Cơ cấu chi phí{keyword} {span} theo {'tài khoản' if by_account else 'phòng ban'}",
         "bar" if many else "pie", ["bar", "pie", "table"] if many else ["pie", "bar", "table"],
         labels, [{"key": "amount", "name": "Chi phí", "values": [row["amount"] for row in rows]}],
-        subtitle="Không tính bút toán kết chuyển sang TK 911",
+        subtitle=subtitle,
         parts=_fold(list(zip(labels, (_d(row["amount"]) for row in rows)))),
+        source=result.get("source", ""),
+    )]
+
+
+# Income statement lines a waterfall steps through, with the way each moves profit.
+_STATEMENT_STEPS = (("11", -1), ("21", 1), ("22", -1), ("25", -1), ("26", -1), ("31", 1), ("32", -1), ("51", -1))
+
+
+def income_chart(result: dict[str, Any]) -> list[dict[str, Any]]:
+    """Net revenue, each cost and other income on the way, profit after tax."""
+    lines = {row["code"]: row for row in result.get("rows") or []}
+    if "10" not in lines or "60" not in lines:
+        return []
+    steps = [(lines[code]["label"], _d(lines[code]["amount"]) * sign) for code, sign in _STATEMENT_STEPS if _d(lines[code]["amount"])]
+    if not _d(lines["10"]["amount"]) and not steps:
+        return []
+    span = _month(result["from"]) if result["from"] == result["to"] else f"{_month(result['from'])}–{_month(result['to'])}"
+    categories = [lines["10"]["label"], *(label for label, _ in steps), lines["60"]["label"]]
+    values = [lines["10"]["amount"], *(plain(value) for _, value in steps), lines["60"]["amount"]]
+    return [_spec(
+        f"Kết quả kinh doanh {span}", "waterfall", ["waterfall", "table"], categories,
+        [{"key": "amount", "name": "Số tiền", "values": values}],
+        subtitle="Từ doanh thu thuần đến lợi nhuận sau thuế",
         source=result.get("source", ""),
     )]
 
@@ -305,6 +343,7 @@ BUILDERS: dict[str, Callable[[dict[str, Any]], list[dict[str, Any]]]] = {
     "get_account_balance": balance_chart,
     "get_account_trend": trend_chart,
     "get_expense_breakdown": expense_chart,
+    "get_income_statement": income_chart,
     "get_ledger_detail": ledger_chart,
     "analyze_spreadsheet": sheet_chart,
 }

@@ -23,7 +23,9 @@ from app.tools.schemas import (
     EmployeeLookupInput,
     ExpenseBreakdownInput,
     ExpenseLookupInput,
+    FinanceDraftsInput,
     GenerateLegalDocumentInput,
+    IncomeStatementInput,
     InvoiceLookupInput,
     LedgerDetailInput,
     PaymentScheduleInput,
@@ -260,12 +262,14 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         get_aging,
         get_budget_vs_actual,
         get_expense_breakdown,
+        get_income_statement,
         get_ledger_detail,
         get_payment_schedule,
         draft_reminder,
         draft_voucher,
         get_trial_balance,
         analyze_spreadsheet,
+        list_finance_drafts,
         list_spreadsheets,
         lookup_invoices,
         propose_journal_entry,
@@ -331,10 +335,32 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         _definition(
             "get_expense_breakdown",
             "What the company spent between two periods (expense accounts 6xx and 8xx, "
-            "closing entries to 911 left out), by account or by department, each with its "
-            "share of the total; the reply shows a chart of it. " + reading,
+            "closing entries to 911 left out), by account (level 3 or its sub-accounts at "
+            "level 4), by department each with its share of the total, or month by month with "
+            "each month's change from the one before. For a kind of cost no account is named "
+            "after (advertising, freight, travel), pass its words as keyword: only lines whose "
+            "description says so are counted. The reply shows a chart of it. " + reading,
             ExpenseBreakdownInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
             "tool.finance.expenses", get_expense_breakdown, permission="finance.ledger.view",
+        ),
+        _definition(
+            "get_income_statement",
+            "Income statement (báo cáo kết quả kinh doanh) between two periods: revenue, cost "
+            "of sales, selling and administrative costs, financial and other income and costs, "
+            "profit before and after tax, each line already worked out. Use it for revenue, "
+            "profit or loss of a period; the reply shows a chart of it. " + reading,
+            IncomeStatementInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.finance.income_statement", get_income_statement, permission="finance.ledger.view",
+        ),
+        _definition(
+            "list_finance_drafts",
+            "The finance drafts sent for approval -- journal entries, payment vouchers, payment "
+            "reminders -- with their status (waiting, approved, rejected, withdrawn), amount and "
+            "who sent them; a voucher also says whether the money was transferred. scope MINE "
+            "for what the user sent, TO_DECIDE for what waits for the user's own decision. Use "
+            "it for questions about vouchers, reminders or approvals, not invoices.",
+            FinanceDraftsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.finance.drafts", list_finance_drafts, permission="finance.journal.draft",
         ),
         _definition(
             "get_trial_balance",
@@ -356,8 +382,9 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
         # user's own one, which a single box on the ACL cannot express.
         _definition(
             "budget_vs_actual",
-            "Budget against actual spending per department and account for a period, with "
-            "the variance and whether it is over budget. " + reading,
+            "Budget against actual spending per department and account for a period: what is "
+            "left of the budget (remaining), what was overspent (over_amount) and whether it is "
+            "over budget. " + reading,
             BudgetVsActualInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
             "tool.finance.budget", get_budget_vs_actual,
         ),
@@ -365,7 +392,9 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             "ar_ap_aging",
             "Aging of receivables (customers owe us) or payables (we owe vendors): what is "
             "outstanding per party and how overdue, from posted invoices less payments, on "
-            "today or on a past date (as_of). " + reading,
+            "today or on a past date (as_of). ledger_differences lists parties whose balance "
+            "on the ledger (131 or 331) differs from their open invoices -- an advance, or money "
+            "not yet matched to an invoice: report it with the party's figures. " + reading,
             AgingInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
             "tool.finance.aging", get_aging, permission="finance.ar_ap.view",
         ),

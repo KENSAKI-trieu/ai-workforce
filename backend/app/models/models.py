@@ -2140,3 +2140,35 @@ class FinPostingRule(Base):
     last_confirmed_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class AgentToolOutput(Base):
+    """What a governed tool wrote for the user, held for the chat turn that called it.
+
+    Under LangGraph a tool's result reaches the chat through the AI service, which masks
+    emails and phone numbers in it and keeps it in the graph's checkpoints. The HR tools
+    answer with exactly that kind of data -- a colleague's contact card, a salary -- so
+    their executor keeps the reply and its card here and hands the graph only a reference;
+    the backend swaps the reference back in when it builds the chat response, and the row
+    is deleted as it is read. Encrypted, like every other stored copy of personal data.
+    """
+
+    __tablename__ = "agent_tool_outputs"
+    __table_args__ = (
+        Index("idx_agent_tool_outputs_owner", "tenant_id", "user_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    user_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="CASCADE"), nullable=False
+    )
+    # The conversation the call belongs to; a reference used from another one is ignored.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    tool_name: Mapped[str] = mapped_column(String(100), nullable=False)
+    reply: Mapped[str] = mapped_column(EncryptedText, nullable=False)
+    # Response keys the chat renders as cards (hr_card, approval_card), by name.
+    cards: Mapped[dict] = mapped_column(EncryptedJSONB, nullable=False, default=dict)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())

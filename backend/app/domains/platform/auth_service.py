@@ -22,6 +22,7 @@ from app.core.gateway_tools import GATEWAY_TOOLS, with_gateway_grants
 from app.core.hr_capabilities import (
     DEFAULT_GRANTS_COMPLETE_VERSION,
     HR_CONFIGURATION_VERSION,
+    HR_GATEWAY_TOOLS,
     default_hr_tools,
 )
 from app.core.tool_permissions import canonical_tool_names
@@ -88,14 +89,16 @@ def supported_agent_tools(role_code: str) -> frozenset[str]:
 
     A role's own capabilities, which its executor checks, plus every gateway tool for the
     roles that run through LangGraph: gateway grants beyond the defaults are a per-tenant
-    choice. HR never runs through the graph, so gateway tools would do nothing for it --
-    as would another role's capability, such as `request_leave` on the Legal agent.
+    choice. HR's gateway tools are its own capabilities under the same names, and its
+    graph offers no other. Another role is not offered them either: the HR tools run HR's
+    own chat branches, and no other agent's graph binds them -- as no other agent's
+    executor checks `request_leave`.
     """
     role = role_code.upper()
     capabilities = frozenset(DEFAULT_AGENT_CAPABILITIES.get(role, ()))
     if role == "HR":
         return capabilities
-    return capabilities | GATEWAY_TOOLS
+    return capabilities | (GATEWAY_TOOLS - HR_GATEWAY_TOOLS)
 
 
 DEFAULT_DEPARTMENTS = [

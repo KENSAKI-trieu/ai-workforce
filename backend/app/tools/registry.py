@@ -25,6 +25,15 @@ from app.tools.schemas import (
     ExpenseLookupInput,
     FinanceDraftsInput,
     GenerateLegalDocumentInput,
+    HRCancelLeaveInput,
+    HRDirectoryInput,
+    HREmployeeProfileInput,
+    HRExportInput,
+    HRLeaveBalanceInput,
+    HRLeaveRequestsInput,
+    HRNoArgumentsInput,
+    HROnboardingInput,
+    HRRequestLeaveInput,
     IncomeStatementInput,
     InvoiceLookupInput,
     LedgerDetailInput,
@@ -115,6 +124,10 @@ class ToolDefinition:
     # for sign-off -- so the graph runs it without stopping for an approval of the call
     # first. Stopping as well meant approving the same thing twice.
     opens_approval: bool = False
+    # A write the user's own request authorises -- withdrawing their own leave request,
+    # HR opening an onboarding -- governed by the executor's own checks, as in the
+    # deterministic chat. The graph runs it without stopping for an approval of the call.
+    runs_on_request: bool = False
 
     def authorize(self, user: User) -> None:
         if not user.is_active or not self.acl.permits(user):
@@ -138,6 +151,7 @@ class ToolDefinition:
             "audit_action": self.audit_action,
             "terminal": self.terminal,
             "opens_approval": self.opens_approval,
+            "runs_on_request": self.runs_on_request,
             "input_schema": self.input_schema.model_json_schema(),
         }
 
@@ -175,6 +189,7 @@ def _definition(
     *,
     terminal: bool = False,
     opens_approval: bool = False,
+    runs_on_request: bool = False,
     permission: str | None = None,
 ) -> ToolDefinition:
     read_only = action == ToolAction.READ_ONLY
@@ -190,6 +205,7 @@ def _definition(
         executor=executor,
         terminal=terminal,
         opens_approval=opens_approval,
+        runs_on_request=runs_on_request,
     )
 
 
@@ -249,7 +265,7 @@ def build_tool_registry() -> ToolRegistry:
             review_contract_risk, terminal=True,
         ),
     )
-    for definition in definitions + _finance_definitions():
+    for definition in definitions + _finance_definitions() + _hr_definitions():
         registry.register(definition)
     return registry
 
@@ -447,6 +463,134 @@ def _finance_definitions() -> tuple[ToolDefinition, ...]:
             DraftPaymentReminderInput, ToolAction.WRITE, {"*"}, {"*"}, 30,
             "tool.finance.reminder.draft", draft_reminder,
             terminal=True, opens_approval=True, permission="finance.reminder.send",
+        ),
+    )
+
+
+def _hr_definitions() -> tuple[ToolDefinition, ...]:
+    """The HR agent's tools. Each runs the HR chat's own branch for that capability.
+
+    Every one is terminal: the backend writes the answer, so a profile, a salary or a
+    colleague's contact never passes through the model. The ACL is open because each
+    branch checks the asker itself -- grant, scope, purpose, HR's own role -- as it always
+    has in the deterministic chat.
+    """
+    from app.tools.executors.hr import (
+        hr_cancel_leave,
+        hr_compensation,
+        hr_contract,
+        hr_contract_expiry,
+        hr_directory,
+        hr_employee_profile,
+        hr_export,
+        hr_leave_balance,
+        hr_leave_requests,
+        hr_onboarding,
+        hr_pending_approvals,
+        hr_private_profile,
+        hr_request_leave,
+    )
+
+    answer = "Its result is the answer to the user; call one HR tool per turn. "
+    return (
+        _definition(
+            "query_company_users_sql",
+            "Find a colleague (name, email, department, title, contact) or list the employees "
+            "or managers, optionally of some departments, within what the user may see. Use it "
+            "for questions like \"X là ai\", \"email của X\", \"danh sách nhân viên phòng ...\". "
+            + answer,
+            HRDirectoryInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.hr.directory", hr_directory, terminal=True,
+        ),
+        _definition(
+            "get_employee_full_profile",
+            "The user's own HR profile (employee=SELF), or a colleague's deeper profile "
+            "(employee=OTHER) for a business purpose the user stated, the colleague named by "
+            "email. " + answer,
+            HREmployeeProfileInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.hr.profile", hr_employee_profile, terminal=True,
+        ),
+        _definition(
+            "get_employee_compensation_summary",
+            "The user's own salary and pay. " + answer,
+            HRNoArgumentsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
+            "tool.hr.compensation", hr_compensation, terminal=True,
+        ),
+        _definition(
+            "get_employee_private_profile",
+            "The user's own personal details (address, ID number, bank account, emergency "
+            "contact). " + answer,
+            HRNoArgumentsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
+            "tool.hr.private_profile", hr_private_profile, terminal=True,
+        ),
+        _definition(
+            "get_employee_contract_summary",
+            "The user's own labour contracts. " + answer,
+            HRNoArgumentsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
+            "tool.hr.contract", hr_contract, terminal=True,
+        ),
+        _definition(
+            "query_leave_balance",
+            "How many leave days the user has, has used and has left this year. Only the "
+            "user's own: if they ask about somebody else, pass that person and the tool "
+            "explains. " + answer,
+            HRLeaveBalanceInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
+            "tool.hr.leave_balance", hr_leave_balance, terminal=True,
+        ),
+        _definition(
+            "list_leave_requests",
+            "Who is on leave on a day or between two dates (view WHO_IS_OFF), or the status of "
+            "leave requests (view REQUESTS), the user's own or their team's. " + answer,
+            HRLeaveRequestsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.hr.leave_requests", hr_leave_requests, terminal=True,
+        ),
+        # Opens its own approval: the request goes to the user's approver as it is filed.
+        _definition(
+            "request_leave",
+            "File the user's leave request and send it to their approver, only when the user "
+            "asks to take leave. Pass only the dates and reason the user gave in this "
+            "conversation, never invented ones; call it even when some are missing -- it asks "
+            "for them. Convert dates the user wrote (thứ 6 tuần sau, 12/10) to YYYY-MM-DD from "
+            "today's date. It opens its own approval, so never submit another one. " + answer,
+            HRRequestLeaveInput, ToolAction.WRITE, {"*"}, {"*"}, 20,
+            "tool.hr.leave_request", hr_request_leave,
+            terminal=True, opens_approval=True,
+        ),
+        _definition(
+            "cancel_leave_request",
+            "Withdraw one of the user's own leave requests that is still waiting for "
+            "approval, only when the user asks to withdraw or cancel it. Pass its dates if "
+            "the user named them; with several waiting it asks which one. " + answer,
+            HRCancelLeaveInput, ToolAction.WRITE, {"*"}, {"*"}, 15,
+            "tool.hr.leave_cancel", hr_cancel_leave,
+            terminal=True, runs_on_request=True,
+        ),
+        _definition(
+            "get_contract_expiry",
+            "Labour contracts in force within the user's HR scope and when each ends. " + answer,
+            HRNoArgumentsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 15,
+            "tool.hr.contract_expiry", hr_contract_expiry, terminal=True,
+        ),
+        _definition(
+            "list_pending_hr_approvals",
+            "HR requests waiting for the user's own approval. " + answer,
+            HRNoArgumentsInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 20,
+            "tool.hr.pending_approvals", hr_pending_approvals, terminal=True,
+        ),
+        _definition(
+            "export_hr_directory",
+            "A download link for the employee or manager list as Excel, PDF or JSON. Leave "
+            "a choice empty if the user did not make it; the tool asks. " + answer,
+            HRExportInput, ToolAction.READ_ONLY, {"*"}, {"*"}, 10,
+            "tool.hr.export", hr_export, terminal=True,
+        ),
+        _definition(
+            "create_onboarding_workflow",
+            "Start onboarding for a new hire the user names by email, only when the user asks "
+            "for it. HR staff only; the tool checks. " + answer,
+            HROnboardingInput, ToolAction.WRITE, {"*"}, {"*"}, 20,
+            "tool.hr.onboarding", hr_onboarding,
+            terminal=True, runs_on_request=True,
         ),
     )
 

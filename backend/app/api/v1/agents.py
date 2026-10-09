@@ -13,7 +13,11 @@ from app.core.database import get_db
 from app.core.gateway_tools import GATEWAY_TOOL_DESCRIPTIONS
 from app.core.finance_capabilities import configuration_version_for
 from app.domains.platform.cost_calculator import UnsupportedModelPricingError, normalize_model_name
-from app.core.hr_capabilities import HR_CONFIGURATION_VERSION, HR_RETIRED_TOOLS
+from app.core.hr_capabilities import (
+    HR_CAPABILITY_DESCRIPTIONS,
+    HR_CONFIGURATION_VERSION,
+    HR_RETIRED_TOOLS,
+)
 from app.core.tool_permissions import canonical_tool_names
 from app.core.security import PermissionRequired, get_current_active_user
 from app.domains.platform.position_service import has_permission
@@ -30,20 +34,7 @@ router = APIRouter(prefix="/agents", tags=["AI Agents"])
 # Ticked in org-structure as "Cấu hình nhân viên AI"; it replaced the Owner/Admin/CEO role set.
 AGENT_CONFIG_PERMISSION = "agents.configure"
 TOOL_DESCRIPTIONS = {
-    "get_employee_private_profile": "Đọc thông tin cá nhân được lọc và masking theo quyền.",
-    "get_employee_contract_summary": "Đọc tóm tắt hợp đồng, không trả tài liệu gốc.",
-    "get_employee_compensation_summary": "Đọc dữ liệu lương theo quyền và mục đích nghiệp vụ.",
-    "get_employee_leave_summary": "Đọc dữ liệu phép trong phạm vi được cấp.",
-    "get_employee_full_profile": "Tổng hợp các nhóm hồ sơ được yêu cầu sau khi kiểm tra purpose.",
-    "query_company_users_sql": "Chạy truy vấn SQL cố định, có tham số để lấy danh bạ BASIC theo tenant và phạm vi quyền.",
-    "query_leave_balance": "Tra cứu quỹ phép cá nhân.",
-    "request_leave": "Tạo đơn nghỉ và chuyển phê duyệt.",
-    "create_onboarding_workflow": "Khởi tạo workflow onboarding liên phòng ban.",
-    "get_contract_expiry": "Theo dõi hợp đồng và thời gian thử việc.",
-    "list_pending_hr_approvals": "Liệt kê card chờ duyệt theo phạm vi quản lý.",
-    "export_hr_directory": "Xuất danh bạ HR theo quyền ra Excel, PDF hoặc JSON.",
-    "list_leave_requests": "Tra cứu đơn nghỉ và lịch nghỉ: của chính mình, hoặc của người trong phạm vi khi có quyền xem dữ liệu nghỉ phép.",
-    "cancel_leave_request": "Rút đơn nghỉ của chính mình khi đơn còn chờ duyệt và trả lại ngày phép giữ chỗ.",
+    **HR_CAPABILITY_DESCRIPTIONS,
     "generate_and_execute_ceo_dag": "Lập và thực thi kế hoạch đa agent.",
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
     "compare_contract_versions": "So sánh điều khoản giữa hai phiên bản hợp đồng.",

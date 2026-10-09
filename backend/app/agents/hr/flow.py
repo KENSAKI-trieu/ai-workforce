@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import re
 import uuid
+from dataclasses import dataclass
 from datetime import date, timedelta
 from typing import Dict, Any
 
@@ -85,6 +86,35 @@ LEAVE_STATUS_LABELS = {
 }
 
 
+# What each purpose of a deep profile request releases. The policy behind
+# `get_employee_sections` still decides whether this asker may see them for that purpose.
+PROFILE_PURPOSE_SECTIONS: dict[str, list[str]] = {
+    "CONTRACT_RENEWAL": ["BASIC", "CONTRACT"],
+    "PERFORMANCE_REVIEW": ["BASIC", "PERFORMANCE"],
+    "ONBOARDING": ["BASIC", "PRIVATE", "CONTRACT", "DOCUMENTS"],
+    "PAYROLL_PROCESSING": ["BASIC", "COMPENSATION"],
+}
+
+
+@dataclass(frozen=True)
+class HRToolArguments:
+    """The arguments of an HR gateway tool call, so the branch reads none from the message.
+
+    Under LangGraph the model picks the capability and fills these with function calling;
+    the deterministic gate passes None and every branch reads the sentence as before. Who
+    is meant is never taken from here on trust: an email still comes from the user's own
+    message, and every branch still checks the grant and the asker's scope.
+    """
+
+    lookup: LookupArguments | None = None
+    leave_slots: dict[str, Any] | None = None
+    export_format: str | None = None
+    directory_type: str | None = None
+    purpose: str | None = None
+    # A leave-balance question about a colleague, which this capability refuses.
+    about_someone_else: bool = False
+
+
 def _read_lookup_arguments(
     db: Session,
     user: User,
@@ -136,12 +166,25 @@ def run_hr_turn(
     leave_draft: dict[str, Any] | None,
     leave_cancel_request: bool,
     on_llm_usage: UsageReporter | None,
+    tool_arguments: HRToolArguments | None = None,
 ) -> Dict[str, Any]:
-    """Dispatch an HR turn to the capability its intent names."""
+    """Dispatch an HR turn to the capability its intent names.
+
+    `tool_arguments` is set when a gateway tool call runs the capability: its arguments
+    were already chosen, so no branch spends an LLM call or a keyword rule reading them.
+    """
     hr_intent = hr_intent_override or _classify_hr_intent(message)
     if leave_draft is None and hr_intent_override is None:
         leave_draft = _load_leave_draft(db, user, thread_id)
     normalized_message = _normalize_intent_text(message)
+
+    def read_lookup(intent: str) -> LookupArguments | None:
+        if tool_arguments is not None:
+            return tool_arguments.lookup or LookupArguments()
+        return _read_lookup_arguments(
+            db, user, role_code_upper=role_code_upper, message=message,
+            intent=intent, on_llm_usage=on_llm_usage,
+        )
 
     if leave_draft and leave_cancel_request:
         cancelled_slots = _extract_leave_slots("", leave_draft)
@@ -216,16 +259,18 @@ def run_hr_turn(
                 "**email công ty** của nhân viên và **mục đích nghiệp vụ**."
             )
             return response_data
-        purpose_sections: tuple[str, list[str]] | None = None
-        if any(marker in normalized_message for marker in ("gia han hop dong", "contract renewal")):
-            purpose_sections = "CONTRACT_RENEWAL", ["BASIC", "CONTRACT"]
+        stated_purpose: str | None = None
+        if tool_arguments is not None:
+            stated_purpose = tool_arguments.purpose
+        elif any(marker in normalized_message for marker in ("gia han hop dong", "contract renewal")):
+            stated_purpose = "CONTRACT_RENEWAL"
         elif any(marker in normalized_message for marker in ("danh gia cuoi nam", "danh gia hieu suat")):
-            purpose_sections = "PERFORMANCE_REVIEW", ["BASIC", "PERFORMANCE"]
+            stated_purpose = "PERFORMANCE_REVIEW"
         elif "onboarding" in normalized_message:
-            purpose_sections = "ONBOARDING", ["BASIC", "PRIVATE", "CONTRACT", "DOCUMENTS"]
+            stated_purpose = "ONBOARDING"
         elif any(marker in normalized_message for marker in ("xu ly bang luong", "payroll")):
-            purpose_sections = "PAYROLL_PROCESSING", ["BASIC", "COMPENSATION"]
-        if not purpose_sections:
+            stated_purpose = "PAYROLL_PROCESSING"
+        if stated_purpose not in PROFILE_PURPOSE_SECTIONS:
             response_data["reply"] = (
                 "Yêu cầu hồ sơ sâu bắt buộc có mục đích hợp lệ, ví dụ: "
                 "**gia hạn hợp đồng**, **đánh giá hiệu suất**, **onboarding** hoặc "
@@ -239,7 +284,7 @@ def run_hr_turn(
         if not employee:
             response_data["reply"] = "Không tìm thấy nhân viên trong workspace hiện tại."
             return response_data
-        purpose, requested_sections = purpose_sections
+        purpose, requested_sections = stated_purpose, PROFILE_PURPOSE_SECTIONS[stated_purpose]
         profile_payload = _employee_profile_payload(
             db,
             user,
@@ -340,7 +385,10 @@ def run_hr_turn(
         # a format before checking the grant both wastes a turn and confirms the
         # feature exists to somebody who may not use it.
         _require_tool(agent, "export_hr_directory")
-        export_format, directory_type = _parse_hr_export_request(message)
+        export_format, directory_type = (
+            (tool_arguments.export_format, tool_arguments.directory_type)
+            if tool_arguments is not None else _parse_hr_export_request(message)
+        )
         missing = []
         if not directory_type:
             missing.append("loại dữ liệu (**danh sách nhân viên** hoặc **danh sách quản lý**)")
@@ -395,10 +443,7 @@ def run_hr_turn(
         _require_tool(agent, "query_company_users_sql")
         managers_only = hr_intent == "MANAGER_DIRECTORY"
         entity_label = "quản lý" if managers_only else "nhân viên"
-        arguments = _read_lookup_arguments(
-            db, user, role_code_upper=role_code_upper, message=message,
-            intent=hr_intent, on_llm_usage=on_llm_usage,
-        )
+        arguments = read_lookup(hr_intent)
         if arguments is not None:
             departments = arguments.departments
             named_a_department = (
@@ -459,10 +504,7 @@ def run_hr_turn(
 
     if hr_intent == "EMPLOYEE_SEARCH":
         _require_tool(agent, "query_company_users_sql")
-        arguments = _read_lookup_arguments(
-            db, user, role_code_upper=role_code_upper, message=message,
-            intent=hr_intent, on_llm_usage=on_llm_usage,
-        )
+        arguments = read_lookup(hr_intent)
         # The keyword extractor only finds a name after a fixed opening phrase, so
         # "Phạm Văn Tech là ai?" searched for nobody. It stays as the fallback only.
         search_term = (
@@ -627,17 +669,24 @@ def run_hr_turn(
 
     if hr_intent == "ACTION_LEAVE_REQUEST":
         _require_tool(agent, "request_leave")
-        reference_date, timezone_name = _leave_date_context(db, user)
-        slots = _extract_leave_slots_with_llm(
-            message,
-            leave_draft,
-            reference_date=reference_date,
-            timezone_name=timezone_name,
-            # Falls back to metering here when the caller did not supply a reporter,
-            # so a direct call to this function still records what it spends.
-            on_usage=on_llm_usage or _hr_llm_usage_recorder(db, user),
-            prompts=resolve_prompt_overlay(db, user.tenant_id, role_code_upper),
-        )
+        if tool_arguments is not None:
+            # The conversation is the draft: the model gathered these over the turns.
+            slots = {
+                field: (tool_arguments.leave_slots or {}).get(field)
+                for field in ("start_date", "end_date", "reason")
+            }
+        else:
+            reference_date, timezone_name = _leave_date_context(db, user)
+            slots = _extract_leave_slots_with_llm(
+                message,
+                leave_draft,
+                reference_date=reference_date,
+                timezone_name=timezone_name,
+                # Falls back to metering here when the caller did not supply a reporter,
+                # so a direct call to this function still records what it spends.
+                on_usage=on_llm_usage or _hr_llm_usage_recorder(db, user),
+                prompts=resolve_prompt_overlay(db, user.tenant_id, role_code_upper),
+            )
         missing_fields = _leave_missing_fields(slots)
         if missing_fields:
             response_data["reply"] = _leave_follow_up_reply(slots, missing_fields)
@@ -712,7 +761,11 @@ def run_hr_turn(
         _require_tool(agent, "query_leave_balance")
         # Guard the branch rather than the classifier, so the check also covers the
         # paraphrases the LLM router sends here.
-        if _leave_balance_names_another_person(message):
+        about_someone_else = (
+            tool_arguments.about_someone_else if tool_arguments is not None
+            else _leave_balance_names_another_person(message)
+        )
+        if about_someone_else:
             response_data["reply"] = (
                 "Tôi chỉ tra được quỹ phép của **chính bạn**. Để xem dữ liệu phép của "
                 "nhân viên khác, bạn cần yêu cầu **hồ sơ đầy đủ** kèm **email công ty** "
@@ -738,10 +791,7 @@ def run_hr_turn(
 
     if hr_intent == "EMPLOYEE_LEAVE_STATUS_COUNT":
         _require_tool(agent, "list_leave_requests")
-        arguments = _read_lookup_arguments(
-            db, user, role_code_upper=role_code_upper, message=message,
-            intent=hr_intent, on_llm_usage=on_llm_usage,
-        )
+        arguments = read_lookup(hr_intent)
         today, _timezone = _leave_date_context(db, user)
         start = (
             date.fromisoformat(arguments.start_date)
@@ -817,10 +867,7 @@ def run_hr_turn(
 
     if hr_intent == "LEAVE_REQUEST_STATUS":
         _require_tool(agent, "list_leave_requests")
-        arguments = _read_lookup_arguments(
-            db, user, role_code_upper=role_code_upper, message=message,
-            intent=hr_intent, on_llm_usage=on_llm_usage,
-        )
+        arguments = read_lookup(hr_intent)
         whose = (arguments.whose if arguments else None) or "SELF"
         team = whose == "TEAM"
         departments = arguments.departments if arguments and team else ()
@@ -899,10 +946,7 @@ def run_hr_turn(
 
     if hr_intent == "ACTION_LEAVE_CANCEL":
         _require_tool(agent, "cancel_leave_request")
-        arguments = _read_lookup_arguments(
-            db, user, role_code_upper=role_code_upper, message=message,
-            intent=hr_intent, on_llm_usage=on_llm_usage,
-        )
+        arguments = read_lookup(hr_intent)
         today, _timezone = _leave_date_context(db, user)
         # Without a date, the candidates are the requests that have not ended yet.
         start = (

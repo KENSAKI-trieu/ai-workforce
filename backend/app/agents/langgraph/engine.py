@@ -10,6 +10,7 @@ from typing import Any, Iterator
 from sqlalchemy.orm import Session
 
 from app.core.agent_models import normalized_model_name
+from app.core.hr_capabilities import HR_CAPABILITY_LABELS, HR_PRIVATE_REPLY_TOOLS
 from app.core.gateway_tools import (
     GATEWAY_TOOL_LABELS,
     disabled_gateway_tools,
@@ -39,6 +40,7 @@ from app.agents.langgraph.approvals import (
     ensure_graph_approval,
 )
 from app.agents.legal.review import _legal_review_card, _load_legal_review_draft
+from app.agents.tool_outputs import take_tool_output
 
 
 # How much of the conversation the graph sees besides the current message. The graph used
@@ -48,6 +50,26 @@ from app.agents.legal.review import _legal_review_card, _load_legal_review_draft
 HISTORY_MESSAGES = 10
 HISTORY_MESSAGE_CHARS = 1500
 HISTORY_TOTAL_CHARS = 6000
+
+
+def _private_reply_stand_in(tools_executed: Any) -> str | None:
+    """What the history says instead of a reply that showed a person's HR data.
+
+    The reply reached the user from the backend and never passed through the model; handing
+    it over as history on the next turn would send the salary or the colleague's contact to
+    the model after all. The stand-in keeps the conversation readable: the model still
+    knows that turn was answered, and with what.
+    """
+    names = [
+        str(item.get("tool_name") or "")
+        for item in (tools_executed or [])
+        if isinstance(item, dict)
+    ]
+    private = [name for name in names if name in HR_PRIVATE_REPLY_TOOLS]
+    if not private:
+        return None
+    labels = ", ".join(dict.fromkeys(HR_CAPABILITY_LABELS.get(name, name) for name in private))
+    return f"(Đã trả lời bằng dữ liệu nhân sự từ hệ thống: {labels}. Nội dung chỉ hiển thị cho người dùng.)"
 
 
 class GraphModelUnavailable(AIServiceError):
@@ -185,6 +207,8 @@ class LangGraphEngine:
         budget = HISTORY_TOTAL_CHARS
         for row in rows[:HISTORY_MESSAGES]:
             text = (row.content or "").strip()
+            if row.sender == "ASSISTANT":
+                text = _private_reply_stand_in(row.tools_executed) or text
             if not text:
                 continue
             if len(text) > HISTORY_MESSAGE_CHARS:
@@ -409,6 +433,7 @@ class LangGraphEngine:
             legal_risk_card=self.legal_risk_card(
                 db, user, result, agent=agent, conversation_id=conversation_id
             ),
+            tool_output=self.stored_tool_output(db, user, result, conversation_id),
         )
 
     def execute_stream(
@@ -477,6 +502,14 @@ class LangGraphEngine:
                 persisted.status = "FAILED" if isinstance(exc, GraphModelUnavailable) else "RESUME_FAILED"
                 db.commit()
             raise
+        tool_output = self.stored_tool_output(db, user, result, conversation_id)
+        if tool_output is not None:
+            # The graph's tokens spell its own copy of the reply: a stand-in, or the reply
+            # with emails and phone numbers masked. The user is shown the stored one.
+            tokens = [
+                {"event": "token", "delta": token}
+                for token in re.findall(r"\S+\s*|\s+", str(tool_output.get("reply") or ""))
+            ]
         yield from tokens
         yield {
             "event": "complete",
@@ -488,6 +521,7 @@ class LangGraphEngine:
                 legal_risk_card=self.legal_risk_card(
                     db, user, result, agent=agent, conversation_id=conversation_id
                 ),
+                tool_output=tool_output,
             ),
         }
 
@@ -762,6 +796,28 @@ class LangGraphEngine:
         )
 
     @staticmethod
+    def stored_tool_output(
+        db: Session, user: User, result: dict[str, Any], conversation_id: str
+    ) -> dict[str, Any] | None:
+        """The reply and cards a tool of this turn kept on the backend, if one did.
+
+        Only the tool that answered counts: the latest call, when it succeeded. An earlier
+        call's output stays unread and expires.
+        """
+        calls = (result.get("state") or {}).get("tool_calls") or []
+        latest = calls[-1] if calls else None
+        if (
+            not isinstance(latest, dict)
+            or latest.get("status") != "SUCCESS"
+            or not isinstance(latest.get("result"), dict)
+            or not latest["result"].get("output_id")
+        ):
+            return None
+        return take_tool_output(
+            db, user=user, conversation_id=conversation_id, output_id=latest["result"]["output_id"]
+        )
+
+    @staticmethod
     def public_citations(state: dict[str, Any]) -> list[dict[str, Any]]:
         """The retrieved chunks the answer cites, in the shape the chat shows.
 
@@ -849,20 +905,24 @@ class LangGraphEngine:
         workflow: AgentWorkflow,
         approval: WorkflowApproval | None,
         legal_risk_card: dict[str, Any] | None = None,
+        tool_output: dict[str, Any] | None = None,
     ) -> dict[str, Any]:
         state = result.get("state") or {}
         approval_card = LangGraphEngine.approval_card(approval) if approval else None
+        stored = tool_output or {}
+        # A tool's own approval (a leave request goes to its approver as it is filed).
+        approval_card = approval_card or stored.get("approval_card")
         return {
             "agent_name": agent.name,
             "agent_role": state.get("selected_agent") or agent.role_code,
             "avatar_emoji": agent.avatar_emoji,
-            "reply": state.get("final_answer") or (
+            "reply": stored.get("reply") or state.get("final_answer") or (
                 "This action is waiting for human approval." if approval_card else ""
             ),
             "citations": LangGraphEngine.public_citations(state),
             "tools_executed": LangGraphEngine.sanitize_tool_calls(state),
             "approval_card": approval_card,
-            "hr_card": None,
+            "hr_card": stored.get("hr_card"),
             "jira_card": None,
             "legal_risk_card": legal_risk_card,
             "invoice_card": None,

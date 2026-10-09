@@ -86,6 +86,41 @@ HR_CAPABILITY_LABELS: dict[str, str] = {
 assert set(HR_CAPABILITY_LABELS) == HR_CORE_TOOLS, "every HR capability needs a user-facing label"
 
 
+# What the configuration page says each capability does, for administrators choosing
+# grants. Also the gateway description of the HR tools, which carry the same names.
+HR_CAPABILITY_DESCRIPTIONS: dict[str, str] = {
+    "rag_search": "Tra cứu chính sách và quy định trong kho tài liệu HR.",
+    "get_employee_private_profile": "Đọc thông tin cá nhân được lọc và masking theo quyền.",
+    "get_employee_contract_summary": "Đọc tóm tắt hợp đồng, không trả tài liệu gốc.",
+    "get_employee_compensation_summary": "Đọc dữ liệu lương theo quyền và mục đích nghiệp vụ.",
+    "get_employee_leave_summary": "Đọc dữ liệu phép trong phạm vi được cấp.",
+    "get_employee_full_profile": "Tổng hợp các nhóm hồ sơ được yêu cầu sau khi kiểm tra purpose.",
+    "query_company_users_sql": "Chạy truy vấn SQL cố định, có tham số để lấy danh bạ BASIC theo tenant và phạm vi quyền.",
+    "query_leave_balance": "Tra cứu quỹ phép cá nhân.",
+    "request_leave": "Tạo đơn nghỉ và chuyển phê duyệt.",
+    "create_onboarding_workflow": "Khởi tạo workflow onboarding liên phòng ban.",
+    "get_contract_expiry": "Theo dõi hợp đồng và thời gian thử việc.",
+    "list_pending_hr_approvals": "Liệt kê card chờ duyệt theo phạm vi quản lý.",
+    "export_hr_directory": "Xuất danh bạ HR theo quyền ra Excel, PDF hoặc JSON.",
+    "list_leave_requests": "Tra cứu đơn nghỉ và lịch nghỉ: của chính mình, hoặc của người trong phạm vi khi có quyền xem dữ liệu nghỉ phép.",
+    "cancel_leave_request": "Rút đơn nghỉ của chính mình khi đơn còn chờ duyệt và trả lại ngày phép giữ chỗ.",
+}
+assert set(HR_CAPABILITY_DESCRIPTIONS) == HR_CORE_TOOLS, "every HR capability needs a description"
+
+# The HR capabilities that are also gateway tools, so the LangGraph HR agent can call them.
+# Same names on purpose: one grant switches a capability on or off in both engines.
+# `get_employee_leave_summary` is left out: it is a grant the profile tool probes, not
+# something to call.
+HR_GATEWAY_TOOLS: frozenset[str] = HR_CORE_TOOLS - {"rag_search", "get_employee_leave_summary"}
+
+# HR tools whose reply carries personal data -- a profile, a salary, colleagues' names and
+# leave. Under LangGraph their reply reaches the user from the backend, never through the
+# model, and it is left out of the history later turns hand the model. A leave request's
+# follow-up questions and an export link stay in: the model needs the former to gather a
+# request over several turns.
+HR_PRIVATE_REPLY_TOOLS: frozenset[str] = HR_GATEWAY_TOOLS - {"request_leave", "export_hr_directory"}
+
+
 def default_hr_tools() -> list[str]:
     """Grants for a freshly seeded HR agent, sorted so seeded rows compare cleanly."""
     return sorted(HR_CORE_TOOLS)

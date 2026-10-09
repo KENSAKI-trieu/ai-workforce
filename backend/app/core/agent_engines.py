@@ -5,12 +5,12 @@ evaluation passes while the others stay where they are:
 
     AGENT_ENGINES=KNOWLEDGE=langgraph,LEGAL=langgraph
 
-A role not named there follows LANGGRAPH_ENABLED, the switch that used to move every
-non-HR agent together. Two cases never reach the graph whatever is configured:
+A role not named there follows LANGGRAPH_ENABLED. Agents under development never reach
+the graph whatever is configured: they answer with their fixed reply before any engine runs.
 
-- agents under development answer with their fixed reply before any engine runs;
-- HR, until its capabilities exist as gateway tools with server-side section checks.
-  Its graph today would only have knowledge search.
+HR's capabilities are gateway tools under their own names, each running the deterministic
+HR chat's branch for it, so HR moves like any other role; its deterministic flow stays as
+the fallback when the AI service is down.
 
 Finance is the other way round: it has no deterministic flow, so it always runs on the
 graph (GRAPH_ONLY).
@@ -29,7 +29,7 @@ DETERMINISTIC = "deterministic"
 LANGGRAPH = "langgraph"
 ENGINES = frozenset({DETERMINISTIC, LANGGRAPH})
 # Roles whose tools are not in the gateway yet, so the graph cannot serve them.
-NOT_READY_FOR_LANGGRAPH = frozenset({"HR"})
+NOT_READY_FOR_LANGGRAPH: frozenset[str] = frozenset()
 # Roles with no deterministic flow at all: their tools exist only in the gateway, so the
 # graph is the only engine that can answer them, whatever is configured.
 GRAPH_ONLY = frozenset({"FINANCE"})
@@ -59,7 +59,7 @@ def engine_for(role_code: str) -> str:
         if configured == DETERMINISTIC:
             logger.warning("AGENT_ENGINES asks for the deterministic flow for %s, which has none; using LangGraph", role)
         return LANGGRAPH
-    wanted = configured or (LANGGRAPH if settings.LANGGRAPH_ENABLED and role != "HR" else DETERMINISTIC)
+    wanted = configured or (LANGGRAPH if settings.LANGGRAPH_ENABLED else DETERMINISTIC)
     if wanted == LANGGRAPH and role in NOT_READY_FOR_LANGGRAPH:
         if configured:
             logger.warning("AGENT_ENGINES asks for LangGraph for %s, whose tools are not ready; using the deterministic flow", role)

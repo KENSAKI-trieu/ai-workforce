@@ -23,6 +23,11 @@ names against the registry instead, so drift fails a test rather than a producti
 from __future__ import annotations
 
 from app.core.finance_capabilities import finance_default_tools
+from app.core.hr_capabilities import (
+    HR_CAPABILITY_DESCRIPTIONS,
+    HR_CAPABILITY_LABELS,
+    HR_GATEWAY_TOOLS,
+)
 
 # Every tool name registered in app/tools/registry.py, with the operator-facing description
 # the configuration UI shows. Names missing from here are rejected as "Unknown tools" by
@@ -54,6 +59,8 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "analyze_spreadsheet": "Tính tổng, đếm, trung bình... trên file Excel người dùng tải lên, kèm biểu đồ.",
     "draft_payment_voucher": "Lập phiếu chi nháp gửi duyệt; không tự chuyển tiền.",
     "draft_payment_reminder": "Soạn thư nhắc nợ khách hàng gửi duyệt; chỉ gửi khi được duyệt.",
+    # The HR capabilities, also gateway tools under the same names for the LangGraph HR agent.
+    **{name: HR_CAPABILITY_DESCRIPTIONS[name] for name in HR_GATEWAY_TOOLS},
 }
 
 GATEWAY_TOOLS: frozenset[str] = frozenset(GATEWAY_TOOL_DESCRIPTIONS)
@@ -86,6 +93,7 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "analyze_spreadsheet": "phân tích file Excel",
     "draft_payment_voucher": "lập phiếu chi",
     "draft_payment_reminder": "soạn thư nhắc nợ",
+    **{name: HR_CAPABILITY_LABELS[name] for name in HR_GATEWAY_TOOLS},
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
 
@@ -98,10 +106,8 @@ assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a us
 # sections HR policy will release, and on this path the argument is chosen by the model.
 # Granting them is an explicit tenant decision, not a default.
 #
-# HR gets knowledge search only. Its other capabilities are HR-specific names checked by
-# its own deterministic executor; search became the same `rag_search` everywhere when the
-# tool names were unified. See apps/ai-service/app/agents/hr/tools.py before granting HR
-# any other gateway tool.
+# HR's gateway tools carry its capability names, so its default grant is the same set the
+# deterministic HR chat checks: one switch turns a capability on or off in both engines.
 GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
     "CEO": (
         "rag_search",
@@ -110,7 +116,7 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
         "generate_legal_document",
         "submit_approval_request",
     ),
-    "HR": ("rag_search",),
+    "HR": tuple(sorted({"rag_search", *HR_GATEWAY_TOOLS})),
     "LEGAL": (
         "rag_search",
         "audit_contract_risk",

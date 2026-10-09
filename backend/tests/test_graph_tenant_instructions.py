@@ -226,8 +226,7 @@ def test_preview_of_a_langgraph_role_shows_what_the_graph_receives(
 
 
 def test_preview_of_a_deterministic_role_has_no_graph_block(client, ceo_token_headers, monkeypatch):
-    # HR never runs through the graph, whatever AGENT_ENGINES says.
-    monkeypatch.setattr("app.core.agent_engines.settings.AGENT_ENGINES", "HR=langgraph")
+    monkeypatch.setattr("app.core.agent_engines.settings.AGENT_ENGINES", "HR=deterministic")
     body = client.get("/api/v1/plugins/preview/HR/answer", headers=ceo_token_headers).json()
     assert body["engine"] == "deterministic"
     assert body["graph"] is None

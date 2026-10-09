@@ -137,6 +137,9 @@ def stream_hr_chat_events(
         leave_draft=leave_draft,
         leave_cancel_request=leave_cancel_request,
         on_llm_usage=record_usage,
+        # The gate is the deterministic flow: when HR runs on the graph, it is reached as
+        # the graph's fallback and must not send the turn back there.
+        allow_graph=False,
     )
     if response.get("tools_executed"):
         yield {"event": "status", "phase": "TOOL_CALLING"}

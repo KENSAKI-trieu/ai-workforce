@@ -1,8 +1,9 @@
 """Dispatch of one AI Employee chat turn.
 
 Loads the agent, applies the tenant's plugin narrowing, answers agents that are under
-development, sends non-HR agents through LangGraph when it is on, and otherwise hands the
-turn to the role's own flow in app/agents/<role>/.
+development, sends the turn through LangGraph when the role's engine is the graph, and
+otherwise hands it to the role's own flow in app/agents/<role>/ -- for HR, its LLM-first
+gate, which is also where an HR graph turn falls back to.
 """
 
 from __future__ import annotations
@@ -46,24 +47,29 @@ def execute_agent_chat(
     *,
     allow_graph: bool = True,
 ) -> Dict[str, Any]:
-    """Run the HR LLM-first gate, then dispatch to retrieval or governed tools."""
-    # The HR gate calls back into the core below, so it is imported when used.
-    from app.agents.hr.stream import stream_hr_chat_events
-
+    """Run the turn on the role's engine: the graph, or its deterministic flow."""
     # Every LLM call of the turn runs on the model chosen for this agent.
     with using_model(agent_model_name(db, user.tenant_id, role_code)):
-        if role_code.upper() != "HR":
+        if role_code.upper() != "HR" or (allow_graph and uses_langgraph("HR")):
             return _execute_agent_chat_core(
                 db, user, role_code, message, thread_id, allow_graph=allow_graph
             )
+        return _run_hr_gate(db, user, role_code, message, thread_id)
 
-        response: Dict[str, Any] | None = None
-        for event in stream_hr_chat_events(db, user, role_code, message, thread_id):
-            if event["event"] == "complete":
-                response = event["response"]
-        if response is None:
-            raise RuntimeError("HR chat flow ended without a response")
-        return response
+
+def _run_hr_gate(
+    db: Session, user: User, role_code: str, message: str, thread_id: str | None
+) -> Dict[str, Any]:
+    # The HR gate calls back into the core below, so it is imported when used.
+    from app.agents.hr.stream import stream_hr_chat_events
+
+    response: Dict[str, Any] | None = None
+    for event in stream_hr_chat_events(db, user, role_code, message, thread_id):
+        if event["event"] == "complete":
+            response = event["response"]
+    if response is None:
+        raise RuntimeError("HR chat flow ended without a response")
+    return response
 
 
 
@@ -148,6 +154,10 @@ def _execute_agent_chat_core(
             ):
                 raise
             logger.exception("LangGraph runtime failed; using the legacy deterministic executor")
+            if role_code_upper == "HR" and hr_intent_override is None:
+                # HR's deterministic flow starts at its gate, which routes the turn first;
+                # dispatching here would route it on keywords alone.
+                return _run_hr_gate(db, user, role_code, message, thread_id)
 
     try:
         return _dispatch_deterministic(

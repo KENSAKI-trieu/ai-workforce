@@ -25,6 +25,7 @@ from app.core.gateway_tools import (
     GATEWAY_TOOLS,
     effective_tool_grants,
 )
+from app.core.hr_capabilities import HR_CORE_TOOLS, HR_GATEWAY_TOOLS
 from app.core.security import create_internal_tool_token
 from app.models.models import AIAgent, AuditLog, Task, User, WorkflowApproval
 from app.agents.langgraph.engine import LangGraphEngine
@@ -99,8 +100,9 @@ def test_gateway_grant_names_exist_in_registry() -> None:
         # Without retrieval no domain can ground a single answer.
         assert "rag_search" in grants, role_code
         if role_code == "HR":
-            # Search only: its other capabilities are HR names checked by its executor.
-            assert grants == ("rag_search",)
+            # Its capabilities, under the names its deterministic chat checks.
+            assert set(grants) == {"rag_search"} | HR_GATEWAY_TOOLS
+            assert set(grants) <= HR_CORE_TOOLS
 
 
 def test_default_agent_tools_carry_the_gateway_grants() -> None:
@@ -298,16 +300,23 @@ def test_search_rag_applies_the_agent_knowledge_scope(
         {"tenant_id": str(actor.tenant_id), "audit": _audit(), "query": "chinh sach"}
     )
 
-    agent = SimpleNamespace(knowledge_access=["collection:HR Policies"])
+    agent = SimpleNamespace(role_code="KNOWLEDGE", knowledge_access=["collection:HR Policies"])
     search_rag(ToolContext(db=transactional_db_session, actor=actor, agent=agent), request)
     assert captured["agent_access"] == ["collection:HR Policies"]
+    assert captured["department"] != "HR"
+
+    # The HR agent searches the HR shelf whatever the asker's department, as its
+    # deterministic chat always has.
+    hr_agent = SimpleNamespace(role_code="HR", knowledge_access=[])
+    search_rag(ToolContext(db=transactional_db_session, actor=actor, agent=hr_agent), request)
+    assert captured["department"] == "HR"
 
     # A user acting without an AI Employee has no agent scope to narrow to.
     search_rag(ToolContext(db=transactional_db_session, actor=actor, agent=None), request)
     assert captured["agent_access"] is None
 
     # An agent configured with an empty scope must not read as "unscoped".
-    unscoped = SimpleNamespace(knowledge_access=[])
+    unscoped = SimpleNamespace(role_code="KNOWLEDGE", knowledge_access=[])
     search_rag(ToolContext(db=transactional_db_session, actor=actor, agent=unscoped), request)
     assert captured["agent_access"] is None
 

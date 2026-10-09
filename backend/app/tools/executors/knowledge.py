@@ -16,6 +16,11 @@ from app.tools.schemas import RAGSearchInput
 def search_rag(context: ToolContext, request: RAGSearchInput) -> list[dict[str, Any]]:
     actor = context.actor
     agent = context.agent
+    scope = user_search_scope(context.db, actor)
+    if agent is not None and (agent.role_code or "").upper() == "HR":
+        # As in the deterministic HR chat: HR policy questions search the HR shelf whatever
+        # the asker's own department, or a salesperson could not read the leave policy.
+        scope["department"] = "HR"
     # The result goes to a model, which reads it top to bottom.
     return in_reading_order(hybrid_search_documents(
         db=context.db,
@@ -27,5 +32,5 @@ def search_rag(context: ToolContext, request: RAGSearchInput) -> list[dict[str, 
         # agent read every document its user could reach, ignoring the scope an operator
         # had set for it -- the deterministic executors have always passed this.
         agent_access=(agent.knowledge_access or None) if agent else None,
-        **user_search_scope(context.db, actor),
+        **scope,
     ))

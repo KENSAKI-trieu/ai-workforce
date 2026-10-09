@@ -317,3 +317,127 @@ class DraftPaymentReminderInput(IdempotentToolInput):
             "2 when anything is overdue, else 1."
         ),
     )
+
+
+# --------------------------------------------------------------------------- HR
+# The HR tools run the same governed branches as the deterministic HR chat; these are only
+# what the model read from the conversation. An email never travels here: the graph masks
+# it before the model sees it, so the backend reads it from the user's own messages.
+_EMAIL_NOTE = (
+    "An email the user typed reaches you masked; leave this empty then, the backend reads "
+    "the email from the user's own message."
+)
+
+
+class HRNoArgumentsInput(TenantToolInput):
+    """The asker's own record, or a list the asker's scope decides."""
+
+
+class HRDirectoryInput(TenantToolInput):
+    person: str | None = Field(
+        default=None,
+        max_length=120,
+        description="Name of the one person the user asks about, as written. " + _EMAIL_NOTE,
+    )
+    departments: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description=(
+            "Departments the user named, in their own words (\"kế toán\", \"sales\"); "
+            "empty for the whole company."
+        ),
+    )
+    managers_only: bool = Field(default=False, description="True to list managers only.")
+
+
+class HREmployeeProfileInput(TenantToolInput):
+    employee: Literal["SELF", "OTHER"] = Field(
+        default="SELF",
+        description="SELF for the asker's own profile; OTHER for a colleague named by email.",
+    )
+    purpose: Literal[
+        "CONTRACT_RENEWAL",
+        "PERFORMANCE_REVIEW",
+        "ONBOARDING",
+        "PAYROLL_PROCESSING",
+    ] | None = Field(
+        default=None,
+        description=(
+            "For OTHER, the business purpose the user stated in this conversation. Never "
+            "infer one: leave it empty and the backend asks for it."
+        ),
+    )
+
+
+class HRLeaveBalanceInput(TenantToolInput):
+    person: str | None = Field(
+        default=None,
+        max_length=120,
+        description=(
+            "Only when the user asks about somebody else's leave days: that person's name. "
+            "Empty for the user's own balance."
+        ),
+    )
+
+
+class HRRequestLeaveInput(IdempotentToolInput):
+    start_date: date | None = Field(default=None, description="First day off, YYYY-MM-DD.")
+    end_date: date | None = Field(default=None, description="Last day off, YYYY-MM-DD.")
+    reason: str | None = Field(default=None, max_length=500, description="The reason the user gave.")
+    abandon: bool = Field(
+        default=False,
+        description="True when the user drops a request you were still gathering; nothing is filed.",
+    )
+
+
+class HRCancelLeaveInput(IdempotentToolInput):
+    start_date: date | None = Field(
+        default=None, description="A day of the request to withdraw, if the user named one."
+    )
+    end_date: date | None = Field(default=None, description="Its last day, if the user named a range.")
+
+
+class HRLeaveRequestsInput(TenantToolInput):
+    view: Literal["WHO_IS_OFF", "REQUESTS"] = Field(
+        description=(
+            "WHO_IS_OFF: who is or will be on leave on a day or between two dates. "
+            "REQUESTS: leave requests and their status (waiting, approved, rejected)."
+        ),
+    )
+    whose: Literal["SELF", "TEAM"] = Field(
+        default="SELF",
+        description="For REQUESTS: the user's own requests, or their team's.",
+    )
+    start_date: date | None = Field(
+        default=None,
+        description=(
+            "First day of the period the user asks about, YYYY-MM-DD, worked out from today's "
+            "date: \"tuần này\" starts on this week's Monday, \"tháng 11\" on 1 November. Empty "
+            "only when the user names no day or period; WHO_IS_OFF then means today."
+        ),
+    )
+    end_date: date | None = Field(
+        default=None,
+        description=(
+            "Last day of that period (this week's Sunday, 30 November); empty for one day. "
+            "A period always needs both dates, or only its first day is answered."
+        ),
+    )
+    departments: list[str] = Field(
+        default_factory=list,
+        max_length=10,
+        description="Departments the user named, in their own words; empty for all.",
+    )
+
+
+class HRExportInput(TenantToolInput):
+    directory: Literal["employees", "managers"] | None = Field(
+        default=None, description="Which list; empty when the user did not say."
+    )
+    format: Literal["xlsx", "pdf", "json"] | None = Field(
+        default=None, description="File format (Excel is xlsx); empty when the user did not say."
+    )
+
+
+class HROnboardingInput(IdempotentToolInput):
+    """The new hire is named by email in the user's message, which the backend reads."""

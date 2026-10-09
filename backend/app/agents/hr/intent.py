@@ -365,6 +365,42 @@ def _resolve_requested_departments(
     return tuple(dict.fromkeys(matched)), mentions_department
 
 
+_NAMED_DEPARTMENT_LEADIN = re.compile(r"^(?:phong ban|phong|bo phan|department|ban|khoi|team|ben)\s+")
+
+
+def _departments_for_names(
+    db: Session, user: User, names: list[str]
+) -> tuple[tuple[str, ...], str | None]:
+    """Department codes for names a tool call carries, and the first name matching none.
+
+    The model passes the user's own words ("kế toán", "bên sales"), not codes: it does
+    not know this company's list. A word matches a department whose code or name it equals
+    or sits inside, so "kế toán" finds "Kế toán & Tài chính". A word matching nothing is
+    returned rather than dropped, because dropping it would list the whole company under
+    the department the user asked about.
+    """
+    catalogue = [
+        (code, _normalize_intent_text(code), _normalize_intent_text(name))
+        for code, name in list_tenant_departments(db, actor=user)
+    ]
+    matched: list[str] = []
+    for raw in names:
+        word = _NAMED_DEPARTMENT_LEADIN.sub("", _normalize_intent_text(raw)).strip()
+        if not word:
+            continue
+        hits = [
+            code
+            for code, folded_code, folded_name in catalogue
+            if word == folded_code
+            or re.search(rf"(?<!\w){re.escape(word)}(?!\w)", folded_name)
+            or re.search(rf"(?<!\w){re.escape(folded_name)}(?!\w)", word)
+        ]
+        if not hits:
+            return tuple(dict.fromkeys(matched)), raw.strip()
+        matched.extend(hits)
+    return tuple(dict.fromkeys(matched)), None
+
+
 def _unknown_department_reply(db: Session, user: User) -> str:
     known = list_tenant_departments(db, actor=user)
     if not known:

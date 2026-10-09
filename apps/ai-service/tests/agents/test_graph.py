@@ -45,7 +45,7 @@ def _security(
     role: str = "Employee",
     department: str = "HR",
     workflow_id: uuid.UUID | None = None,
-    agent_role: str = "HR",
+    agent_role: str = "CEO",
 ):
     return AgentRuntimeContext(
         tenant_id=uuid.uuid4(),
@@ -147,7 +147,7 @@ def test_read_only_tool_executes_then_returns_to_model_decision() -> None:
         tools={"rag_search": rag, "leave_lookup": leave},
     )
     result = LangGraphEngine().invoke(
-        _state(security, "Check my leave balance", requested_agent="HR"),
+        _state(security, "Check my leave balance", requested_agent="CEO"),
         context=context,
         thread_id="read-thread",
     )
@@ -175,7 +175,7 @@ def test_action_tool_interrupts_and_executes_only_after_approval() -> None:
     )
     engine = LangGraphEngine()
     first = engine.invoke(
-        _state(security, "Create a report task", requested_agent="HR"),
+        _state(security, "Create a report task", requested_agent="CEO"),
         context=context,
         thread_id="action-thread",
     )
@@ -220,7 +220,7 @@ def test_approval_is_registered_idempotently_before_interrupt() -> None:
     )
     engine = LangGraphEngine()
     first = engine.invoke(
-        _state(security, "Create task", requested_agent="HR"),
+        _state(security, "Create task", requested_agent="CEO"),
         context=context,
         thread_id=str(security.conversation_id),
     )
@@ -269,7 +269,7 @@ def test_separate_actions_in_one_thread_get_distinct_approval_ids() -> None:
     thread_id = str(security.conversation_id)
 
     engine.invoke(
-        _state(security, "Create first task", requested_agent="HR"),
+        _state(security, "Create first task", requested_agent="CEO"),
         context=context,
         thread_id=thread_id,
     )
@@ -281,7 +281,7 @@ def test_separate_actions_in_one_thread_get_distinct_approval_ids() -> None:
     )
 
     engine.invoke(
-        _state(security, "Create second task", requested_agent="HR"),
+        _state(security, "Create second task", requested_agent="CEO"),
         context=context,
         thread_id=thread_id,
     )
@@ -302,7 +302,7 @@ def test_action_rejection_does_not_execute_tool() -> None:
         tools={"rag_search": rag, "create_task": task},
     )
     engine = LangGraphEngine()
-    engine.invoke(_state(security, "Create task", requested_agent="HR"), context=context, thread_id="reject-thread")
+    engine.invoke(_state(security, "Create task", requested_agent="CEO"), context=context, thread_id="reject-thread")
     final = engine.resume(False, context=context, thread_id="reject-thread")
     assert task.calls == []
     assert final["tool_calls"][0]["status"] == "REJECTED"
@@ -338,7 +338,7 @@ def test_resume_rejects_a_different_checkpoint_principal() -> None:
         tools={"rag_search": rag, "create_task": task},
     )
     engine = LangGraphEngine()
-    engine.invoke(_state(security, "Create task", requested_agent="HR"), context=context, thread_id="bound-thread")
+    engine.invoke(_state(security, "Create task", requested_agent="CEO"), context=context, thread_id="bound-thread")
 
     other_security = security.model_copy(update={"user_id": uuid.uuid4()})
     other_context = OrchestrationRuntimeContext(
@@ -363,7 +363,7 @@ def test_resume_rechecks_current_tool_acl_before_action() -> None:
         tools={"rag_search": rag, "create_task": task},
     )
     engine = LangGraphEngine()
-    engine.invoke(_state(security, "Create task", requested_agent="HR"), context=context, thread_id="revoked-thread")
+    engine.invoke(_state(security, "Create task", requested_agent="CEO"), context=context, thread_id="revoked-thread")
 
     revoked_security = security.model_copy(update={"allowed_tools": frozenset({"rag_search"})})
     revoked_context = OrchestrationRuntimeContext(
@@ -388,7 +388,7 @@ def test_suspended_thread_cannot_be_overwritten_by_a_new_run() -> None:
         tools={"create_task": task},
     )
     engine = LangGraphEngine()
-    state = _state(security, "Create task", requested_agent="HR")
+    state = _state(security, "Create task", requested_agent="CEO")
     engine.invoke(state, context=context, thread_id="suspended-thread")
 
     with pytest.raises(ValueError, match="must be resumed"):

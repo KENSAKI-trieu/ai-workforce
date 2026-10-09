@@ -42,12 +42,14 @@ def test_chat_stream_emits_public_sse_contract(
     assert "system_prompt" not in response.text
 
 
-def test_hr_stream_uses_governed_hr_flow_when_langgraph_is_enabled(
+def test_hr_stream_uses_governed_hr_flow_when_hr_stays_deterministic(
     client,
     employee_token_headers,
     monkeypatch,
 ) -> None:
+    # The graph is on for everybody else; HR is pinned to its own flow.
     monkeypatch.setattr(chat_api.settings, "LANGGRAPH_ENABLED", True)
+    monkeypatch.setattr(chat_api.settings, "AGENT_ENGINES", "HR=deterministic")
 
     def fake_hr_flow(*_args, **_kwargs):
         yield {"event": "status", "phase": "ANALYZING"}

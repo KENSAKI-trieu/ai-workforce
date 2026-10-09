@@ -22,7 +22,7 @@ names against the registry instead, so drift fails a test rather than a producti
 
 from __future__ import annotations
 
-from app.core.finance_capabilities import finance_default_tools
+from app.core.finance_capabilities import finance_default_tools, versioned_default_tools
 from app.core.hr_capabilities import (
     HR_CAPABILITY_DESCRIPTIONS,
     HR_CAPABILITY_LABELS,
@@ -59,6 +59,7 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "analyze_spreadsheet": "Tính tổng, đếm, trung bình... trên file Excel người dùng tải lên, kèm biểu đồ.",
     "draft_payment_voucher": "Lập phiếu chi nháp gửi duyệt; không tự chuyển tiền.",
     "draft_payment_reminder": "Soạn thư nhắc nợ khách hàng gửi duyệt; chỉ gửi khi được duyệt.",
+    "start_marketing_campaign": "Lập chiến dịch truyền thông từ brief trong chat: dàn ý chờ người viết duyệt, rồi bài Facebook, Instagram, Threads.",
     # The HR capabilities, also gateway tools under the same names for the LangGraph HR agent.
     **{name: HR_CAPABILITY_DESCRIPTIONS[name] for name in HR_GATEWAY_TOOLS},
 }
@@ -93,6 +94,7 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "analyze_spreadsheet": "phân tích file Excel",
     "draft_payment_voucher": "lập phiếu chi",
     "draft_payment_reminder": "soạn thư nhắc nợ",
+    "start_marketing_campaign": "lập chiến dịch truyền thông",
     **{name: HR_CAPABILITY_LABELS[name] for name in HR_GATEWAY_TOOLS},
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
@@ -128,6 +130,8 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
     "FINANCE": finance_default_tools(),
     "SALES": ("rag_search", "create_task", "submit_approval_request"),
     "KNOWLEDGE": ("rag_search",),
+    # Versioned like Finance; see MARKETING_TOOL_INTRODUCTIONS.
+    "MARKETING": versioned_default_tools("MARKETING"),
 }
 
 

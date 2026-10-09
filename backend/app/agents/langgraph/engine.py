@@ -542,6 +542,8 @@ class LangGraphEngine:
             "customer_support_tool_scope": "ANALYZING",
             "knowledge_policy": "ANALYZING",
             "knowledge_tool_scope": "ANALYZING",
+            "marketing_policy": "ANALYZING",
+            "marketing_tool_scope": "ANALYZING",
             "ceo_policy": "ANALYZING",
             "ceo_tool_scope": "ANALYZING",
             "retrieve_context": "SEARCHING",

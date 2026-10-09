@@ -68,7 +68,7 @@ def test_roles_resolve_to_graphs_and_unknown_roles_are_refused() -> None:
     # IT and Sales are served by the customer-support graph.
     assert resolve_agent("IT") == "CUSTOMER_SUPPORT"
     assert resolve_agent("SALES") == "CUSTOMER_SUPPORT"
-    for unknown in ("MARKETING", "", None):
+    for unknown in ("PURCHASING", "", None):
         with pytest.raises(ValueError):
             resolve_agent(unknown)
 
@@ -115,7 +115,7 @@ def test_the_api_refuses_an_unknown_or_missing_agent(path, monkeypatch) -> None:
     monkeypatch.setattr("app.agents.base.runtime.configured_chat_models", lambda **_: [])
     client = TestClient(app)
     headers = {"X-Internal-Tool-Authorization": "Bearer internal-tool-jwt"}
-    unknown = client.post(path, json=_payload(requested_agent="MARKETING"), headers=headers)
+    unknown = client.post(path, json=_payload(requested_agent="PURCHASING"), headers=headers)
     assert unknown.status_code == 422
     missing = _payload()
     del missing["requested_agent"]

@@ -40,6 +40,7 @@ from app.tools.schemas import (
     PaymentScheduleInput,
     ProposeJournalEntryInput,
     LeaveLookupInput,
+    MarketingCampaignInput,
     RAGSearchInput,
     SpreadsheetAnalysisInput,
     SpreadsheetListInput,
@@ -265,7 +266,7 @@ def build_tool_registry() -> ToolRegistry:
             review_contract_risk, terminal=True,
         ),
     )
-    for definition in definitions + _finance_definitions() + _hr_definitions():
+    for definition in definitions + _finance_definitions() + _hr_definitions() + _marketing_definitions():
         registry.register(definition)
     return registry
 
@@ -591,6 +592,28 @@ def _hr_definitions() -> tuple[ToolDefinition, ...]:
             HROnboardingInput, ToolAction.WRITE, {"*"}, {"*"}, 20,
             "tool.hr.onboarding", hr_onboarding,
             terminal=True, runs_on_request=True,
+        ),
+    )
+
+
+def _marketing_definitions() -> tuple[ToolDefinition, ...]:
+    from app.tools.executors.marketing import start_marketing_campaign
+
+    # A write the user's request authorises: it stores a campaign that waits for its own
+    # author, and publishes or escalates nothing. 90s: the outline is one long model call
+    # after retrieval.
+    return (
+        _definition(
+            "start_marketing_campaign",
+            "Start a social media campaign from the brief the user wrote, only when the user "
+            "asks to plan, run or write a campaign or posts. The backend reads the brief from "
+            "the user's own message; do not pass it. It drafts the campaign outline from the "
+            "company's documents and links the user to the page where they approve it and "
+            "then the Facebook, Instagram and Threads posts. Its result is the answer to the "
+            "user; call it once per brief.",
+            MarketingCampaignInput, ToolAction.WRITE, {"*"}, {"*"}, 90,
+            "tool.marketing.campaign.start", start_marketing_campaign,
+            terminal=True, runs_on_request=True, permission="marketing.campaign.create",
         ),
     )
 

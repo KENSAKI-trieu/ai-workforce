@@ -21,6 +21,11 @@ os.environ["SEED_DEFAULT_PASSWORD"] = "Password123!"
 # would, and does not run a Redis. The limiter has its own tests, which switch it back on
 # against a fake client.
 os.environ["LOGIN_RATE_LIMIT_ENABLED"] = "false"
+# Every role on its default engine, as in CI. A developer's backend/.env moving a role to
+# LangGraph (AGENT_ENGINES=HR=langgraph) sent the HR gate's tests through the graph; tests
+# of the graph path set these themselves.
+os.environ["AGENT_ENGINES"] = ""
+os.environ["LANGGRAPH_ENABLED"] = "false"
 
 from app.main import app
 from app.core.database import get_db, sync_engine

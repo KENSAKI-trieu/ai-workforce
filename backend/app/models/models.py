@@ -2172,3 +2172,48 @@ class AgentToolOutput(Base):
     # Response keys the chat renders as cards (hr_card, approval_card), by name.
     cards: Mapped[dict] = mapped_column(EncryptedJSONB, nullable=False, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+
+
+class MarketingCampaign(Base):
+    """One run of the Marketing Agent: brief, outline, three posts and their fact-check.
+
+    The run stops twice for its author -- after the outline and after the drafts -- and the
+    row is where it waits: `stage` says which decision is due, and the API refuses a
+    decision for any other stage. The brief and everything written from it are sealed, as
+    they may carry unannounced products, prices or customers.
+    """
+
+    __tablename__ = "marketing_campaigns"
+    __table_args__ = (
+        Index("idx_marketing_campaigns_tenant_creator", "tenant_id", "created_by_id", "created_at"),
+    )
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    created_by_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id"), nullable=False
+    )
+    # The chat conversation the campaign was started from, when it was.
+    conversation_id: Mapped[uuid.UUID | None] = mapped_column(UUID(as_uuid=True))
+    title: Mapped[str] = mapped_column(String(200), nullable=False, default="")
+    brief: Mapped[str] = mapped_column(EncryptedText, nullable=False)
+    stage: Mapped[str] = mapped_column(String(30), nullable=False, default="OUTLINE_PENDING")
+    outline: Mapped[str | None] = mapped_column(EncryptedText)
+    outline_feedback: Mapped[str | None] = mapped_column(EncryptedText)
+    # Retrieved chunks, numbered as the outline cites them ([1], [2] ...).
+    sources: Mapped[list] = mapped_column(EncryptedJSONB, nullable=False, default=list)
+    drafts: Mapped[dict] = mapped_column(EncryptedJSONB, nullable=False, default=dict)
+    fact_check_report: Mapped[dict | None] = mapped_column(EncryptedJSONB)
+    refine_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)
+    # SET NULL: deleting the approval must not take the campaign with it.
+    approval_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("workflow_approvals.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), server_default=func.now())
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+    created_by = relationship("User", foreign_keys=[created_by_id])

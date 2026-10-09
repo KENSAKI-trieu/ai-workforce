@@ -12,8 +12,8 @@ HR's capabilities are gateway tools under their own names, each running the dete
 HR chat's branch for it, so HR moves like any other role; its deterministic flow stays as
 the fallback when the AI service is down.
 
-Finance is the other way round: it has no deterministic flow, so it always runs on the
-graph (GRAPH_ONLY).
+Finance and Marketing are the other way round: they have no deterministic chat flow, so
+they always run on the graph (GRAPH_ONLY).
 """
 
 from __future__ import annotations
@@ -32,7 +32,7 @@ ENGINES = frozenset({DETERMINISTIC, LANGGRAPH})
 NOT_READY_FOR_LANGGRAPH: frozenset[str] = frozenset()
 # Roles with no deterministic flow at all: their tools exist only in the gateway, so the
 # graph is the only engine that can answer them, whatever is configured.
-GRAPH_ONLY = frozenset({"FINANCE"})
+GRAPH_ONLY = frozenset({"FINANCE", "MARKETING"})
 
 
 def parse_agent_engines(raw: str | None) -> dict[str, str]:

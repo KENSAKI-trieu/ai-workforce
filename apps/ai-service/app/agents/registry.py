@@ -23,13 +23,15 @@ from app.agents.finance.agent import POLICY as FINANCE_POLICY
 from app.agents.hr.graph import build_graph as build_hr_graph
 from app.agents.knowledge.graph import build_graph as build_knowledge_graph
 from app.agents.legal.graph import build_graph as build_legal_graph
+from app.agents.marketing.graph import build_graph as build_marketing_graph
 
 GRAPH_BUILDERS: dict[str, Any] = {
     "HR": build_hr_graph,
     "LEGAL": build_legal_graph,
     "KNOWLEDGE": build_knowledge_graph,
-    # Under development: the backend never routes these roles here yet.
+    "MARKETING": build_marketing_graph,
     "FINANCE": lambda: build_agent_graph(FINANCE_POLICY),
+    # Under development: the backend never routes these roles here yet.
     "CUSTOMER_SUPPORT": lambda: build_agent_graph(CUSTOMER_SUPPORT_POLICY),
     "CEO": lambda: build_agent_graph(CEO_POLICY),
 }

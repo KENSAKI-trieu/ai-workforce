@@ -13,7 +13,11 @@ from sqlalchemy import text
 from app.core.database import sync_engine, Base, SyncSessionLocal
 from app.core.config import settings
 from app.core.security import get_password_hash
-from app.core.finance_capabilities import configuration_version_for, upgrade_finance_grants
+from app.core.finance_capabilities import (
+    VERSIONED_ROLE_TOOLS,
+    configuration_version_for,
+    upgrade_versioned_grants,
+)
 from app.core.hr_capabilities import (
     DEFAULT_GRANTS_COMPLETE_VERSION,
     HR_CONFIGURATION_VERSION,
@@ -324,6 +328,13 @@ def init_db():
                 "system_prompt": "You are the Finance AI Agent. Answer from the company's books through your tools, and draft entries for human approval.",
             },
             {
+                "role_code": "MARKETING",
+                "name": "Marketing AI",
+                "avatar_emoji": "📣",
+                "description": "Lập chiến dịch truyền thông: dàn ý, bài Facebook, Instagram, Threads, kiểm chứng số liệu và gửi duyệt.",
+                "system_prompt": "You are the Marketing AI Agent. Plan campaigns from a brief and the company's documents; people approve every stage.",
+            },
+            {
                 "role_code": "SALES",
                 "name": "Sales & CRM AI",
                 "avatar_emoji": "📈",
@@ -361,10 +372,10 @@ def init_db():
                 )
                 db.add(agent)
                 logger.info(f"Seeded AI Agent: {adata['role_code']} ({adata['name']})")
-            elif adata["role_code"] == "FINANCE":
+            elif adata["role_code"] in VERSIONED_ROLE_TOOLS:
                 # Its own versioning: the HR-numbered branches below would stamp a version
                 # the Finance upgrade then reads as "never upgraded".
-                if upgrade_finance_grants(agent):
+                if upgrade_versioned_grants(agent):
                     agent.description = adata["description"]
                     agent.system_prompt = adata["system_prompt"]
             elif agent.tools_access == legacy_tools and adata["role_code"] != "HR":

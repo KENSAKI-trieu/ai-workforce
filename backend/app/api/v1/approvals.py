@@ -28,6 +28,11 @@ from app.domains.finance.approvals import (
     is_finance_approval,
 )
 from app.domains.hr.hr_service import finalize_leave_approval
+from app.domains.marketing.approvals import (
+    apply_marketing_edit,
+    finalize_marketing_approval,
+    is_marketing_approval,
+)
 from app.domains.platform.approval_access import (
     can_approve as _can_approve,
     eligible_approvers,
@@ -216,6 +221,9 @@ def process_approval_action(
         # Only what the draft's own module accepts changes; the amount, the permission it
         # needs and who asked stay as the server wrote them.
         approval.payload = apply_finance_edit(db, approval, req.edited_payload)
+    elif req.action == "EDIT_AND_APPROVE" and is_marketing_approval(approval):
+        # Post texts only: who asked and which campaign it lands on stay as written.
+        approval.payload = apply_marketing_edit(approval, req.edited_payload)
     elif req.action == "EDIT_AND_APPROVE":
         approval.payload = req.edited_payload
     approved = req.action in {"APPROVE", "EDIT_AND_APPROVE"}
@@ -252,6 +260,9 @@ def process_approval_action(
 
     if is_finance:
         finalize_finance_approval(db, approval, current_user, approved)
+
+    if is_marketing_approval(approval):
+        finalize_marketing_approval(db, approval, approved)
 
     if approval.action_type == "LEAVE_REQUEST":
         finalize_leave_approval(

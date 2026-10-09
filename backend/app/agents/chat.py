@@ -38,6 +38,12 @@ FINANCE_UNAVAILABLE_REPLY = (
 )
 
 
+MARKETING_UNAVAILABLE_REPLY = (
+    "Trợ lý Marketing tạm thời không trả lời được trong chat vì dịch vụ AI đang không phản "
+    "hồi. Bạn vẫn lập chiến dịch được ở mục Chiến dịch mới, hoặc thử lại sau ít phút."
+)
+
+
 def execute_agent_chat(
     db: Session,
     user: User,
@@ -243,6 +249,10 @@ def _dispatch_deterministic(
     # -----------------------------------------------------------------------
     elif role_code_upper == "FINANCE":
         response_data["reply"] = FINANCE_UNAVAILABLE_REPLY
+        return response_data
+
+    elif role_code_upper == "MARKETING":
+        response_data["reply"] = MARKETING_UNAVAILABLE_REPLY
         return response_data
 
     else:

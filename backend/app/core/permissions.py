@@ -189,6 +189,21 @@ PERMISSIONS: tuple[Permission, ...] = (
         "Tải bảng tính của riêng mình lên để tính tổng, đếm, trung bình theo nhóm và xem biểu đồ, "
         "kể cả hỏi Trợ lý Tài chính về file đó. Mỗi người chỉ thấy file của mình; không đọc sổ sách.",
     ),
+    # --- Marketing ---
+    Permission(
+        "marketing.campaign.create", "Marketing", "Lập chiến dịch truyền thông",
+        "Nhờ Trợ lý Marketing lập dàn ý và viết bài Facebook, Instagram, Threads từ một brief, "
+        "duyệt từng bước và gửi bản cuối đi phê duyệt. Mỗi người thấy chiến dịch của mình.",
+    ),
+    Permission(
+        "marketing.campaign.view_all", "Marketing", "Xem mọi chiến dịch",
+        "Xem chiến dịch truyền thông do người khác trong công ty lập.",
+    ),
+    Permission(
+        "marketing.content.approve", "Marketing", "Duyệt nội dung truyền thông",
+        "Duyệt hoặc từ chối bài truyền thông được gửi lên trước khi đăng. Không tự duyệt bài "
+        "của chính mình.",
+    ),
     # --- Báo cáo ---
     Permission(
         "analytics.view", "Báo cáo", "Xem báo cáo vận hành",
@@ -294,7 +309,15 @@ _MANAGER_CORE = (
     "finance.budget.view_own",
     # One's own spreadsheet. Everyone except a guest had it before it became a box.
     "finance.sheet.analyze",
+    "marketing.campaign.create",
+    # Signing content sits with whoever signs other requests; held by every Manager, so it
+    # is no admin marker.
+    "marketing.content.approve",
 )
+
+# Reading everybody's campaigns. Kept out of _ADMIN_CORE for the reason the finance powers
+# are: anything there a Manager lacks would turn a custom position holding it into Admin.
+_MARKETING_LEAD = ("marketing.campaign.view_all",)
 
 # The finance powers. Kept out of _ADMIN_CORE on purpose: everything there that a Manager
 # lacks is an admin marker (see _ADMIN_MARKERS), so ticking "Đề xuất bút toán" on an
@@ -333,7 +356,7 @@ _LINE_MANAGER_SECTIONS = (
 )
 
 _MANAGER_PERMISSIONS = _MANAGER_CORE + _LINE_MANAGER_SECTIONS
-_ADMIN_PERMISSIONS = _ADMIN_CORE + _LINE_MANAGER_SECTIONS
+_ADMIN_PERMISSIONS = _ADMIN_CORE + _LINE_MANAGER_SECTIONS + _MARKETING_LEAD
 
 _ALL_SECTION_PERMISSIONS = tuple(sorted(set(HR_SECTION_PERMISSIONS.values())))
 
@@ -343,7 +366,7 @@ _CEO_PERMISSIONS = _ADMIN_CORE + _ALL_SECTION_PERMISSIONS + (
     "org.structure.manage",
     "hr.scope.company",
     "hr.employee.manage",
-) + _FINANCE_ADMIN
+) + _FINANCE_ADMIN + _MARKETING_LEAD
 
 
 @dataclass(frozen=True)
@@ -369,7 +392,10 @@ DEFAULT_POSITIONS: tuple[DefaultPosition, ...] = (
     DefaultPosition("ceo", "Giám đốc điều hành", "CEO", "owner", _CEO_PERMISSIONS),
     DefaultPosition("admin", "Quản trị viên", "Admin", "ceo", _ADMIN_PERMISSIONS),
     DefaultPosition("manager", "Quản lý", "Manager", "ceo", _MANAGER_PERMISSIONS),
-    DefaultPosition("employee", "Nhân viên", "Employee", "manager", ("finance.sheet.analyze",)),
+    DefaultPosition(
+        "employee", "Nhân viên", "Employee", "manager",
+        ("finance.sheet.analyze", "marketing.campaign.create"),
+    ),
     DefaultPosition("guest", "Khách", "Guest", "manager", ()),
 )
 

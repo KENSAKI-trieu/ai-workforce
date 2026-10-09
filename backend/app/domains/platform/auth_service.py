@@ -17,7 +17,11 @@ from app.core.security import (
     create_refresh_token,
     decode_token,
 )
-from app.core.finance_capabilities import configuration_version_for, upgrade_finance_grants
+from app.core.finance_capabilities import (
+    VERSIONED_ROLE_TOOLS,
+    configuration_version_for,
+    upgrade_versioned_grants,
+)
 from app.core.gateway_tools import GATEWAY_TOOLS, with_gateway_grants
 from app.core.hr_capabilities import (
     DEFAULT_GRANTS_COMPLETE_VERSION,
@@ -52,6 +56,7 @@ DEFAULT_AGENTS = [
     {"name": "Finance Agent", "role_code": "FINANCE", "avatar_emoji": "💰", "description": "Reads e-invoices, matches them to POs, drafts journal entries for approval and answers questions from the books."},
     {"name": "Sales Agent", "role_code": "SALES", "avatar_emoji": "📈", "description": "Looks up inventory, generates PDF quotations, logs leads to CRM."},
     {"name": "Knowledge Agent", "role_code": "KNOWLEDGE", "avatar_emoji": "📚", "description": "Company-wide knowledge base with hybrid RAG search and citations."},
+    {"name": "Marketing Agent", "role_code": "MARKETING", "avatar_emoji": "📣", "description": "Plans multi-channel campaigns: outline, Facebook, Instagram and Threads posts, fact-checked and approved by people."},
 ]
 
 # Capability names dispatched by the deterministic executors, per role. The gateway tool
@@ -76,6 +81,9 @@ DEFAULT_AGENT_CAPABILITIES = {
     "FINANCE": [],
     "SALES": ["generate_quotation_pdf"],
     "KNOWLEDGE": ["rag_search"],
+    # No deterministic flow: the campaign pipeline runs on its own page, and the chat on
+    # the graph with gateway tools, composed in below.
+    "MARKETING": [],
 }
 
 DEFAULT_AGENT_TOOLS = {
@@ -129,8 +137,8 @@ def upgrade_agent_grants(agent: AIAgent) -> bool:
     removed.
     """
     role = (agent.role_code or "").upper()
-    if role == "FINANCE":
-        return upgrade_finance_grants(agent)
+    if role in VERSIONED_ROLE_TOOLS:
+        return upgrade_versioned_grants(agent)
     if role == "HR":
         # Imported here: the agents package imports this module.
         from app.agents.access import _repair_hr_agent_capabilities
@@ -186,13 +194,18 @@ def _seeded_agent(tenant_id: uuid.UUID, agent_data: dict) -> AIAgent:
 def ensure_tenant_default_agents(db: Session, tenant_id: uuid.UUID) -> list[AIAgent]:
     """Ensure that default AI agents exist for a given tenant_id. Auto-seed if missing."""
     agents = db.query(AIAgent).filter(AIAgent.tenant_id == tenant_id).all()
-    if not agents:
-        for agent_data in DEFAULT_AGENTS:
-            db.add(_seeded_agent(tenant_id, agent_data))
+    # Every default role the tenant lacks, not only a tenant with none: a company that
+    # signed up before an AI Employee existed would otherwise never get it. Agents cannot
+    # be deleted, so a missing role was never removed on purpose.
+    present = {agent.role_code for agent in agents}
+    missing = [data for data in DEFAULT_AGENTS if data["role_code"] not in present]
+    for agent_data in missing:
+        db.add(_seeded_agent(tenant_id, agent_data))
+    upgraded = any([upgrade_agent_grants(agent) for agent in agents])
+    if missing or upgraded:
         db.commit()
+    if missing:
         agents = db.query(AIAgent).filter(AIAgent.tenant_id == tenant_id).all()
-    elif any([upgrade_agent_grants(agent) for agent in agents]):
-        db.commit()
     return agents
 
 

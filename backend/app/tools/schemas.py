@@ -441,3 +441,22 @@ class HRExportInput(TenantToolInput):
 
 class HROnboardingInput(IdempotentToolInput):
     """The new hire is named by email in the user's message, which the backend reads."""
+
+
+# --------------------------------------------------------------------------- marketing
+class MarketingCampaignInput(IdempotentToolInput):
+    """Start a campaign from the brief the user wrote in this conversation.
+
+    The brief is not an argument: the backend reads it from the user's own message, so the
+    campaign is written from exactly what they asked for, not from a model's summary of it.
+    """
+
+    from_user_message: int = Field(
+        default=0,
+        ge=0,
+        le=5,
+        description=(
+            "Which of the user's messages holds the brief: 0 is the current message, 1 the "
+            "one before it, and so on. Use 1 when the current message only says to go ahead."
+        ),
+    )

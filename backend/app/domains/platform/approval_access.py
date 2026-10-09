@@ -17,6 +17,11 @@ from app.domains.finance.approvals import (
     no_finance_approver_warning,
 )
 from app.domains.hr.hr_service import can_approve_hr_request
+from app.domains.marketing.approvals import (
+    APPROVE_PERMISSION_LABEL,
+    can_approve_marketing,
+    is_marketing_approval,
+)
 from app.domains.legal.legal_document_submission import can_approve_legal_documents
 from app.domains.platform.position_service import can_sign_approvals, can_sign_critical
 from app.models.models import User, WorkflowApproval
@@ -54,6 +59,8 @@ def can_approve(db: Session, current_user: User, approval: WorkflowApproval) -> 
     if is_finance_approval(approval):
         # Signed by amount: the permission the server wrote when the draft was opened.
         return can_approve_finance(db, current_user, approval)
+    if is_marketing_approval(approval):
+        return can_approve_marketing(db, current_user, approval)
     if str(payload.get("requester_id") or "") == str(current_user.id):
         # Blocking a requester who named themselves approver was only half of it: with
         # `approver_id` left empty this branch fell through to `return True` for anyone
@@ -92,6 +99,8 @@ NO_APPROVER_WARNING = (
 def no_approver_warning(approval: WorkflowApproval) -> str:
     if is_finance_approval(approval):
         return no_finance_approver_warning(approval)
+    if is_marketing_approval(approval):
+        return NO_APPROVER_WARNING.format(permission=APPROVE_PERMISSION_LABEL)
     permission = (
         "Phê duyệt yêu cầu tối quan trọng" if approval.risk_level == "CRITICAL" else "Phê duyệt yêu cầu"
     )

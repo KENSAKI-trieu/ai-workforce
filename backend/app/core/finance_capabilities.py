@@ -1,4 +1,4 @@
-"""The Finance agent's tool grants, and how an existing agent row catches up with them.
+"""The Finance (and Marketing) agents' tool grants, and how an existing row catches up.
 
 Finance runs only on the graph, so its grants are gateway tool names. They arrive in
 stages; each stage is a version, and a row is upgraded once per version by adding only
@@ -54,26 +54,53 @@ def finance_default_tools() -> tuple[str, ...]:
     }))
 
 
+# The Marketing agent's grants, versioned the same way from 201. It has no deterministic
+# chat either: the campaign pipeline runs on its own page and the chat on the graph.
+MARKETING_TOOL_INTRODUCTIONS: dict[int, tuple[str, ...]] = {
+    201: ("rag_search",),
+    202: ("start_marketing_campaign",),
+}
+
+# role -> (version -> tools that version added, tools retired before the first version)
+VERSIONED_ROLE_TOOLS: dict[str, tuple[dict[int, tuple[str, ...]], frozenset[str]]] = {
+    "FINANCE": (FINANCE_TOOL_INTRODUCTIONS, FINANCE_RETIRED_TOOLS),
+    "MARKETING": (MARKETING_TOOL_INTRODUCTIONS, frozenset()),
+}
+
+
+def versioned_default_tools(role_code: str) -> tuple[str, ...]:
+    introductions, _ = VERSIONED_ROLE_TOOLS[role_code.upper()]
+    return tuple(sorted({name for names in introductions.values() for name in names}))
+
+
 def configuration_version_for(role_code: str, hr_version: int) -> int:
     """The version to stamp on a row an administrator just configured."""
-    return FINANCE_CONFIGURATION_VERSION if role_code.upper() == "FINANCE" else hr_version
+    versioned = VERSIONED_ROLE_TOOLS.get(role_code.upper())
+    return max(versioned[0]) if versioned else hr_version
 
 
-def upgrade_finance_grants(agent: Any) -> bool:
-    """Bring a Finance row's grants up to the current version. Returns whether it changed."""
-    if str(agent.role_code or "").upper() != "FINANCE":
+def upgrade_versioned_grants(agent: Any) -> bool:
+    """Bring a Finance or Marketing row's grants up to its role's current version.
+
+    Returns whether it changed. Only the tools of versions newer than the row's are added,
+    so a tool an administrator removed stays removed.
+    """
+    versioned = VERSIONED_ROLE_TOOLS.get(str(agent.role_code or "").upper())
+    if versioned is None:
         return False
+    introductions, retired = versioned
+    current = max(introductions)
     version = agent.configuration_version or 1
-    if version >= FINANCE_CONFIGURATION_VERSION:
+    if version >= current:
         return False
     denied = set(agent.disallowed_actions or [])
     tools = set(agent.tools_access or [])
     allowed = set(agent.allowed_actions or [])
-    if version < min(FINANCE_TOOL_INTRODUCTIONS):
-        tools -= FINANCE_RETIRED_TOOLS
-        allowed -= FINANCE_RETIRED_TOOLS
-        denied -= FINANCE_RETIRED_TOOLS
-    for introduced_in, names in FINANCE_TOOL_INTRODUCTIONS.items():
+    if version < min(introductions):
+        tools -= retired
+        allowed -= retired
+        denied -= retired
+    for introduced_in, names in introductions.items():
         if introduced_in > version:
             additions = set(names) - denied
             tools |= additions
@@ -84,5 +111,12 @@ def upgrade_finance_grants(agent: Any) -> bool:
     agent.tools_access = sorted(tools)
     agent.allowed_actions = sorted(allowed)
     agent.disallowed_actions = sorted(denied)
-    agent.configuration_version = FINANCE_CONFIGURATION_VERSION
+    agent.configuration_version = current
     return True
+
+
+def upgrade_finance_grants(agent: Any) -> bool:
+    """Bring a Finance row's grants up to the current version. Returns whether it changed."""
+    if str(agent.role_code or "").upper() != "FINANCE":
+        return False
+    return upgrade_versioned_grants(agent)

@@ -31,7 +31,8 @@ type View = "new" | "campaigns" | "chat";
 
 interface Agent { name: string; is_active: boolean }
 interface ToolCall { tool_name?: string; status?: string }
-interface Message { id: string; sender: "USER" | "ASSISTANT"; content: string; tools_executed?: ToolCall[] }
+interface Citation { document_title?: string; document_name?: string; section_title?: string | null }
+interface Message { id: string; sender: "USER" | "ASSISTANT"; content: string; tools_executed?: ToolCall[]; citations?: Citation[] }
 interface Conversation { id: string; agent_role: string }
 interface Running { kind: "outline" | "drafts"; state: Record<string, StageState> }
 
@@ -47,6 +48,17 @@ const BRIEF_HINT =
   "Sản phẩm/dịch vụ, mục tiêu (con số, thời hạn), đối tượng khách hàng, thông điệp hoặc ưu đãi muốn nhấn mạnh…";
 const EXAMPLE_BRIEF =
   "Ra mắt ứng dụng PayNow giúp kế toán doanh nghiệp SME đối soát hoá đơn tự động. Mục tiêu 500 lead đăng ký dùng thử trong tháng 11. Đối tượng: kế toán trưởng và chủ doanh nghiệp nhỏ.";
+
+// "[Citation: <document>, v1.0, <section>; chunk=<id>]": the answer is shown without them,
+// its sources as labels underneath.
+const CITATION_TAG = /\s*\[Citation:[^\]]*\]/gi;
+
+function sourceLabels(citations: Citation[] | undefined): string[] {
+  return Array.from(new Set((citations ?? []).map((item) => {
+    const title = item.document_title || item.document_name || "Tài liệu";
+    return item.section_title ? `${title} — ${item.section_title}` : title;
+  })));
+}
 
 function errorText(reason: unknown): string {
   const detail = (reason as { response?: { data?: { detail?: unknown } } })?.response?.data?.detail;
@@ -422,7 +434,12 @@ export default function MarketingAgentPage() {
                     <article key={message.id} className={`${styles.message} ${message.sender === "USER" ? styles.userMessage : ""}`}>
                       <span>{message.sender === "USER" ? "Bạn" : <Bot size={15} />}</span>
                       <div className={styles.bubble}>
-                        {message.sender === "USER" ? <div>{message.content}</div> : <ChatMessageContent content={message.content} />}
+                        {message.sender === "USER" ? <div>{message.content}</div> : <ChatMessageContent content={message.content.replace(CITATION_TAG, "")} />}
+                        {message.sender === "ASSISTANT" && sourceLabels(message.citations).length > 0 && (
+                          <div className={styles.toolTrail} aria-label="Nguồn">
+                            {sourceLabels(message.citations).map((label) => <span key={label}>{label}</span>)}
+                          </div>
+                        )}
                       </div>
                     </article>
                   ))}

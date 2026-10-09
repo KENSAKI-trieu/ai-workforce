@@ -10,7 +10,7 @@ const INTERNAL_LINK = /^\[([^\]\n]+)\]\((\/[^)\s]*)\)$/;
 
 function renderInlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
   return value
-    .split(/(\*\*.+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\(\/[^)\s]*\))/g)
+    .split(/(\*\*.+?\*\*|`[^`\n]+`|\[[^\]\n]+\]\(\/[^)\s]*\)|\*[^*\s](?:[^*\n]*[^*\s])?\*)/g)
     .filter(Boolean)
     .map((part, index) => {
       const key = `${keyPrefix}-${index}`;
@@ -21,6 +21,10 @@ function renderInlineMarkdown(value: string, keyPrefix: string): ReactNode[] {
       }
       if (part.startsWith("**") && part.endsWith("**")) {
         return <strong key={key}>{part.slice(2, -2)}</strong>;
+      }
+      // *nghiêng*, hugging its text: a lone "*" or "2 * 3" stays as written.
+      if (part.length > 2 && part.startsWith("*") && part.endsWith("*") && !part.startsWith("**")) {
+        return <em key={key}>{part.slice(1, -1)}</em>;
       }
       if (part.startsWith("`") && part.endsWith("`")) {
         return <code key={key}>{part.slice(1, -1)}</code>;

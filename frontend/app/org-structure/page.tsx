@@ -15,6 +15,7 @@ import {
 } from "lucide-react";
 
 import Sidebar from "@/components/Sidebar";
+import PermissionPicker, { type PermissionMeta } from "@/components/admin/PermissionPicker";
 import api from "@/lib/api";
 import { useAuthStore } from "@/store/useAuthStore";
 
@@ -29,13 +30,6 @@ interface Position {
   is_active: boolean;
   sort_order: number;
   holder_count: number;
-}
-
-interface PermissionMeta {
-  code: string;
-  group: string;
-  label: string;
-  description: string;
 }
 
 interface Holder {
@@ -189,15 +183,7 @@ export default function OrgStructurePage() {
     };
   }, [selected]);
 
-  const groupedCatalog = useMemo(() => {
-    const groups = new Map<string, PermissionMeta[]>();
-    for (const item of catalog) {
-      const bucket = groups.get(item.group) ?? [];
-      bucket.push(item);
-      groups.set(item.group, bucket);
-    }
-    return Array.from(groups.entries());
-  }, [catalog]);
+  const savedPermissions = useMemo(() => new Set(selected?.permissions ?? []), [selected]);
 
   const rows = useMemo(() => {
     const hidden = new Set<string>();
@@ -219,15 +205,6 @@ export default function OrgStructurePage() {
     (id: string) => positions.some((item) => item.parent_id === id),
     [positions],
   );
-
-  const togglePermission = (code: string) => {
-    setDraftPermissions((current) => {
-      const next = new Set(current);
-      if (next.has(code)) next.delete(code);
-      else next.add(code);
-      return next;
-    });
-  };
 
   const dirty = useMemo(() => {
     if (!selected) return false;
@@ -568,100 +545,14 @@ export default function OrgStructurePage() {
                     </div>
                   ) : (
                     <div style={{ marginBottom: 18 }}>
-                      <div style={{ fontSize: 12, color: "var(--text-muted)", marginBottom: 10 }}>
-                        Đang cấp {draftPermissions.size}/{catalog.length} quyền. Thay đổi chỉ có hiệu lực sau khi bấm Lưu.
-                      </div>
-                      {groupedCatalog.map(([group, items]) => {
-                        // Only boxes the editor may grant; the rest stay as they are.
-                        const grantableCodes = items
-                          .filter((item) => myPermissions.includes(item.code))
-                          .map((item) => item.code);
-                        const held = items.filter((item) => draftPermissions.has(item.code)).length;
-                        const allOn = grantableCodes.length > 0 && grantableCodes.every((code) => draftPermissions.has(code));
-                        return (
-                        <div key={group} style={{ marginBottom: 14 }}>
-                          <div style={{ display: "flex", alignItems: "center", gap: 8, marginBottom: 6, flexWrap: "wrap" }}>
-                            <strong style={{ fontSize: 13 }}>{group}</strong>
-                            <span className={`ta-badge ${held ? "ta-badge-info" : "ta-badge-neutral"}`} style={{ fontSize: 10 }}>
-                              {held}/{items.length}
-                            </span>
-                            {canManage && grantableCodes.length > 1 && (
-                              <button
-                                type="button"
-                                className="ta-btn ta-btn-ghost"
-                                style={{ marginLeft: "auto", padding: "2px 10px", fontSize: 12 }}
-                                onClick={() => setDraftPermissions((current) => {
-                                  const next = new Set(current);
-                                  for (const code of grantableCodes) {
-                                    if (allOn) next.delete(code);
-                                    else next.add(code);
-                                  }
-                                  return next;
-                                })}
-                              >
-                                {allOn ? "Bỏ cả nhóm" : "Chọn cả nhóm"}
-                              </button>
-                            )}
-                          </div>
-                          <div
-                            style={{
-                              display: "grid",
-                              gridTemplateColumns: "repeat(auto-fit, minmax(260px, 1fr))",
-                              gap: 8,
-                            }}
-                          >
-                            {items.map((permission) => {
-                              const checked = draftPermissions.has(permission.code);
-                              const grantable =
-                                myPermissions.includes(permission.code) || !canManage;
-                              return (
-                                <label
-                                  key={permission.code}
-                                  title={
-                                    grantable
-                                      ? permission.description
-                                      : "Bạn không có quyền này nên không thể cấp cho người khác."
-                                  }
-                                  style={{
-                                    display: "flex",
-                                    gap: 8,
-                                    alignItems: "flex-start",
-                                    padding: 10,
-                                    borderRadius: 8,
-                                    border: checked
-                                      ? "1px solid var(--primary)"
-                                      : "1px solid var(--border, #E2E8F0)",
-                                    background: checked ? "var(--sidebar-active-bg, #EEF2FF)" : "transparent",
-                                    opacity: grantable ? 1 : 0.5,
-                                    cursor: canManage && grantable ? "pointer" : "not-allowed",
-                                  }}
-                                >
-                                  <input
-                                    type="checkbox"
-                                    checked={checked}
-                                    disabled={!canManage || !grantable}
-                                    onChange={() => togglePermission(permission.code)}
-                                    style={{ marginTop: 3 }}
-                                  />
-                                  <span style={{ minWidth: 0 }}>
-                                    <strong style={{ fontSize: 13 }}>{permission.label}</strong>
-                                    <span
-                                      style={{
-                                        display: "block",
-                                        fontSize: 12,
-                                        color: "var(--text-muted)",
-                                      }}
-                                    >
-                                      {permission.description}
-                                    </span>
-                                  </span>
-                                </label>
-                              );
-                            })}
-                          </div>
-                        </div>
-                        );
-                      })}
+                      <PermissionPicker
+                        catalog={catalog}
+                        saved={savedPermissions}
+                        draft={draftPermissions}
+                        onChange={setDraftPermissions}
+                        myPermissions={myPermissions}
+                        canManage={canManage}
+                      />
                     </div>
                   )}
 

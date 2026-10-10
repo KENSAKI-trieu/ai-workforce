@@ -20,214 +20,279 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class Permission:
     code: str
+    # The tab the picker shows it under, then the heading inside that tab. Display only:
+    # nothing branches on either, so they can be renamed freely.
     group: str
+    section: str
     label: str
     description: str
+    # The box exists so a tenant can grant it ahead of time, but nothing reads it yet. The
+    # picker marks it rather than letting an administrator believe it already does something.
+    coming_soon: bool = False
 
 
-# Ordered for display: the API and the permission-picker UI both render this list as-is.
+# Ordered for display: the API and the permission-picker UI both render this list as-is,
+# so every group and every section inside it must be contiguous (pinned by a test).
 PERMISSIONS: tuple[Permission, ...] = (
-    # --- Tổ chức ---
+    # --- Tổ chức & hệ thống ---
     Permission(
-        "org.structure.manage", "Tổ chức", "Quản lý cơ cấu chức vụ",
+        "org.structure.manage", "Tổ chức & hệ thống", "Cơ cấu và tài khoản",
+        "Quản lý cơ cấu chức vụ",
         "Tạo, đổi tên, sắp xếp và xoá chức vụ trong cây tổ chức.",
     ),
     Permission(
-        "users.view", "Tổ chức", "Xem danh sách nhân sự",
+        "users.view", "Tổ chức & hệ thống", "Cơ cấu và tài khoản",
+        "Xem danh sách nhân sự",
         "Xem danh bạ nhân viên trong phạm vi được phép.",
     ),
     Permission(
-        "users.manage", "Tổ chức", "Quản lý tài khoản nhân sự",
+        "users.manage", "Tổ chức & hệ thống", "Cơ cấu và tài khoản",
+        "Quản lý tài khoản nhân sự",
         "Tạo tài khoản, sửa thông tin và khoá hoặc mở khoá tài khoản.",
     ),
     Permission(
-        "users.position.assign", "Tổ chức", "Gán chức vụ cho nhân sự",
+        "users.position.assign", "Tổ chức & hệ thống", "Cơ cấu và tài khoản",
+        "Gán chức vụ cho nhân sự",
         "Đặt một nhân viên vào một chức vụ trong cây tổ chức.",
     ),
-    # --- Workspace ---
     Permission(
-        "workspace.settings.manage", "Workspace", "Cấu hình workspace",
+        "workspace.settings.manage", "Tổ chức & hệ thống", "Workspace",
+        "Cấu hình workspace",
         "Sửa thông tin công ty, bảo mật, múi giờ và các thiết lập chung.",
     ),
     Permission(
-        "workspace.delete", "Workspace", "Yêu cầu xoá workspace",
+        "workspace.delete", "Tổ chức & hệ thống", "Workspace",
+        "Yêu cầu xoá workspace",
         "Khởi tạo yêu cầu xoá toàn bộ workspace. Nên giới hạn ở một chức vụ duy nhất.",
     ),
-    # --- AI ---
     Permission(
-        "agents.configure", "AI", "Cấu hình nhân viên AI",
+        "agents.configure", "Tổ chức & hệ thống", "Nhân viên AI",
+        "Cấu hình nhân viên AI",
         "Sửa system prompt, công cụ và quyền truy cập tri thức của các agent.",
+    ),
+    # --- Điều hành & phê duyệt ---
+    Permission(
+        "approvals.sign", "Điều hành & phê duyệt", "Phê duyệt chung",
+        "Phê duyệt yêu cầu",
+        "Duyệt hoặc từ chối yêu cầu trong phạm vi quản lý của mình.",
+    ),
+    Permission(
+        "approvals.sign_critical", "Điều hành & phê duyệt", "Phê duyệt chung",
+        "Phê duyệt yêu cầu tối quan trọng",
+        "Duyệt cả những yêu cầu được đánh dấu mức rủi ro CRITICAL.",
+    ),
+    Permission(
+        "executive.briefing.view", "Điều hành & phê duyệt", "Trợ lý CEO",
+        "Dùng Trợ lý CEO",
+        "Hỏi Trợ lý CEO và xem bản tin tổng hợp tài chính, nhân sự, pháp lý, marketing, phê "
+        "duyệt. Mỗi mục chỉ hiện khi chức vụ có cả quyền xem của phòng ban đó.",
+        coming_soon=True,
+    ),
+    Permission(
+        "executive.alerts.manage", "Điều hành & phê duyệt", "Trợ lý CEO",
+        "Cấu hình cảnh báo điều hành",
+        "Bật, tắt và đặt ngưỡng cảnh báo chủ động (vượt ngân sách, nợ quá hạn, hợp đồng lao "
+        "động sắp hết hạn, phiếu duyệt treo lâu) và lịch gửi bản tin định kỳ.",
+        coming_soon=True,
     ),
     # --- Tri thức ---
     Permission(
-        "knowledge.manage", "Tri thức", "Quản lý kho tri thức",
+        "knowledge.manage", "Tri thức", "Tài liệu",
+        "Quản lý kho tri thức",
         "Tải lên, sửa và xoá tài liệu trong kho tri thức.",
     ),
     Permission(
-        "knowledge.view_restricted", "Tri thức", "Xem tài liệu hạn chế",
+        "knowledge.view_restricted", "Tri thức", "Tài liệu",
+        "Xem tài liệu hạn chế",
         "Đọc được tài liệu đánh dấu hạn chế, bỏ qua danh sách chức vụ được phép.",
     ),
     Permission(
-        "knowledge.scope.company", "Tri thức", "Tra cứu tri thức mọi phòng ban",
+        "knowledge.scope.company", "Tri thức", "Phạm vi tra cứu của agent",
+        "Tra cứu tri thức mọi phòng ban",
         "Agent tìm trong tài liệu của mọi phòng ban, không chỉ phòng mình và tài liệu chung.",
     ),
     # --- Nhân sự ---
     Permission(
-        "hr.directory.view", "Nhân sự", "Tra cứu danh bạ nhân sự",
+        "hr.directory.view", "Nhân sự", "Thao tác",
+        "Tra cứu danh bạ nhân sự",
         "Dùng công cụ tra cứu danh bạ và tìm kiếm hồ sơ cơ bản.",
     ),
     Permission(
-        "hr.employee.manage", "Nhân sự", "Quản lý hồ sơ lao động",
+        "hr.employee.manage", "Nhân sự", "Thao tác",
+        "Quản lý hồ sơ lao động",
         "Sửa chức danh, mã nhân viên, ngày vào làm và cấp trên trực tiếp.",
     ),
     Permission(
-        "hr.scope.company", "Nhân sự", "Phạm vi nhân sự toàn công ty",
+        "hr.scope.company", "Nhân sự", "Phạm vi được xem",
+        "Phạm vi nhân sự toàn công ty",
         "Xem dữ liệu nhân sự của mọi phòng ban, không giới hạn theo cây báo cáo.",
     ),
     Permission(
-        "hr.scope.reports", "Nhân sự", "Phạm vi cấp dưới",
+        "hr.scope.reports", "Nhân sự", "Phạm vi được xem",
+        "Phạm vi cấp dưới",
         "Xem dữ liệu nhân sự của những người thuộc cây báo cáo bên dưới mình.",
     ),
     Permission(
-        "hr.private.view", "Nhân sự", "Xem thông tin cá nhân",
+        "hr.private.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem thông tin cá nhân",
         "Xem điện thoại, địa chỉ và liên hệ khẩn cấp của nhân viên khác.",
     ),
     Permission(
-        "hr.compensation.view", "Nhân sự", "Xem lương",
+        "hr.compensation.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem lương",
         "Xem dữ liệu lương của nhân viên khác.",
     ),
     Permission(
-        "hr.contract.view", "Nhân sự", "Xem hợp đồng",
+        "hr.contract.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem hợp đồng",
         "Xem tóm tắt hợp đồng lao động và thời gian thử việc.",
     ),
     Permission(
-        "hr.leave.view", "Nhân sự", "Xem dữ liệu nghỉ phép",
+        "hr.leave.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem dữ liệu nghỉ phép",
         "Xem quỹ phép và lịch sử nghỉ của nhân viên khác.",
     ),
     Permission(
-        "hr.performance.view", "Nhân sự", "Xem đánh giá hiệu suất",
+        "hr.performance.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem đánh giá hiệu suất",
         "Xem dữ liệu đánh giá hiệu suất của nhân viên khác.",
     ),
     Permission(
-        "hr.documents.view", "Nhân sự", "Xem hồ sơ tài liệu nhân sự",
+        "hr.documents.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem hồ sơ tài liệu nhân sự",
         "Xem danh mục tài liệu đính kèm hồ sơ nhân viên.",
     ),
     Permission(
-        "hr.discipline.view", "Nhân sự", "Xem hồ sơ kỷ luật",
+        "hr.discipline.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem hồ sơ kỷ luật",
         "Xem dữ liệu kỷ luật của nhân viên khác.",
     ),
     Permission(
-        "hr.notes.view", "Nhân sự", "Xem ghi chú nội bộ nhân sự",
+        "hr.notes.view", "Nhân sự", "Nhóm dữ liệu được xem",
+        "Xem ghi chú nội bộ nhân sự",
         "Xem ghi chú nội bộ do bộ phận nhân sự lưu về nhân viên.",
     ),
-    # --- Phê duyệt ---
+    # --- Pháp lý ---
     Permission(
-        "approvals.sign", "Phê duyệt", "Phê duyệt yêu cầu",
-        "Duyệt hoặc từ chối yêu cầu trong phạm vi quản lý của mình.",
-    ),
-    Permission(
-        "approvals.sign_critical", "Phê duyệt", "Phê duyệt yêu cầu tối quan trọng",
-        "Duyệt cả những yêu cầu được đánh dấu mức rủi ro CRITICAL.",
-    ),
-    Permission(
-        "legal.document.approve", "Phê duyệt", "Duyệt văn bản pháp lý",
-        "Duyệt hoặc từ chối bản nháp văn bản pháp lý và tải bản nháp chưa duyệt.",
-    ),
-    # --- Chuyên môn ---
-    Permission(
-        "legal.document.generate", "Chuyên môn", "Soạn văn bản pháp lý",
+        "legal.document.generate", "Pháp lý", "Soạn và rà soát",
+        "Soạn văn bản pháp lý",
         "Dùng công cụ sinh bản nháp văn bản pháp lý.",
     ),
     Permission(
-        "legal.review.view_all", "Chuyên môn", "Xem mọi bản rà soát hợp đồng",
+        "legal.review.view_all", "Pháp lý", "Soạn và rà soát",
+        "Xem mọi bản rà soát hợp đồng",
         "Mở, quyết định và tải file của bản rà soát hợp đồng do người khác tạo.",
+    ),
+    Permission(
+        "legal.document.approve", "Pháp lý", "Duyệt",
+        "Duyệt văn bản pháp lý",
+        "Duyệt hoặc từ chối bản nháp văn bản pháp lý và tải bản nháp chưa duyệt.",
     ),
     # --- Tài chính ---
     Permission(
-        "finance.ledger.view", "Tài chính", "Xem sổ sách kế toán",
+        "finance.ledger.view", "Tài chính", "Xem số liệu",
+        "Xem sổ sách kế toán",
         "Tra cứu số dư, sổ cái, bảng cân đối phát sinh, xu hướng tài khoản, cơ cấu chi phí và "
         "ngân sách mọi phòng ban, kèm biểu đồ, trên trang Tài chính và qua Trợ lý Tài chính.",
     ),
     Permission(
-        "finance.budget.view_own", "Tài chính", "Xem ngân sách phòng mình",
+        "finance.budget.view_own", "Tài chính", "Xem số liệu",
+        "Xem ngân sách phòng mình",
         "Xem ngân sách và chi phí thực tế của chính phòng ban mình.",
     ),
     Permission(
-        "finance.invoice.process", "Tài chính", "Xử lý hoá đơn",
+        "finance.ar_ap.view", "Tài chính", "Xem số liệu",
+        "Xem công nợ",
+        "Xem công nợ phải thu, phải trả, tuổi nợ và lịch thanh toán.",
+    ),
+    Permission(
+        "finance.invoice.process", "Tài chính", "Lập và xử lý",
+        "Xử lý hoá đơn",
         "Tải hoá đơn điện tử lên, xem và đối chiếu hoá đơn với đơn mua hàng.",
     ),
     Permission(
-        "finance.journal.draft", "Tài chính", "Lập bút toán, phiếu chi nháp",
+        "finance.journal.draft", "Tài chính", "Lập và xử lý",
+        "Lập bút toán, phiếu chi nháp",
         "Lập bút toán nháp và phiếu chi nháp (trên trang Tài chính hoặc nhờ Trợ lý Tài chính) "
         "để gửi duyệt. Không tự ghi sổ, không chuyển tiền.",
     ),
     Permission(
-        "finance.journal.approve", "Tài chính", "Duyệt bút toán, phiếu chi mức thường",
-        "Duyệt bút toán và phiếu chi dưới ngưỡng thứ nhất (mặc định 20 triệu đồng), và duyệt "
-        "thư nhắc nợ trước khi gửi khách hàng.",
-    ),
-    Permission(
-        "finance.journal.approve_high", "Tài chính", "Duyệt bút toán, phiếu chi mức cao",
-        "Duyệt bút toán và phiếu chi đến ngưỡng thứ hai (mặc định 500 triệu đồng), và rút lại "
-        "phiếu do người khác gửi. Trên ngưỡng đó cần quyền phê duyệt tối quan trọng.",
-    ),
-    Permission(
-        "finance.ar_ap.view", "Tài chính", "Xem công nợ",
-        "Xem công nợ phải thu, phải trả, tuổi nợ và lịch thanh toán.",
-    ),
-    Permission(
-        "finance.reminder.send", "Tài chính", "Soạn thư nhắc nợ",
+        "finance.reminder.send", "Tài chính", "Lập và xử lý",
+        "Soạn thư nhắc nợ",
         "Soạn email nhắc nợ khách hàng (trên trang Tài chính hoặc nhờ Trợ lý Tài chính) để gửi "
         "duyệt; thư chỉ được gửi khi người có quyền duyệt đồng ý.",
     ),
     Permission(
-        "finance.import.manage", "Tài chính", "Nhập dữ liệu kế toán",
-        "Nhập hệ thống tài khoản, sổ cái, đối tượng, ngân sách từ Excel và cấu hình tài chính.",
-    ),
-    Permission(
-        "finance.sheet.analyze", "Tài chính", "Phân tích file Excel",
+        "finance.sheet.analyze", "Tài chính", "Lập và xử lý",
+        "Phân tích file Excel",
         "Tải bảng tính của riêng mình lên để tính tổng, đếm, trung bình theo nhóm và xem biểu đồ, "
         "kể cả hỏi Trợ lý Tài chính về file đó. Mỗi người chỉ thấy file của mình; không đọc sổ sách.",
     ),
+    Permission(
+        "finance.journal.approve", "Tài chính", "Duyệt",
+        "Duyệt bút toán, phiếu chi mức thường",
+        "Duyệt bút toán và phiếu chi dưới ngưỡng thứ nhất (mặc định 20 triệu đồng), và duyệt "
+        "thư nhắc nợ trước khi gửi khách hàng.",
+    ),
+    Permission(
+        "finance.journal.approve_high", "Tài chính", "Duyệt",
+        "Duyệt bút toán, phiếu chi mức cao",
+        "Duyệt bút toán và phiếu chi đến ngưỡng thứ hai (mặc định 500 triệu đồng), và rút lại "
+        "phiếu do người khác gửi. Trên ngưỡng đó cần quyền phê duyệt tối quan trọng.",
+    ),
+    Permission(
+        "finance.import.manage", "Tài chính", "Quản trị dữ liệu",
+        "Nhập dữ liệu kế toán",
+        "Nhập hệ thống tài khoản, sổ cái, đối tượng, ngân sách từ Excel và cấu hình tài chính.",
+    ),
     # --- Marketing ---
     Permission(
-        "marketing.campaign.create", "Marketing", "Lập chiến dịch truyền thông",
+        "marketing.campaign.create", "Marketing", "Chiến dịch",
+        "Lập chiến dịch truyền thông",
         "Nhờ Trợ lý Marketing lập dàn ý và viết bài Facebook, Instagram, Threads từ một brief, "
         "duyệt từng bước và gửi bản cuối đi phê duyệt. Mỗi người thấy chiến dịch của mình.",
     ),
     Permission(
-        "marketing.campaign.view_all", "Marketing", "Xem mọi chiến dịch",
+        "marketing.campaign.view_all", "Marketing", "Chiến dịch",
+        "Xem mọi chiến dịch",
         "Xem chiến dịch truyền thông do người khác trong công ty lập.",
     ),
     Permission(
-        "marketing.content.approve", "Marketing", "Duyệt nội dung truyền thông",
+        "marketing.content.approve", "Marketing", "Duyệt",
+        "Duyệt nội dung truyền thông",
         "Duyệt hoặc từ chối bài truyền thông được gửi lên trước khi đăng. Không tự duyệt bài "
         "của chính mình.",
     ),
-    # --- Báo cáo ---
+    # --- Báo cáo & giám sát ---
     Permission(
-        "analytics.view", "Báo cáo", "Xem báo cáo vận hành",
+        "analytics.view", "Báo cáo & giám sát", "Báo cáo vận hành",
+        "Xem báo cáo vận hành",
         "Xem bảng phân tích và thống kê vận hành.",
     ),
     Permission(
-        "costs.view", "Báo cáo", "Xem chi phí AI",
+        "costs.view", "Báo cáo & giám sát", "Chi phí AI",
+        "Xem chi phí AI",
         "Xem báo cáo chi phí sử dụng mô hình.",
     ),
     Permission(
-        "finance.expense.view", "Báo cáo", "Tra cứu chi phí AI qua trợ lý",
+        "finance.expense.view", "Báo cáo & giám sát", "Chi phí AI",
+        "Tra cứu chi phí AI qua trợ lý",
         "Cho trợ lý AI (như Trợ lý CEO) trả lời về chi phí và mức sử dụng mô hình AI. "
         "Không liên quan đến sổ sách kế toán.",
     ),
     Permission(
-        "costs.manage", "Báo cáo", "Quản lý ngân sách AI",
+        "costs.manage", "Báo cáo & giám sát", "Chi phí AI",
+        "Quản lý ngân sách AI",
         "Đặt ngân sách, cảnh báo và quy tắc định tuyến mô hình.",
     ),
     Permission(
-        "audit.view", "Báo cáo", "Xem nhật ký kiểm toán",
+        "audit.view", "Báo cáo & giám sát", "Nhật ký kiểm toán",
+        "Xem nhật ký kiểm toán",
         "Xem nhật ký kiểm toán trong phạm vi của mình.",
     ),
     Permission(
-        "audit.view_all", "Báo cáo", "Xem toàn bộ nhật ký kiểm toán",
+        "audit.view_all", "Báo cáo & giám sát", "Nhật ký kiểm toán",
+        "Xem toàn bộ nhật ký kiểm toán",
         "Xem nhật ký kiểm toán của toàn công ty.",
     ),
 )
@@ -274,8 +339,10 @@ def permission_catalog() -> list[dict[str, str]]:
         {
             "code": item.code,
             "group": item.group,
+            "section": item.section,
             "label": item.label,
             "description": item.description,
+            "coming_soon": item.coming_soon,
         }
         for item in PERMISSIONS
     ]
@@ -360,13 +427,17 @@ _ADMIN_PERMISSIONS = _ADMIN_CORE + _LINE_MANAGER_SECTIONS + _MARKETING_LEAD
 
 _ALL_SECTION_PERMISSIONS = tuple(sorted(set(HR_SECTION_PERMISSIONS.values())))
 
+# The CEO assistant. Kept out of _ADMIN_CORE for the same reason as the finance powers:
+# ticking it on a deputy director's custom position must not make its holders Admin.
+_EXECUTIVE = ("executive.briefing.view", "executive.alerts.manage")
+
 # CEO differs from the root only by not being able to request workspace deletion, which
 # matches today's Owner-only guard in workspace.py.
 _CEO_PERMISSIONS = _ADMIN_CORE + _ALL_SECTION_PERMISSIONS + (
     "org.structure.manage",
     "hr.scope.company",
     "hr.employee.manage",
-) + _FINANCE_ADMIN + _MARKETING_LEAD
+) + _FINANCE_ADMIN + _MARKETING_LEAD + _EXECUTIVE
 
 
 @dataclass(frozen=True)

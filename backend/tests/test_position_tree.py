@@ -16,6 +16,7 @@ from app.core.permissions import (
     LEGACY_ROLE_TO_SLUG,
     PERMISSION_CODES,
     ROOT_POSITION_SLUG,
+    legacy_role_for_position,
     normalize_permissions,
     permission_catalog,
 )
@@ -69,7 +70,34 @@ def test_permission_catalog_is_complete_and_unique():
     codes = [item["code"] for item in catalog]
     assert len(codes) == len(set(codes)), "trùng mã quyền"
     assert set(codes) == set(PERMISSION_CODES)
-    assert all(item["label"] and item["group"] and item["description"] for item in catalog)
+    assert all(
+        item["label"] and item["group"] and item["section"] and item["description"]
+        for item in catalog
+    )
+
+
+def test_permission_catalog_keeps_each_group_and_section_together():
+    """The picker renders tabs and headings in catalog order; a stray entry would split one."""
+    groups: list[str] = []
+    sections: list[tuple[str, str]] = []
+    for item in permission_catalog():
+        if not groups or groups[-1] != item["group"]:
+            assert item["group"] not in groups, f"nhóm {item['group']} bị tách đôi"
+            groups.append(item["group"])
+        key = (item["group"], item["section"])
+        if not sections or sections[-1] != key:
+            assert key not in sections, f"mục {key} bị tách đôi"
+            sections.append(key)
+
+
+def test_the_ceo_assistant_boxes_go_to_the_ceo_job_and_mark_nobody_admin():
+    ceo = next(item for item in DEFAULT_POSITIONS if item.slug == "ceo")
+    admin = next(item for item in DEFAULT_POSITIONS if item.slug == "admin")
+    executive = {"executive.briefing.view", "executive.alerts.manage"}
+
+    assert executive <= set(ceo.permissions)
+    assert not executive & set(admin.permissions)
+    assert legacy_role_for_position("custom", False, executive) == "Employee"
 
 
 def test_normalize_permissions_drops_unknown_codes_instead_of_failing():

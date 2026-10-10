@@ -17,11 +17,24 @@ export type CampaignStage =
 
 export interface Source {
   ref: number;
+  // A company document, or a web page found through Google Search.
+  kind?: "document" | "web";
+  url?: string;
+  site?: string;
   chunk_id: string;
   document_id: string;
   document_title: string;
   section_title?: string | null;
   chunk_index?: number | null;
+  content: string;
+}
+
+/** Know-how from the agent's skill shelf: guidance for the writing, never cited. */
+export interface Skill {
+  chunk_id: string;
+  document_id: string;
+  document_title: string;
+  section_title?: string | null;
   content: string;
 }
 
@@ -58,6 +71,7 @@ export interface Campaign {
   created_at: string | null;
   updated_at: string | null;
   sources?: Source[];
+  skills?: Skill[];
 }
 
 export const STAGE_LABELS: Record<CampaignStage, string> = {
@@ -81,11 +95,12 @@ export const STAGE_TONES: Record<CampaignStage, "amber" | "blue" | "violet" | "g
 };
 
 /** The pipeline stages each step reports, in the order they run. */
-export const OUTLINE_STAGES = ["GUARDRAIL", "RAG", "OUTLINE"] as const;
+export const OUTLINE_STAGES = ["GUARDRAIL", "RAG", "WEB", "OUTLINE"] as const;
 export const DRAFT_STAGES = ["DRAFTS", "FACT_CHECK", "REFINE"] as const;
 export const STAGE_NAMES: Record<string, string> = {
   GUARDRAIL: "Kiểm tra an toàn nội dung",
-  RAG: "Tra cứu tài liệu công ty",
+  RAG: "Tra cứu tài liệu & kỹ năng",
+  WEB: "Tìm thông tin trên web",
   OUTLINE: "Soạn dàn ý chiến dịch",
   DRAFTS: "Viết bài 3 kênh",
   FACT_CHECK: "Kiểm chứng số liệu",

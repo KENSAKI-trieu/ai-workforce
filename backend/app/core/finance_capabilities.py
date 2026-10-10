@@ -59,6 +59,7 @@ def finance_default_tools() -> tuple[str, ...]:
 MARKETING_TOOL_INTRODUCTIONS: dict[int, tuple[str, ...]] = {
     201: ("rag_search",),
     202: ("start_marketing_campaign",),
+    203: ("web_search",),
 }
 
 # role -> (version -> tools that version added, tools retired before the first version)

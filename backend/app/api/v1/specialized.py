@@ -68,6 +68,7 @@ from app.domains.legal.legal_document_submission import (
     submit_legal_document,
 )
 from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
+from app.domains.knowledge.agent_knowledge_scope import agent_scope_for_role
 from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.core.agent_status import refuse_under_development
 from app.domains.incubating.it_service import handle_it_request
@@ -415,6 +416,9 @@ def _retrieve_contract_review_references(
                 "thanh toán trách nhiệm sở hữu trí tuệ chấm dứt bảo mật"
             ),
             top_k=6,
+            # The Legal agent's ticked knowledge, like its chat: this used to search every
+            # document the reviewer could reach.
+            agent_access=agent_scope_for_role(db, current_user.tenant_id, "LEGAL"),
             **user_search_scope(db, current_user),
         )
     except Exception:

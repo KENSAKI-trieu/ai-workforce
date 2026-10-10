@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, CheckCircle2, Circle, Copy, Edit3, Eye, Loader2, RotateCcw, Send, ShieldCheck, XCircle } from "lucide-react";
+import { AlertTriangle, CheckCircle2, Circle, Copy, Edit3, ExternalLink, Eye, Loader2, RotateCcw, Send, ShieldCheck, XCircle } from "lucide-react";
 import { useState } from "react";
 
 import ChatMessageContent from "@/components/chat/ChatMessageContent";
@@ -13,6 +13,7 @@ import {
   PLATFORM_LABELS,
   PLATFORMS,
   type Platform,
+  type Skill,
   type Source,
   STAGE_LABELS,
   STAGE_NAMES,
@@ -50,20 +51,51 @@ export function StageBadge({ stage }: { stage: Campaign["stage"] }) {
   return <span className={`${styles.badge} ${styles[STAGE_TONES[stage]]}`}>{STAGE_LABELS[stage]}</span>;
 }
 
-/** The documents the outline cites as [1], [2] ... */
+/** The documents and web pages the outline cites as [1], [2] ... */
 export function SourcesPanel({ sources }: { sources: Source[] }) {
   if (!sources.length) {
-    return <p className={styles.phase}>Không tìm thấy tài liệu công ty liên quan; dàn ý chỉ dựa trên brief, chỗ thiếu số liệu được đánh dấu “[cần bổ sung số liệu]”.</p>;
+    return <p className={styles.phase}>Không tìm thấy tài liệu công ty hay trang web liên quan; dàn ý chỉ dựa trên brief, chỗ thiếu số liệu được đánh dấu “[cần bổ sung số liệu]”.</p>;
   }
   return (
     <div className={styles.sources}>
-      {sources.map((source) => (
-        <details key={`${source.ref}-${source.chunk_id}`} className={styles.source}>
-          <summary><b>{source.ref}</b><span>{source.document_title}{source.section_title ? ` — ${source.section_title}` : ""}</span></summary>
-          <p>{source.content}</p>
-        </details>
-      ))}
+      {sources.map((source) => {
+        const web = source.kind === "web";
+        return (
+          <details key={`${source.ref}-${source.chunk_id || source.url}`} className={styles.source}>
+            <summary>
+              <b>{source.ref}</b>
+              {web && <i className={styles.webTag}>Web</i>}
+              <span>{source.document_title}{web ? (source.site && source.site !== source.document_title ? ` — ${source.site}` : "") : source.section_title ? ` — ${source.section_title}` : ""}</span>
+            </summary>
+            <p>{source.content}</p>
+            {web && source.url && (
+              <a className={styles.sourceLink} href={source.url} target="_blank" rel="noopener noreferrer">
+                <ExternalLink size={12} /> {source.url}
+              </a>
+            )}
+          </details>
+        );
+      })}
     </div>
+  );
+}
+
+/** The skill shelf the writing followed: guidance, so it is listed but never cited. */
+export function SkillsPanel({ skills }: { skills: Skill[] }) {
+  if (!skills.length) return null;
+  return (
+    <>
+      <h3 style={{ margin: "18px 0 4px", fontSize: ".86rem" }}>Kỹ năng đã tham khảo</h3>
+      <p className={styles.phase} style={{ marginTop: 0 }}>Dùng để định hướng cách viết, không phải nguồn số liệu nên không được trích dẫn.</p>
+      <div className={styles.sources}>
+        {skills.map((skill) => (
+          <details key={skill.chunk_id} className={styles.source}>
+            <summary><i className={styles.skillTag}>Kỹ năng</i><span>{skill.document_title}{skill.section_title ? ` — ${skill.section_title}` : ""}</span></summary>
+            <p>{skill.content}</p>
+          </details>
+        ))}
+      </div>
+    </>
   );
 }
 
@@ -116,8 +148,9 @@ export function OutlineReview({
             />
           </div>
         )}
-        <h3 style={{ margin: "18px 0 8px", fontSize: ".86rem" }}>Tài liệu tham chiếu</h3>
+        <h3 style={{ margin: "18px 0 8px", fontSize: ".86rem" }}>Nguồn tham chiếu</h3>
         <SourcesPanel sources={campaign.sources ?? []} />
+        <SkillsPanel skills={campaign.skills ?? []} />
       </div>
       <div className={styles.actions}>
         {mode === "view" && (

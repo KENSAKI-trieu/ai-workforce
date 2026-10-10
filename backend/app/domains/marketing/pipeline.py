@@ -21,7 +21,7 @@ from app.agents.llm_json import is_echo_provider, report_usage
 from app.core.config import settings
 from app.domains.legal.contract_privacy import Pseudonymizer
 from app.domains.marketing.guardrails import find_cliches, redact_secrets
-from app.domains.marketing.prompts import external_context, load_prompt
+from app.domains.marketing.prompts import external_context, load_prompt, skills_context
 
 logger = logging.getLogger(__name__)
 
@@ -103,10 +103,12 @@ def write_outline(
     *,
     brief: str,
     context: list[str],
+    skills: list[str] | None = None,
     previous_outline: str | None = None,
     feedback: str | None = None,
 ) -> str:
-    parts = [external_context(context), _brief_block(writer, brief)]
+    parts = [part for part in (external_context(context), skills_context(skills)) if part]
+    parts.append(_brief_block(writer, brief))
     if feedback:
         parts.append(f"Dàn ý trước đã bị từ chối:\n{writer.hide(previous_outline)}")
         parts.append(f"Phản hồi của người dùng (ưu tiên làm theo):\n{writer.hide(feedback)}")
@@ -152,11 +154,20 @@ def _write_in_parallel(writer: Writer, jobs: dict[str, tuple[str, str]]) -> dict
     return posts
 
 
-def write_posts(writer: Writer, *, brief: str, outline: str, context: list[str]) -> dict[str, str]:
+def _with_skills(skills: list[str] | None, text: str) -> str:
+    """The skill shelf ahead of what a post is written from; the fact-check never sees it."""
+    shelf = skills_context(skills)
+    return f"{shelf}\n\n{text}" if shelf else text
+
+
+def write_posts(
+    writer: Writer, *, brief: str, outline: str, context: list[str], skills: list[str] | None = None
+) -> dict[str, str]:
     system, sources = load_prompt("generator"), _source_block(writer, brief, outline, context)
-    return _write_in_parallel(
-        writer, {platform: (system, f"{sources}\n\n{PLATFORM_RULES[platform]}") for platform in PLATFORMS}
-    )
+    return _write_in_parallel(writer, {
+        platform: (system, _with_skills(skills, f"{sources}\n\n{PLATFORM_RULES[platform]}"))
+        for platform in PLATFORMS
+    })
 
 
 _FENCE_RE = re.compile(r"^```(?:json)?\s*|\s*```$")
@@ -255,6 +266,7 @@ def refine_posts(
     context: list[str],
     posts: dict[str, str],
     issues: list[dict[str, str]],
+    skills: list[str] | None = None,
 ) -> tuple[dict[str, str], list[str]]:
     """Rewrite only the posts with issues; an issue naming no known platform touches all."""
     by_platform = {
@@ -266,8 +278,11 @@ def refine_posts(
     rewritten = _write_in_parallel(writer, {
         platform: (
             system,
-            f"{sources}\n\n{PLATFORM_RULES[platform]}\n\nBài hiện tại:\n{writer.hide(posts.get(platform, ''))}"
-            f"\n\nVấn đề cần sửa:\n{writer.hide(_issue_lines(by_platform[platform]))}",
+            _with_skills(
+                skills,
+                f"{sources}\n\n{PLATFORM_RULES[platform]}\n\nBài hiện tại:\n{writer.hide(posts.get(platform, ''))}"
+                f"\n\nVấn đề cần sửa:\n{writer.hide(_issue_lines(by_platform[platform]))}",
+            ),
         )
         for platform in targets
     })
@@ -280,11 +295,16 @@ def draft_and_check(
     brief: str,
     outline: str,
     context: list[str],
+    skills: list[str] | None = None,
     progress: Progress = no_progress,
 ) -> tuple[dict[str, str], dict[str, Any], int]:
-    """Three posts, checked and rewritten until clean or MAX_REFINES rewrites are spent."""
+    """Three posts, checked and rewritten until clean or MAX_REFINES rewrites are spent.
+
+    The skill shelf shapes the writing and the rewrites; the fact-check reads only the
+    sources, so know-how can never vouch for a claim.
+    """
     progress("DRAFTS", "running", "Facebook · Instagram · Threads")
-    posts = write_posts(writer, brief=brief, outline=outline, context=context)
+    posts = write_posts(writer, brief=brief, outline=outline, context=context, skills=skills)
     progress("DRAFTS", "done", None)
     rounds = 0
     while True:
@@ -295,7 +315,8 @@ def draft_and_check(
             return posts, report, rounds
         progress("REFINE", "running", f"Lần sửa {rounds + 1}/{MAX_REFINES}")
         posts, targets = refine_posts(
-            writer, brief=brief, outline=outline, context=context, posts=posts, issues=report["issues"]
+            writer, brief=brief, outline=outline, context=context, posts=posts,
+            issues=report["issues"], skills=skills,
         )
         rounds += 1
         progress("REFINE", "done", ", ".join(PLATFORM_LABELS[platform] for platform in targets))

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
+from app.domains.knowledge.agent_knowledge_scope import agent_scope
 from app.domains.knowledge.rag_service import (
     hybrid_search_documents,
     in_reading_order,
@@ -28,9 +29,8 @@ def search_rag(context: ToolContext, request: RAGSearchInput) -> list[dict[str, 
         query_text=request.query,
         top_k=request.top_k,
         collections=request.collections,
-        # The AI Employee's configured knowledge scope. Omitting it here let a governed
-        # agent read every document its user could reach, ignoring the scope an operator
-        # had set for it -- the deterministic executors have always passed this.
-        agent_access=(agent.knowledge_access or None) if agent else None,
+        # The AI Employee's configured knowledge scope: exactly what is ticked for it. No
+        # agent means a person calling the gateway directly, searched as themselves.
+        agent_access=agent_scope(agent) if agent is not None else None,
         **scope,
     ))

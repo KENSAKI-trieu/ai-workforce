@@ -155,6 +155,11 @@
 .source summary { display: flex; align-items: center; gap: 8px; padding: 9px 11px; cursor: pointer; font-size: .8rem; color: #2d394c; }
 .source summary b { display: grid; min-width: 24px; height: 22px; place-items: center; border-radius: 5px; background: #fff1e8; color: #9a3412; font-size: .7rem; }
 .source p { margin: 0; padding: 0 11px 11px; color: #5d6a7d; font-size: .78rem; line-height: 1.55; white-space: pre-wrap; }
+.webTag, .skillTag { padding: 1px 7px; border-radius: 999px; font-size: .66rem; font-style: normal; font-weight: 700; }
+.webTag { background: #e0f2fe; color: #075985; }
+.skillTag { background: #ede9fe; color: #5b21b6; }
+.sourceLink { display: flex; align-items: center; gap: 5px; padding: 0 11px 11px; color: #2563eb; font-size: .74rem; overflow-wrap: anywhere; text-decoration: none; }
+.sourceLink:hover { text-decoration: underline; }
 .tabs { display: flex; gap: 4px; padding: 10px 15px 0; border-bottom: 1px solid #edf0f4; overflow-x: auto; }
 .tabs button { display: inline-flex; align-items: center; gap: 6px; padding: 9px 12px; border: 0; border-bottom: 2px solid transparent; background: transparent; color: #5d6a7d; font: 600 .82rem/1 Inter, sans-serif; cursor: pointer; white-space: nowrap; }
 .tabs button.activeTab { border-bottom-color: #c2410c; color: #9a3412; }

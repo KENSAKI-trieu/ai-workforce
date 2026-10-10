@@ -7,7 +7,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.agents.base.persistence import orchestration_engines
 from app.api.dependencies import require_internal_token
-from app.api.routes import health, llm, orchestration, rag
+from app.api.routes import health, llm, orchestration, rag, web
 from app.core.config import settings
 from app.services.embedding.factory import get_embedding_provider
 
@@ -52,5 +52,5 @@ app.add_middleware(
     allow_headers=["Accept"],
 )
 
-for router_module in (health, rag, llm, orchestration):
+for router_module in (health, rag, llm, orchestration, web):
     app.include_router(router_module.router)

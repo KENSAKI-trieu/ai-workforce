@@ -7,6 +7,7 @@ from typing import Dict, Any
 
 from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
+from app.domains.knowledge.agent_knowledge_scope import agent_scope
 from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.domains.platform.audit_service import log_audit_action
 from app.agents.access import _require_tool
@@ -27,7 +28,7 @@ def run_knowledge_turn(
         user.tenant_id,
         message,
         collections=None,
-        agent_access=agent.knowledge_access if agent.knowledge_access else None,
+        agent_access=agent_scope(agent),
         **user_search_scope(db, user),
     )
 

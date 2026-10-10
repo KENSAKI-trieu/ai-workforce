@@ -90,6 +90,7 @@ class AIAgentBase(BaseModel):
     allowed_actions: list = Field(default_factory=list)
     disallowed_actions: list = Field(default_factory=list)
     knowledge_access: list = Field(default_factory=list)
+    skill_access: list = Field(default_factory=list)
     avatar_emoji: Optional[str] = None
     description: Optional[str] = None
 
@@ -110,6 +111,14 @@ class AIAgentResponse(AIAgentBase):
     def under_development(self) -> bool:
         """Listed so the product shows where it is heading, but not open for chat yet."""
         return is_under_development(self.role_code)
+
+    @computed_field  # type: ignore[prop-decorator]
+    @property
+    def supports_skills(self) -> bool:
+        """Whether the agent reads a skill shelf next to its knowledge."""
+        from app.domains.knowledge.agent_knowledge_scope import SKILL_KNOWLEDGE_ROLES
+
+        return str(self.role_code or "").upper() in SKILL_KNOWLEDGE_ROLES
 
 
 # ---------------------------------------------------------------------------

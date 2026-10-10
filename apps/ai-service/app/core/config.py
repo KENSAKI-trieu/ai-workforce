@@ -79,6 +79,10 @@ class Settings(BaseSettings):
     LLM_DEFAULT_PROVIDER: Literal["auto", "openai", "gemini", "bedrock", "local"] = "auto"
     OPENAI_CHAT_MODEL: str = "gpt-4o-mini"
     GEMINI_CHAT_MODEL: str = "gemini-3.5-flash-lite"
+    # Web search runs on Gemini with Google Search grounding whatever model the agent
+    # itself uses: no other configured vendor can search.
+    WEB_SEARCH_MODEL: str = "gemini-2.5-flash"
+    WEB_SEARCH_TIMEOUT_SECONDS: float = Field(default=45.0, gt=0, le=180)
 
     # Bedrock authenticates through the standard boto3 credential chain (instance
     # profile, environment, or a mounted AWS config), so there is no API key to

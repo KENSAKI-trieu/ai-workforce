@@ -60,6 +60,7 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "draft_payment_voucher": "Lập phiếu chi nháp gửi duyệt; không tự chuyển tiền.",
     "draft_payment_reminder": "Soạn thư nhắc nợ khách hàng gửi duyệt; chỉ gửi khi được duyệt.",
     "start_marketing_campaign": "Lập chiến dịch truyền thông từ brief trong chat: dàn ý chờ người viết duyệt, rồi bài Facebook, Instagram, Threads.",
+    "web_search": "Tìm kiếm trên web qua Google Search (Gemini): xu hướng, đối thủ, tin tức; trả lời kèm link nguồn. Câu tìm kiếm được gửi ra ngoài công ty.",
     # The HR capabilities, also gateway tools under the same names for the LangGraph HR agent.
     **{name: HR_CAPABILITY_DESCRIPTIONS[name] for name in HR_GATEWAY_TOOLS},
 }
@@ -95,6 +96,7 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "draft_payment_voucher": "lập phiếu chi",
     "draft_payment_reminder": "soạn thư nhắc nợ",
     "start_marketing_campaign": "lập chiến dịch truyền thông",
+    "web_search": "tìm kiếm trên web",
     **{name: HR_CAPABILITY_LABELS[name] for name in HR_GATEWAY_TOOLS},
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"

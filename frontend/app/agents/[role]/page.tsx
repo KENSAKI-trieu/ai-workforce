@@ -29,6 +29,7 @@ import {
   HRChatTools,
   HRMessageCard,
 } from "@/components/hr/HRChatTools";
+import { tickedSelectors } from "@/components/admin/KnowledgeScopePicker";
 import FinanceChart, { type ChartSpec } from "@/components/finance/FinanceChart";
 import api from "@/lib/api";
 import { ExecutionPhase, streamAgentChat } from "@/lib/chatStream";
@@ -205,7 +206,7 @@ export default function AgentPage() {
       setPrompt(value.prompt_overlay ?? "");
       setDeniedTools(value.disallowed_actions);
       setTools(value.tools_access.filter((tool) => !value.disallowed_actions.includes(tool)));
-      setKnowledgeAccess(value.knowledge_access.length ? value.knowledge_access : ["*"]);
+      setKnowledgeAccess(tickedSelectors(value.knowledge_access));
     } catch (reason) {
       setError(messageFrom(reason));
     }
@@ -438,8 +439,7 @@ export default function AgentPage() {
     });
   };
 
-  const selectAllKnowledge = () => setKnowledgeAccess(["*"]);
-  const selectNoKnowledge = () => setKnowledgeAccess(["none"]);
+  const clearKnowledge = () => setKnowledgeAccess([]);
 
   if (!hasHydrated || !isAuthenticated) return null;
   // "Cấu hình nhân viên AI" in org-structure; the server checks the same code.
@@ -797,21 +797,25 @@ export default function AgentPage() {
 
               <section className="ai-agent-config-section">
                 <div className="ai-agent-config-heading">
-                  <div><strong>Tài liệu và chunks được phép</strong><span>ACL của AI luôn được giao với quyền tài liệu của người đang chat.</span></div>
+                  <div><strong>Tài liệu và chunks được phép</strong><span>Agent chỉ đọc tài liệu được tích, giao với quyền tài liệu của người đang chat.</span></div>
                   <div className="ai-agent-config-presets">
-                    <button type="button" className={knowledgeAccess.includes("*") ? "active" : ""} onClick={selectAllKnowledge}>Tất cả</button>
-                    <button type="button" className={knowledgeAccess.includes("none") ? "active" : ""} onClick={selectNoKnowledge}>Không tài liệu</button>
+                    <button type="button" className={knowledgeAccess.length === 0 ? "active" : ""} onClick={clearKnowledge}>Bỏ chọn tất cả</button>
                   </div>
                 </div>
                 <div className="ai-agent-document-list">
                   {configurationOptions?.documents.length === 0 && <span className="ai-agent-config-empty">Kho tri thức chưa có tài liệu.</span>}
+                  {knowledgeAccess.length === 0 && (configurationOptions?.documents.length ?? 0) > 0 && (
+                    <span className="ai-agent-config-empty">Chưa tích tài liệu nào: agent sẽ không tra cứu được kho tri thức.</span>
+                  )}
                   {configurationOptions?.documents.map((document) => {
                     const documentSelector = `document:${document.document_id}`;
-                    const documentSelected = knowledgeAccess.includes("*") || knowledgeAccess.includes(documentSelector);
+                    // Ticked through its whole collection (set on the configuration page).
+                    const inherited = knowledgeAccess.includes(`collection:${document.collection_name}`);
+                    const documentSelected = inherited || knowledgeAccess.includes(documentSelector);
                     return (
                       <article className="ai-agent-document-option" key={document.document_id}>
-                        <label>
-                          <input type="checkbox" checked={documentSelected} disabled={knowledgeAccess.includes("*")} onChange={() => toggleKnowledge(documentSelector)} />
+                        <label title={inherited ? `Được cấp qua cả collection ${document.collection_name}` : undefined}>
+                          <input type="checkbox" checked={documentSelected} disabled={inherited} onChange={() => toggleKnowledge(documentSelector)} />
                           <span><strong>{document.document_title}</strong><small>{document.collection_name} · {document.department_access} · {document.confidentiality} · {document.chunks.length} chunks</small></span>
                         </label>
                         <div className="ai-agent-chunk-list">

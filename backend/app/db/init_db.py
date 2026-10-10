@@ -366,6 +366,9 @@ def init_db():
                     is_active=True,
                     tools_access=default_agent_tools[adata["role_code"]],
                     allowed_actions=default_agent_tools[adata["role_code"]],
+                    # An agent reads only what is ticked for it. The demo company's agents
+                    # are ticked onto the shelf its sample handbook is seeded into below.
+                    knowledge_access=["collection:General Knowledge"],
                     configuration_version=configuration_version_for(
                         adata["role_code"], HR_CONFIGURATION_VERSION
                     ),

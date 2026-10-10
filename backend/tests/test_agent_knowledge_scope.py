@@ -54,7 +54,7 @@ def _set_scope(db, agent, selectors):
 def test_a_scope_left_empty_by_pruning_becomes_no_access_not_everything(
     transactional_db_session, admin, legal
 ):
-    """[] means every document; an agent scoped to a deleted one must not be widened."""
+    """Stored as "none" so an older build, where [] meant every document, cannot widen it."""
     _set_scope(transactional_db_session, legal, ["document:never-existed.md"])
 
     changed = prune_orphaned_knowledge_selectors(transactional_db_session, admin.tenant_id)

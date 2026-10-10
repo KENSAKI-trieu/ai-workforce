@@ -199,7 +199,7 @@ export default function MarketingAgentPage() {
         `/api/v1/marketing/campaigns/${selected.id}/drafts`,
         updated ? { action: "edit", updated_drafts: updated } : { action: "approve" },
       );
-      setSelected({ ...data, sources: selected.sources });
+      setSelected({ ...data, sources: selected.sources, skills: selected.skills });
       void loadCampaigns();
     } catch (reason) {
       setError(errorText(reason));
@@ -216,7 +216,7 @@ export default function MarketingAgentPage() {
       const { data } = await api.post<{ campaign: Campaign; warning: string | null }>(
         `/api/v1/marketing/campaigns/${selected.id}/submit-approval`,
       );
-      setSelected({ ...data.campaign, sources: selected.sources });
+      setSelected({ ...data.campaign, sources: selected.sources, skills: selected.skills });
       setNotice(data.warning ?? "Đã gửi phê duyệt. Người có quyền duyệt nội dung sẽ nhận thông báo.");
       void loadCampaigns();
     } catch (reason) {

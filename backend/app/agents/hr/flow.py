@@ -28,6 +28,7 @@ from app.domains.hr.hr_employee_tools import (
     query_company_users_sql,
 )
 from app.domains.platform.position_service import supervisory_role_names
+from app.domains.knowledge.agent_knowledge_scope import agent_scope
 from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
 from app.domains.platform.audit_service import log_audit_action
 from app.plugins.resolver import resolve_prompt_overlay
@@ -1035,7 +1036,7 @@ def run_hr_turn(
             user.tenant_id,
             message,
             collections=None,
-            agent_access=agent.knowledge_access if agent.knowledge_access else None,
+            agent_access=agent_scope(agent),
             # HR policy questions search the HR shelf whatever the asker's reach.
             **{**user_search_scope(db, user), "department": "HR"},
         )

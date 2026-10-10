@@ -315,10 +315,10 @@ def test_search_rag_applies_the_agent_knowledge_scope(
     search_rag(ToolContext(db=transactional_db_session, actor=actor, agent=None), request)
     assert captured["agent_access"] is None
 
-    # An agent configured with an empty scope must not read as "unscoped".
+    # An agent with nothing ticked reads nothing; it must not read as "unscoped".
     unscoped = SimpleNamespace(role_code="KNOWLEDGE", knowledge_access=[])
     search_rag(ToolContext(db=transactional_db_session, actor=actor, agent=unscoped), request)
-    assert captured["agent_access"] is None
+    assert captured["agent_access"] == []
 
 
 def test_submit_approval_rejects_a_self_named_approver(client, transactional_db_session) -> None:

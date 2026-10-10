@@ -87,6 +87,12 @@ def stub_retrieval(monkeypatch):
     return queries
 
 
+@pytest.fixture(autouse=True)
+def no_web_search(monkeypatch):
+    """The test agent holds web_search; nothing here may reach Google."""
+    monkeypatch.setattr(campaigns_module, "web_search_enabled", lambda _db, _agent: False)
+
+
 @pytest.fixture(scope="module")
 def db(transactional_db_session):
     return transactional_db_session
@@ -344,8 +350,8 @@ def test_an_existing_marketing_agent_catches_up_with_new_tools():
         tools_access=["rag_search"], allowed_actions=["rag_search"], disallowed_actions=[],
     )
     assert upgrade_versioned_grants(agent)
-    assert agent.tools_access == ["rag_search", "start_marketing_campaign"]
-    assert agent.configuration_version == 202
+    assert agent.tools_access == ["rag_search", "start_marketing_campaign", "web_search"]
+    assert agent.configuration_version == 203
     assert not upgrade_versioned_grants(agent)
 
 

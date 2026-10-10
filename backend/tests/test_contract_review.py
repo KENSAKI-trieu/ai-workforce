@@ -309,6 +309,8 @@ def test_review_references_deduplicate_chunks_and_expose_reader_url(monkeypatch)
             },
         ],
     )
+    # The Legal agent's ticked knowledge; the database here is a stand-in.
+    monkeypatch.setattr(specialized, "agent_scope_for_role", lambda *_args: ["collection:Legal"])
     user = SimpleNamespace(
         tenant_id="tenant",
         role="CEO",

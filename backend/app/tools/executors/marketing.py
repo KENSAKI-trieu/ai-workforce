@@ -57,13 +57,21 @@ def start_marketing_campaign(context: ToolContext, request: MarketingCampaignInp
             raise
         return {"status": "REFUSED", "reply": str(exc.detail)}
     link = f"/agents/MARKETING?campaign={campaign.id}"
+    pages = sum(1 for source in campaign.sources or [] if source.get("kind") == "web")
+    documents = len(campaign.sources or []) - pages
+    material = [
+        part for part in (
+            f"{documents} đoạn tài liệu công ty" if documents else "",
+            f"{pages} trang web" if pages else "",
+        ) if part
+    ]
     return {
         "status": campaign.stage,
         "campaign_id": str(campaign.id),
         "url": link,
         "reply": (
             f"Tôi đã lập dàn ý cho chiến dịch **{campaign.title}** từ brief của bạn"
-            f"{f' và {len(campaign.sources)} đoạn tài liệu công ty' if campaign.sources else ''}. "
+            f"{f' và ' + ', '.join(material) if material else ''}. "
             f"[Mở chiến dịch]({link}) để duyệt, sửa hoặc yêu cầu làm lại dàn ý; sau khi duyệt, "
             "tôi sẽ viết bài Facebook, Instagram, Threads và tự kiểm chứng số liệu."
         ),

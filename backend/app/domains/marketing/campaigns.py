@@ -22,7 +22,9 @@ from typing import Any
 from fastapi import HTTPException
 from sqlalchemy.orm import Session
 
+from app.domains.knowledge.agent_knowledge_scope import agent_scope, skill_scope
 from app.domains.knowledge.rag_service import hybrid_search_documents, in_reading_order, user_search_scope
+from app.domains.knowledge.web_search import WebSearchUnavailable, search_web, web_search_enabled
 from app.domains.marketing.approvals import open_marketing_approval
 from app.domains.marketing.guardrails import detect_jailbreak
 from app.domains.marketing.pipeline import (
@@ -43,6 +45,14 @@ BLOCKED_MESSAGE = "Nội dung vi phạm chính sách."
 MAX_BRIEF_CHARS = 8000
 MAX_POST_CHARS = 8000
 RAG_TOP_K = 6
+SKILL_TOP_K = 4
+WEB_MAX_RESULTS = 5
+WEB_RESEARCH_INSTRUCTION = (
+    "Tìm thông tin công khai trên web giúp lập chiến dịch truyền thông mạng xã hội cho brief "
+    "dưới đây: xu hướng thị trường và nền tảng, đối thủ, hành vi khách hàng, số liệu và sự "
+    "kiện gần đây. Không tìm thông tin cá nhân. Các chuỗi dạng [NGƯỜI_1] là thông tin đã ẩn, "
+    "bỏ qua chúng."
+)
 # A campaign left in DRAFTING this long was abandoned by a request that died midway, and
 # may be drafted again; a live one finishes in a minute or two.
 STALE_DRAFTING = timedelta(minutes=10)
@@ -77,31 +87,42 @@ def _title(brief: str) -> str:
     return first if len(first) <= 120 else first[:119].rstrip() + "…"
 
 
-def retrieve_sources(db: Session, user: User, query: str) -> list[dict[str, Any]]:
+def _marketing_agent(db: Session, user: User) -> AIAgent | None:
+    return db.query(AIAgent).filter(
+        AIAgent.tenant_id == user.tenant_id, AIAgent.role_code == "MARKETING"
+    ).first()
+
+
+def _search(db: Session, user: User, query: str, selectors: list[str], top_k: int) -> list[dict[str, Any]]:
+    """Ticked knowledge only, within the asker's own reach; a failure finds nothing."""
+    try:
+        return in_reading_order(hybrid_search_documents(
+            db,
+            user.tenant_id,
+            query,
+            top_k=top_k,
+            agent_access=selectors,
+            **user_search_scope(db, user),
+        ))
+    except Exception:  # noqa: BLE001 - retrieval is an aid, not a precondition
+        logger.exception("Marketing retrieval failed")
+        return []
+
+
+def retrieve_sources(
+    db: Session, user: User, query: str, agent: AIAgent | None = None
+) -> list[dict[str, Any]]:
     """The company documents the brief is about, numbered as the outline cites them.
 
     The Marketing agent's knowledge scope and the asker's own reach both apply. A failed
     search does not stop the campaign: it is written from the brief alone, and the prompts
     mark what is missing as "[cần bổ sung số liệu]".
     """
-    agent = db.query(AIAgent).filter(
-        AIAgent.tenant_id == user.tenant_id, AIAgent.role_code == "MARKETING"
-    ).first()
-    try:
-        results = in_reading_order(hybrid_search_documents(
-            db,
-            user.tenant_id,
-            query,
-            top_k=RAG_TOP_K,
-            agent_access=(agent.knowledge_access or None) if agent else None,
-            **user_search_scope(db, user),
-        ))
-    except Exception:  # noqa: BLE001 - retrieval is an aid, not a precondition
-        logger.exception("Marketing retrieval failed")
-        return []
+    agent = agent or _marketing_agent(db, user)
     return [
         {
             "ref": index,
+            "kind": "document",
             "chunk_id": str(item.get("id") or ""),
             "document_id": str(item.get("document_id") or ""),
             "document_title": item.get("document_title") or item.get("document_name") or "Tài liệu",
@@ -109,17 +130,106 @@ def retrieve_sources(db: Session, user: User, query: str) -> list[dict[str, Any]
             "chunk_index": item.get("chunk_index"),
             "content": str(item.get("content") or ""),
         }
-        for index, item in enumerate(results, start=1)
+        for index, item in enumerate(_search(db, user, query, agent_scope(agent), RAG_TOP_K), start=1)
     ]
+
+
+def retrieve_skills(db: Session, user: User, query: str, agent: AIAgent | None) -> list[dict[str, Any]]:
+    """Know-how from the agent's skill shelf: guidance for the writing, never a source."""
+    selectors = skill_scope(agent)
+    if not selectors:
+        return []
+    return [
+        {
+            "chunk_id": str(item.get("id") or ""),
+            "document_id": str(item.get("document_id") or ""),
+            "document_title": item.get("document_title") or item.get("document_name") or "Tài liệu",
+            "section_title": item.get("section_title"),
+            "content": str(item.get("content") or ""),
+        }
+        for item in _search(db, user, query, selectors, SKILL_TOP_K)
+    ]
+
+
+def retrieve_web_sources(
+    db: Session, user: User, writer: Writer, query: str, *, agent: AIAgent | None, first_ref: int
+) -> list[dict[str, Any]] | None:
+    """Public web pages about the brief, numbered after the documents; None when switched off.
+
+    The brief goes out pseudonymised, as it does to the writing model. Pages are cited like
+    documents and the fact-check reads them too; a page with no supported sentence is
+    dropped, since there is nothing in it to check a claim against.
+    """
+    if not web_search_enabled(db, agent):
+        return None
+    try:
+        result = search_web(
+            db, user, "MARKETING", f"{WEB_RESEARCH_INSTRUCTION}\n\n{writer.hide(query)}",
+            max_results=WEB_MAX_RESULTS,
+        )
+    except WebSearchUnavailable:
+        logger.warning("Marketing web search unavailable", exc_info=True)
+        return []
+    pages = [item for item in result["results"] if item["snippet"]]
+    return [
+        {
+            "ref": first_ref + offset,
+            "kind": "web",
+            "url": item["url"],
+            "site": item["site"],
+            "chunk_id": "",
+            "document_id": "",
+            "document_title": item["title"] or item["site"],
+            "section_title": None,
+            "chunk_index": None,
+            "content": item["snippet"],
+        }
+        for offset, item in enumerate(pages)
+    ]
+
+
+def gather_material(
+    db: Session, user: User, writer: Writer, query: str, progress: Progress = no_progress
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """(sources, skills) for an outline: documents, then web pages, then the skill shelf."""
+    agent = _marketing_agent(db, user)
+    progress("RAG", "running", None)
+    sources = retrieve_sources(db, user, query, agent)
+    skills = retrieve_skills(db, user, query, agent)
+    found = f"{len(sources)} đoạn tài liệu"
+    progress("RAG", "done", f"{found} · {len(skills)} đoạn kỹ năng" if skills else found)
+    progress("WEB", "running", None)
+    pages = retrieve_web_sources(db, user, writer, query, agent=agent, first_ref=len(sources) + 1)
+    if pages is None:
+        progress("WEB", "done", "Chưa bật cho Marketing")
+    else:
+        sources += pages
+        progress("WEB", "done", f"{len(pages)} trang web")
+    return sources, skills
 
 
 def context_of(sources: list[dict[str, Any]]) -> list[str]:
     """The numbered blocks the model reads, rebuilt from the stored sources."""
     blocks = []
     for source in sources or []:
+        if source.get("kind") == "web":
+            blocks.append(
+                f"[{source.get('ref')}] (Web) {source.get('document_title')} — {source.get('site')}\n"
+                f"Link: {source.get('url')}\n{source.get('content') or ''}"
+            )
+            continue
         section = f" — {source['section_title']}" if source.get("section_title") else ""
         blocks.append(f"[{source.get('ref')}] {source.get('document_title')}{section}\n{source.get('content') or ''}")
     return blocks
+
+
+def skill_texts(skills: list[dict[str, Any]] | None) -> list[str]:
+    """The skill shelf as the writer reads it: titled, unnumbered."""
+    texts = []
+    for skill in skills or []:
+        section = f" — {skill['section_title']}" if skill.get("section_title") else ""
+        texts.append(f"{skill.get('document_title')}{section}\n{skill.get('content') or ''}")
+    return texts
 
 
 def _visible(db: Session, user: User):
@@ -186,11 +296,9 @@ def start_campaign(
     progress("GUARDRAIL", "running", None)
     _guard(brief)
     progress("GUARDRAIL", "done", None)
-    progress("RAG", "running", None)
-    sources = retrieve_sources(db, user, brief)
-    progress("RAG", "done", f"{len(sources)} đoạn tài liệu")
+    sources, skills = gather_material(db, user, writer, brief, progress)
     progress("OUTLINE", "running", None)
-    outline = write_outline(writer, brief=brief, context=context_of(sources))
+    outline = write_outline(writer, brief=brief, context=context_of(sources), skills=skill_texts(skills))
     progress("OUTLINE", "done", None)
     campaign = MarketingCampaign(
         tenant_id=user.tenant_id,
@@ -201,6 +309,7 @@ def start_campaign(
         stage="OUTLINE_PENDING",
         outline=outline,
         sources=sources,
+        skills=skills,
         drafts={},
     )
     db.add(campaign)
@@ -238,22 +347,23 @@ def decide_outline(
         if not feedback:
             raise HTTPException(status_code=422, detail="Hãy cho biết lý do từ chối để tôi đề xuất dàn ý khác")
         _guard(feedback)
+        brief, previous_outline = campaign.brief, campaign.outline
         db.commit()  # release the row while the model works
-        progress("RAG", "running", None)
-        sources = retrieve_sources(db, user, f"{campaign.brief}\n{feedback}")
-        progress("RAG", "done", f"{len(sources)} đoạn tài liệu")
+        sources, skills = gather_material(db, user, writer, f"{brief}\n{feedback}", progress)
         progress("OUTLINE", "running", None)
         outline = write_outline(
             writer,
-            brief=campaign.brief,
+            brief=brief,
             context=context_of(sources),
-            previous_outline=campaign.outline,
+            skills=skill_texts(skills),
+            previous_outline=previous_outline,
             feedback=feedback,
         )
         progress("OUTLINE", "done", None)
         campaign = _authored(db, user, campaign_id)
         _expect(campaign, "OUTLINE_PENDING", "DRAFTING")
         campaign.outline, campaign.sources, campaign.outline_feedback = outline, sources, feedback
+        campaign.skills = skills
         campaign.stage = "OUTLINE_PENDING"
         db.commit()
         db.refresh(campaign)
@@ -269,9 +379,10 @@ def decide_outline(
     campaign.stage = "DRAFTING"
     db.commit()
     brief, outline, context = campaign.brief, campaign.outline, context_of(campaign.sources)
+    skills = skill_texts(campaign.skills)
     try:
         posts, report, rounds = draft_and_check(
-            writer, brief=brief, outline=outline, context=context, progress=progress
+            writer, brief=brief, outline=outline, context=context, skills=skills, progress=progress
         )
     except BaseException:
         db.rollback()
@@ -371,4 +482,5 @@ def serialize_campaign(campaign: MarketingCampaign, *, with_sources: bool = True
     }
     if with_sources:
         item["sources"] = campaign.sources or []
+        item["skills"] = campaign.skills or []
     return item

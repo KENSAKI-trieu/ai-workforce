@@ -23,7 +23,11 @@ from app.core.security import PermissionRequired, get_current_active_user
 from app.domains.platform.position_service import has_permission
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
-from app.domains.knowledge.agent_knowledge_scope import existing_knowledge_targets, orphaned_selectors
+from app.domains.knowledge.agent_knowledge_scope import (
+    SKILL_KNOWLEDGE_ROLES,
+    existing_knowledge_targets,
+    orphaned_selectors,
+)
 from app.domains.platform.auth_service import (
     ensure_tenant_default_agents,
     supported_agent_tools,
@@ -68,6 +72,8 @@ class AIAgentUpdateRequest(BaseModel):
     allowed_actions: Optional[list[str]] = None
     disallowed_actions: Optional[list[str]] = None
     knowledge_access: Optional[list[str]] = None
+    # The skill shelf; only for roles in SKILL_KNOWLEDGE_ROLES.
+    skill_access: Optional[list[str]] = None
     is_active: Optional[bool] = None
 
 
@@ -125,6 +131,7 @@ def _public_agent_response(agent: AIAgent, current_user: User) -> AIAgentRespons
         "allowed_actions": [],
         "disallowed_actions": [],
         "knowledge_access": [],
+        "skill_access": [],
     })
 
 
@@ -143,12 +150,18 @@ def _validate_knowledge_access(
     selectors = sorted({str(value).strip() for value in values if str(value).strip()})
     if len(selectors) > 5000:
         raise HTTPException(status_code=422, detail="Too many knowledge selectors")
-    if "*" in selectors and len(selectors) > 1:
-        raise HTTPException(status_code=422, detail="'*' cannot be combined with other knowledge selectors")
+    # An agent reads only what is ticked for it; there is no "every document" option.
+    if "*" in selectors:
+        raise HTTPException(
+            status_code=422,
+            detail="Không còn lựa chọn 'toàn bộ tài liệu': hãy tích collection hoặc tài liệu agent được đọc.",
+        )
     if "none" in selectors and len(selectors) > 1:
         raise HTTPException(status_code=422, detail="'none' cannot be combined with other knowledge selectors")
-    if selectors in ([], ["*"], ["none"]):
-        return selectors or ["none"]
+    # Nothing ticked is stored as "none", not as an empty list, which an older build reads
+    # as "every document".
+    if selectors in ([], ["none"]):
+        return ["none"]
 
     valid_collections, valid_documents, valid_chunks = existing_knowledge_targets(
         db, current_user.tenant_id
@@ -268,6 +281,7 @@ def get_agent_configuration_options(
     # such as `request_leave` on the Legal agent, which no Legal branch ever checks.
     supported = supported_agent_tools(agent.role_code)
     tool_names = sorted(supported - retired)
+    targets = existing_knowledge_targets(db, current_user.tenant_id)
     granted = (
         set(canonical_tool_names(agent.tools_access))
         | set(canonical_tool_names(agent.allowed_actions))
@@ -304,10 +318,8 @@ def get_agent_configuration_options(
         "unsupported_grants": sorted(granted - supported - retired),
         # Selectors the agent holds for knowledge deleted since. The page lists them so the
         # operator can see and remove them; they match nothing at retrieval time.
-        "orphaned_knowledge": orphaned_selectors(
-            agent.knowledge_access or [],
-            existing_knowledge_targets(db, current_user.tenant_id),
-        ),
+        "orphaned_knowledge": orphaned_selectors(agent.knowledge_access or [], targets),
+        "orphaned_skills": orphaned_selectors(agent.skill_access or [], targets),
         "tools": [
             {"name": name, "description": TOOL_DESCRIPTIONS.get(name, name)}
             for name in tool_names
@@ -348,6 +360,21 @@ def update_agent(
             data["knowledge_access"],
             already_granted=frozenset(agent.knowledge_access or []),
         )
+    if "skill_access" in data:
+        if agent.role_code.upper() not in SKILL_KNOWLEDGE_ROLES and data["skill_access"]:
+            raise HTTPException(
+                status_code=422,
+                detail=f"Agent {agent.role_code} không dùng kho kỹ năng",
+            )
+        validated = _validate_knowledge_access(
+            db,
+            current_user,
+            data["skill_access"],
+            already_granted=frozenset(agent.skill_access or []),
+        )
+        # "none" is knowledge_access's spelling of nothing; the skill shelf has no legacy
+        # reading to protect, so nothing is simply [].
+        data["skill_access"] = [selector for selector in validated if selector != "none"]
     # Stored in the current spelling; a client still sending a renamed tool keeps working.
     for field_name in ("tools_access", "allowed_actions", "disallowed_actions"):
         if field_name in data:
@@ -415,6 +442,7 @@ def update_agent(
         output_result={
             "tools_access": agent.tools_access or [],
             "knowledge_access": agent.knowledge_access or [],
+            "skill_access": agent.skill_access or [],
         },
         status="SUCCESS",
         execution_time_ms=0,

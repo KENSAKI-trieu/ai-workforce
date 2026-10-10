@@ -376,7 +376,12 @@ class AIAgent(Base):
     tools_access: Mapped[dict] = mapped_column(JSONB, default=list)
     allowed_actions: Mapped[dict] = mapped_column(JSONB, default=list)
     disallowed_actions: Mapped[dict] = mapped_column(JSONB, default=list)
+    # Collections, documents and chunks the agent may retrieve: exactly what is ticked.
     knowledge_access: Mapped[dict] = mapped_column(JSONB, default=list)
+    # Know-how the agent writes *with* rather than *about*: style guides, frameworks,
+    # playbooks. Same selectors as knowledge_access, read as guidance and never cited as
+    # a source of facts. Only roles in SKILL_KNOWLEDGE_ROLES use it.
+    skill_access: Mapped[list] = mapped_column(JSONB, nullable=False, default=list)
     configuration_version: Mapped[int] = mapped_column(Integer, nullable=False, default=5)
     avatar_emoji: Mapped[str | None] = mapped_column(String(10), nullable=True)
     description: Mapped[str | None] = mapped_column(Text, nullable=True)
@@ -2202,8 +2207,10 @@ class MarketingCampaign(Base):
     stage: Mapped[str] = mapped_column(String(30), nullable=False, default="OUTLINE_PENDING")
     outline: Mapped[str | None] = mapped_column(EncryptedText)
     outline_feedback: Mapped[str | None] = mapped_column(EncryptedText)
-    # Retrieved chunks, numbered as the outline cites them ([1], [2] ...).
+    # Retrieved chunks and web pages, numbered as the outline cites them ([1], [2] ...).
     sources: Mapped[list] = mapped_column(EncryptedJSONB, nullable=False, default=list)
+    # Know-how from the agent's skill shelf, read as writing guidance; never cited.
+    skills: Mapped[list] = mapped_column(EncryptedJSONB, nullable=False, default=list)
     drafts: Mapped[dict] = mapped_column(EncryptedJSONB, nullable=False, default=dict)
     fact_check_report: Mapped[dict | None] = mapped_column(EncryptedJSONB)
     refine_rounds: Mapped[int] = mapped_column(Integer, nullable=False, default=0)

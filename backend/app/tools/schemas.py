@@ -37,6 +37,13 @@ class RAGSearchInput(TenantToolInput):
     collections: list[str] | None = Field(default=None, max_length=20)
 
 
+class WebSearchInput(TenantToolInput):
+    """A search phrase sent to Google: never personal or confidential details."""
+
+    query: str = Field(min_length=2, max_length=500)
+    max_results: int = Field(default=5, ge=1, le=8)
+
+
 class EmployeeLookupInput(TenantToolInput):
     employee_id: UUID
     sections: list[Literal["BASIC", "PRIVATE", "CONTRACT", "COMPENSATION", "LEAVE"]] = Field(

@@ -237,6 +237,16 @@ class AIServiceClient:
             "model": model,
         }, timeout=timeout)
 
+    def web_search(
+        self, query: str, *, max_results: int = 6, timeout: float | None = None
+    ) -> dict[str, Any]:
+        """Google Search through Gemini: {summary, queries, results, grounded, provider, model, usage}."""
+        return self._post(
+            "/v1/web/search",
+            {"query": query, "max_results": max_results},
+            timeout=timeout if timeout is not None else max(self.timeout, 90.0),
+        )
+
     def list_models(self, *, refresh: bool = False) -> dict[str, Any]:
         """Chat models the AI service's vendors serve: {default, models, errors}."""
         return self._get("/v1/llm/models", {"refresh": "true" if refresh else "false"})

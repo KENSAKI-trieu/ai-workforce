@@ -380,29 +380,29 @@ def hybrid_search_documents(
         )
     if collections:
         query = query.filter(DocumentChunk.collection_name.in_(collections))
+    # An agent reads exactly what is ticked for it and nothing else: an empty scope finds
+    # nothing, and there is no "everything" wildcard any more ("*" matches no selector).
+    # None is for searches made by a person rather than an agent.
     if agent_access is not None:
         selectors = {str(value).strip() for value in agent_access if str(value).strip()}
-        if "none" in selectors or (not selectors):
-            query = query.filter(false())
-        elif "*" not in selectors:
-            access_filters = []
-            for selector in selectors:
-                prefix, separator, value = selector.partition(":")
-                if not separator:
-                    access_filters.append(DocumentChunk.collection_name == selector)
-                elif prefix == "collection" and value:
-                    access_filters.append(DocumentChunk.collection_name == value)
-                elif prefix == "document" and value:
-                    access_filters.append(or_(
-                        DocumentChunk.document_id == value,
-                        DocumentChunk.document_name == value,
-                    ))
-                elif prefix == "chunk" and value:
-                    try:
-                        access_filters.append(DocumentChunk.id == uuid.UUID(value))
-                    except ValueError:
-                        continue
-            query = query.filter(or_(*access_filters) if access_filters else false())
+        access_filters = []
+        for selector in selectors - {"*", "none"}:
+            prefix, separator, value = selector.partition(":")
+            if not separator:
+                access_filters.append(DocumentChunk.collection_name == selector)
+            elif prefix == "collection" and value:
+                access_filters.append(DocumentChunk.collection_name == value)
+            elif prefix == "document" and value:
+                access_filters.append(or_(
+                    DocumentChunk.document_id == value,
+                    DocumentChunk.document_name == value,
+                ))
+            elif prefix == "chunk" and value:
+                try:
+                    access_filters.append(DocumentChunk.id == uuid.UUID(value))
+                except ValueError:
+                    continue
+        query = query.filter(or_(*access_filters) if access_filters else false())
     normalized_role = user_role.strip().lower() if user_role else None
     normalized_department = (
         user_department.strip().lower() if user_department else None

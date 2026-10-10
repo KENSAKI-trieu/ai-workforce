@@ -1,5 +1,6 @@
-from datetime import date
+from datetime import date, datetime
 from types import SimpleNamespace
+from zoneinfo import ZoneInfo
 
 import pytest
 
@@ -137,7 +138,8 @@ def test_leave_date_context_queries_timezone_without_user_relationship():
         SimpleNamespace(tenant_id="tenant-id"),  # type: ignore[arg-type]
     )
 
-    assert local_date == date.today()
+    # The tenant's date, not the server's: CI runs on UTC, a day behind Vietnam from 17:00.
+    assert local_date == datetime.now(ZoneInfo("Asia/Ho_Chi_Minh")).date()
     assert timezone_name == "Asia/Ho_Chi_Minh"
 
 

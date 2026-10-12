@@ -15,6 +15,7 @@ Revises: e6f7a8b9c0d1
 """
 
 from alembic import op
+import sqlalchemy as sa
 
 
 revision = "f7a8b9c0d1e2"
@@ -24,17 +25,21 @@ depends_on = None
 
 ROLES = "('IT', 'SALES')"
 
-
-def upgrade() -> None:
-    op.execute(
+# Table -> statement, in order: the links to an agent row go before the row itself. Some
+# of these tables are created by the app at startup rather than by a migration, so a
+# fresh database may not have them yet -- and then has nothing in them to delete.
+STATEMENTS = (
+    (
+        "tasks",
         f"UPDATE tasks SET ai_agent_id = NULL WHERE ai_agent_id IN "
-        f"(SELECT id FROM ai_agents WHERE role_code IN {ROLES})"
-    )
-    op.execute(f"DELETE FROM tenant_plugin_installs WHERE upper(target_role) IN {ROLES}")
-    op.execute(f"DELETE FROM tenant_plugins WHERE upper(target_role) IN {ROLES}")
-    op.execute(f"DELETE FROM model_routing_rules WHERE agent_role IN {ROLES}")
-    op.execute(f"DELETE FROM cost_budgets WHERE scope_type = 'AGENT' AND scope_id IN {ROLES}")
-    op.execute(
+        f"(SELECT id FROM ai_agents WHERE role_code IN {ROLES})",
+    ),
+    ("tenant_plugin_installs", f"DELETE FROM tenant_plugin_installs WHERE upper(target_role) IN {ROLES}"),
+    ("tenant_plugins", f"DELETE FROM tenant_plugins WHERE upper(target_role) IN {ROLES}"),
+    ("model_routing_rules", f"DELETE FROM model_routing_rules WHERE agent_role IN {ROLES}"),
+    ("cost_budgets", f"DELETE FROM cost_budgets WHERE scope_type = 'AGENT' AND scope_id IN {ROLES}"),
+    (
+        "integration_connections",
         f"""
         UPDATE integration_connections
         SET allowed_agent_roles = COALESCE(
@@ -43,9 +48,17 @@ def upgrade() -> None:
             '[]'::jsonb
         )
         WHERE allowed_agent_roles ?| array['IT', 'SALES']
-        """
-    )
-    op.execute(f"DELETE FROM ai_agents WHERE role_code IN {ROLES}")
+        """,
+    ),
+    ("ai_agents", f"DELETE FROM ai_agents WHERE role_code IN {ROLES}"),
+)
+
+
+def upgrade() -> None:
+    existing = set(sa.inspect(op.get_bind()).get_table_names())
+    for table, statement in STATEMENTS:
+        if table in existing:
+            op.execute(statement)
 
 
 def downgrade() -> None:

@@ -27,6 +27,7 @@ from app.api.v1.positions import router as positions_router
 from app.api.v1.tool_gateway import router as tool_gateway_router
 from app.api.v1.plugins import router as plugins_router
 from app.api.v1.finance import router as finance_router
+from app.api.v1.executive import router as executive_router
 from app.api.v1.marketing import router as marketing_router
 
 api_router = APIRouter(prefix="/api/v1")
@@ -56,4 +57,5 @@ api_router.include_router(positions_router)
 api_router.include_router(tool_gateway_router)
 api_router.include_router(plugins_router)
 api_router.include_router(finance_router)
+api_router.include_router(executive_router)
 api_router.include_router(marketing_router)

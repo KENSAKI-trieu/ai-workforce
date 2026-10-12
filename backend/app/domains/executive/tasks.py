@@ -105,7 +105,37 @@ def assign_task(
             "created": False,
             "reply": f"Có {len(people)} người khớp với “{named}”:\n{options}\nBạn muốn giao việc cho ai?",
         }
-    person = people[0]
+    return assign_task_to(
+        db, actor, people[0], title=title, description=description, due_date=due_date, priority=priority,
+    )
+
+
+def person_in_reach(db: Session, actor: User, person_id: Any) -> User | None:
+    """The active colleague with this id, if the user may see them in the directory."""
+    try:
+        wanted = uuid.UUID(str(person_id))
+    except ValueError:
+        return None
+    scope, _ = directory_scope(db, actor)
+    return db.query(User).filter(
+        User.tenant_id == actor.tenant_id,
+        User.is_active.is_(True),
+        User.id == wanted,
+        User.id.in_(scope),
+    ).first()
+
+
+def assign_task_to(
+    db: Session,
+    actor: User,
+    person: User,
+    *,
+    title: str,
+    description: str | None = None,
+    due_date: date | None = None,
+    priority: str = "MEDIUM",
+) -> dict[str, Any]:
+    """Create the task for one known person, under the Tasks page's rules."""
     refusal = _assignment_refusal(actor, person)
     if refusal:
         return {"created": False, "reply": f"Chưa giao việc cho {person.full_name}. {refusal}"}

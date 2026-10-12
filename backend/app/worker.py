@@ -6,6 +6,7 @@ import time
 import uuid
 
 from app.core.database import SyncSessionLocal
+from app.domains.executive.scheduler import run_due as run_executive_schedule
 from app.domains.support.support_workflow import execute_support_case
 from app.domains.platform.work_queue import (
     acknowledge_job,
@@ -18,13 +19,29 @@ from app.domains.platform.work_queue import (
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("ai_workforce.worker")
+# How often the timed work runs: the CEO assistant's alerts and morning digest.
+SCHEDULE_EVERY_SECONDS = 60
+
+
+def run_schedule() -> None:
+    try:
+        with SyncSessionLocal() as db:
+            done = run_executive_schedule(db)
+        if any(done.values()):
+            logger.info("Executive schedule sent %s alerts and %s digests", done["alerts"], done["digests"])
+    except Exception:
+        logger.exception("Executive schedule pass failed")
 
 
 def run() -> None:
     recovered = recover_interrupted_jobs()
     logger.info("Worker started; recovered %s interrupted jobs", recovered)
+    next_schedule = 0.0
     while True:
         heartbeat_worker()
+        if time.monotonic() >= next_schedule:
+            run_schedule()
+            next_schedule = time.monotonic() + SCHEDULE_EVERY_SECONDS
         raw_job = reserve_job(timeout=5)
         if raw_job is None:
             continue

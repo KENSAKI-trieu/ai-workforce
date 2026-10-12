@@ -34,11 +34,12 @@ def _conversations(db, user) -> int:
     return db.query(ChatConversation).filter(ChatConversation.user_id == user.id).count()
 
 
-def test_the_ceo_box_is_read_now_and_the_alerts_box_is_still_coming():
+def test_both_ceo_boxes_are_read_now():
     boxes = {item["code"]: item for item in permission_catalog()}
     assert CEO_BOX == "executive.briefing.view"
     assert boxes[CEO_BOX]["coming_soon"] is False
-    assert boxes["executive.alerts.manage"]["coming_soon"] is True
+    # Checked by the alert settings since C4 (api/v1/executive.py).
+    assert boxes["executive.alerts.manage"]["coming_soon"] is False
 
 
 @pytest.mark.parametrize("path", ["/api/v1/agent/chat", "/api/v1/agent/chat/stream"])

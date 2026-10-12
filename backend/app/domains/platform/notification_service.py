@@ -27,6 +27,10 @@ EVENT_TYPES = [
     # Someone handed you a task (the CEO assistant's assign_task). A type added later is
     # missing from preferences saved before it, so its migration ticks it on for them.
     "TASK_ASSIGNED",
+    # The CEO assistant's proactive alerts and morning digest (app.domains.executive), sent
+    # only to positions that may use it.
+    "EXECUTIVE_ALERT",
+    "EXECUTIVE_DIGEST",
 ]
 CHANNELS = ["IN_APP", "EMAIL", "SLACK", "TEAMS", "MOBILE_PUSH"]
 DEFAULT_CHANNELS = ["IN_APP"]

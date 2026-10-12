@@ -92,7 +92,6 @@ PERMISSIONS: tuple[Permission, ...] = (
         "Cấu hình cảnh báo điều hành",
         "Bật, tắt và đặt ngưỡng cảnh báo chủ động (vượt ngân sách, nợ quá hạn, hợp đồng lao "
         "động sắp hết hạn, phiếu duyệt treo lâu) và lịch gửi bản tin định kỳ.",
-        coming_soon=True,
     ),
     # --- Tri thức ---
     Permission(

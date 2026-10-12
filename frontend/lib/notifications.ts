@@ -2,6 +2,8 @@ import {
   AlertOctagon,
   AlertTriangle,
   Bell,
+  BellRing,
+  BriefcaseBusiness,
   CalendarClock,
   CheckCircle2,
   ClipboardCheck,
@@ -58,6 +60,8 @@ const EVENTS: Record<string, EventMeta> = {
   ONBOARDING_TASK_CREATED: { label: "Việc hội nhập mới", icon: UserPlus, tone: "blue" },
   CONTRACT_EXPIRING: { label: "Hợp đồng sắp hết hạn", icon: FileClock, tone: "amber" },
   PROBATION_ENDING: { label: "Sắp hết thử việc", icon: Hourglass, tone: "amber" },
+  EXECUTIVE_ALERT: { label: "Cảnh báo điều hành", icon: BellRing, tone: "amber" },
+  EXECUTIVE_DIGEST: { label: "Bản tin điều hành", icon: BriefcaseBusiness, tone: "blue" },
 };
 
 /** Label, icon and tone of a notification; an error or warning wins over the type's tone. */
@@ -106,6 +110,9 @@ export function notificationHref(item: NotificationItem): string | null {
       return "/users-mgmt";
     case "WORKSPACE":
       return "/settings";
+    case "EXECUTIVE":
+      // The CEO assistant's page, on the view the notification is about.
+      return item.entity_id === "alerts" ? "/agents/CEO?view=alerts" : "/agents/CEO";
     default:
       return null;
   }

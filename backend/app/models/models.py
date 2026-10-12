@@ -2224,3 +2224,56 @@ class MarketingCampaign(Base):
     )
 
     created_by = relationship("User", foreign_keys=[created_by_id])
+
+
+class ExecutiveAlertRule(Base):
+    """One proactive alert of the CEO assistant, switched on or off with its threshold.
+
+    The rules themselves are code (app.domains.executive.alerts); a row only records a
+    tenant's choice. A rule with no row runs with its default.
+    """
+
+    __tablename__ = "executive_alert_rules"
+    __table_args__ = (UniqueConstraint("tenant_id", "rule_key", name="uq_executive_alert_rule"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    rule_key: Mapped[str] = mapped_column(String(50), nullable=False)
+    enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    threshold: Mapped[Decimal | None] = mapped_column(Numeric(18, 2))
+    updated_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )
+
+
+class ExecutiveSchedule(Base):
+    """When a tenant's executive digest goes out, and when its alerts were last checked.
+
+    One row per tenant, created on first use. The worker's scheduler locks it while it runs
+    so two workers never send the same morning's digest twice.
+    """
+
+    __tablename__ = "executive_schedules"
+
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), primary_key=True
+    )
+    digest_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    # Hour of the day in the tenant's own time zone.
+    digest_hour: Mapped[int] = mapped_column(Integer, nullable=False, default=8)
+    # ISO weekdays, Monday = 1.
+    digest_weekdays: Mapped[list] = mapped_column(JSONB, nullable=False, default=lambda: [1, 2, 3, 4, 5])
+    alerts_enabled: Mapped[bool] = mapped_column(Boolean, nullable=False, default=True)
+    last_digest_on: Mapped[date | None] = mapped_column(Date)
+    last_alert_check_at: Mapped[datetime | None] = mapped_column(DateTime(timezone=True))
+    updated_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

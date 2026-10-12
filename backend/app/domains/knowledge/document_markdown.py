@@ -23,6 +23,7 @@ from __future__ import annotations
 
 import io
 import re
+import unicodedata
 from collections import Counter
 from typing import Any
 
@@ -258,7 +259,13 @@ _COLUMN_SLACK = 4
 
 
 def _norm(line: str) -> str:
-    return re.sub(r"\d+", "#", re.sub(r"\s+", " ", line).strip())
+    """A header line's shape: digits as #, and the page number at either end dropped.
+
+    A gazette prints its page number left of the header on even pages and right of it on
+    odd ones; read with the number, each side came to half the pages, under the bar.
+    """
+    shape = re.sub(r"\d+", "#", re.sub(r"\s+", " ", line).strip())
+    return re.sub(r"^(?:#\s*)+|(?:\s*#)+$", "", shape) or shape
 
 
 def _is_bullet(stripped: str) -> bool:
@@ -432,6 +439,47 @@ def pdf_pages_to_markdown(pages: list[str], *, page_markers: bool = False) -> st
     return "".join(out)
 
 
+_WORD_EDGE = re.compile(r"^[\W_]+|[\W_]+$")
+# A justified line spreads its words, so a split word can sit several spaces apart; a
+# column gap is told apart by the evidence below, not by the width.
+_MEND_GAP = 8
+
+
+def _core(token: str) -> str:
+    return _WORD_EDGE.sub("", token).casefold()
+
+
+def mend_split_words(layout: str, plain: str) -> str:
+    """Rejoin words layout mode cut apart, on the evidence of plain mode's reading.
+
+    Layout mode places each glyph run where the page draws it, so a word whose accent the
+    font draws as a run of its own comes out in pieces ("Hướng d ẫn"). Plain mode reads
+    the same page without the split but loses the columns. Two neighbours are joined when
+    plain mode read the joined word and did not read both halves as words of their own.
+    Nothing here knows a language: the page is its own dictionary.
+    """
+    words = {_core(token) for token in plain.split()} - {""}
+    if not words:
+        return layout
+
+    def mend(line: str) -> str:
+        parts = re.split(r"( +)", line)
+        index = 0
+        while index + 2 < len(parts):
+            left, gap, right = parts[index], parts[index + 1], parts[index + 2]
+            joined = _core(left + right)
+            if (
+                len(gap) <= _MEND_GAP and _core(left) and _core(right) and joined in words
+                and not (_core(left) in words and _core(right) in words)
+            ):
+                parts[index:index + 3] = [left + right]
+                continue
+            index += 2
+        return "".join(parts)
+
+    return "\n".join(mend(line) for line in layout.split("\n"))
+
+
 def pdf_to_markdown(data: bytes, *, page_markers: bool = False) -> str:
     try:
         from pypdf import PdfReader
@@ -439,7 +487,15 @@ def pdf_to_markdown(data: bytes, *, page_markers: bool = False) -> str:
         raise DocumentParseError("PDF parser is not installed") from exc
     try:
         reader = PdfReader(io.BytesIO(data))
-        pages = [page.extract_text(extraction_mode="layout") or "" for page in reader.pages]
+        # NFC: some fonts give a vowel and its tone mark as two characters, and a query
+        # typed the usual way would then never match the text.
+        pages = [
+            mend_split_words(
+                unicodedata.normalize("NFC", page.extract_text(extraction_mode="layout") or ""),
+                unicodedata.normalize("NFC", page.extract_text() or ""),
+            )
+            for page in reader.pages
+        ]
     except Exception as exc:
         raise DocumentParseError("Invalid or encrypted PDF file") from exc
     return pdf_pages_to_markdown(pages, page_markers=page_markers)

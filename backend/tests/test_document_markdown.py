@@ -15,6 +15,7 @@ from reportlab.pdfgen import canvas
 from app.domains.knowledge.document_markdown import (
     docx_to_markdown,
     extract_knowledge_text,
+    pdf_pages_to_markdown,
     pdf_to_markdown,
     to_markdown,
 )
@@ -257,3 +258,30 @@ def test_a_scan_gives_the_knowledge_index_no_text():
     Image.new("RGB", (400, 200), "white").save(scan, format="PDF")
     assert extract_knowledge_text("scan.pdf", scan.getvalue()) == ""
     assert extract_knowledge_text("notes.txt", "Ghi chú".encode()) == "Ghi chú"
+
+
+def test_a_header_whose_page_number_changes_sides_is_still_dropped():
+    # A gazette prints the page number left of its header on even pages, right on odd.
+    bodies = ["Phạm vi điều chỉnh", "Đối tượng áp dụng", "Giải thích từ ngữ", "Hóa đơn điện tử",
+              "Thời điểm lập hóa đơn", "Chứng từ khấu trừ", "Lưu trữ hóa đơn", "Hiệu lực thi hành"]
+    pages = [
+        (f"{page} CÔNG BÁO/Số 765 + 766/Ngày 21-6-2025" if page % 2 == 0 else f"CÔNG BÁO/Số 765 + 766/Ngày 21-6-2025 {page}")
+        + f"\n\nĐiều {page}. {body}\n\nNội dung về {body.lower()} theo quy định.\n\n{body} được hướng dẫn chi tiết."
+        for page, body in zip(range(62, 70), bodies)
+    ]
+    markdown = pdf_pages_to_markdown(pages)
+    assert "CÔNG BÁO" not in markdown
+    assert "Điều 62" in markdown and "Điều 69" in markdown
+
+
+def test_words_layout_mode_split_are_mended_from_plain_modes_reading():
+    from app.domains.knowledge.document_markdown import mend_split_words
+
+    plain = "Hướng dẫn thực hiện một số điều của Luật Quản lý thuế; khu phi thuế quan, nhà ở."
+    layout = "Hướng d   ẫn thực hiện m   ột số điều của Lu   ật Quản lý thu  ế;     khu phi thuế quan, nhà ở."
+    assert mend_split_words(layout, plain) == (
+        "Hướng dẫn thực hiện một số điều của Luật Quản lý thuế;     khu phi thuế quan, nhà ở."
+    )
+    # Two words plain mode also read apart stay apart, whatever language they are in.
+    assert mend_split_words("請求 書 and in voice", "請求 書 and in voice") == "請求 書 and in voice"
+    assert mend_split_words("tháng - năm", "tháng-năm tháng - năm") == "tháng - năm"

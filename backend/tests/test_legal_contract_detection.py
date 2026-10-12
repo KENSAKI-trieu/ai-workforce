@@ -144,7 +144,12 @@ class ScriptedRouter:
     def generate_text(self, messages, **_kwargs):
         import json
 
-        pending_state = json.loads(messages[-1]["content"])["pending_state"]
+        payload = json.loads(messages[-1]["content"])
+        if "pending_state" not in payload:
+            # The grounded answer after retrieval, made only when the shelf holds excerpts
+            # (a developer's database does, CI's is empty): not a routing call, not counted.
+            return {"provider": "gemini", "content": json.dumps({"answerable": False})}
+        pending_state = payload["pending_state"]
         self.pending_states.append(pending_state)
         label = self.labels[pending_state]
         reply = label if isinstance(label, dict) else {"intent": label}

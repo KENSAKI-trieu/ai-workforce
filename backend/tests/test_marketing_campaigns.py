@@ -141,7 +141,9 @@ def test_a_brief_becomes_an_outline_waiting_for_its_author(db, employee, stub_re
     assert campaign.stage == "OUTLINE_PENDING"
     assert campaign.outline.startswith("### Dàn ý")
     assert campaign.sources[0]["document_title"] == "PayNow Playbook"
-    assert stub_retrieval == [BRIEF]
+    # Searched with the brief itself: the knowledge shelf, and the skill shelf too when the
+    # agent has one ticked (a developer's database does, CI's does not).
+    assert stub_retrieval and set(stub_retrieval) == {BRIEF}
     kind, prompt = model.calls[0]
     # The phone number in the brief reaches the provider as a stand-in only.
     assert kind == "outline" and "0912 345 678" not in prompt and "[SĐT_1]" in prompt

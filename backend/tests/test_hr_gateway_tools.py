@@ -197,6 +197,9 @@ def test_a_dropped_leave_request_files_nothing(client, transactional_db_session,
 
 def test_a_complete_leave_request_goes_to_approval(client, transactional_db_session, employee):
     start = date.today() + timedelta(days=40)
+    # A Saturday or Sunday holds no working day, and the request is refused for that.
+    while start.weekday() >= 5:
+        start += timedelta(days=1)
     conversation = _conversation(transactional_db_session, employee, "xin nghỉ")
 
     result = _invoke(

@@ -9,6 +9,7 @@ from app.agents.base.persistence import orchestration_engines
 from app.api.dependencies import require_internal_token
 from app.api.routes import health, llm, orchestration, rag, web
 from app.core.config import settings
+from app.core.llm.credentials import CredentialsMiddleware
 from app.services.embedding.factory import get_embedding_provider
 
 __all__ = ["app", "lifespan", "require_internal_token"]
@@ -44,6 +45,8 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# A company's own API keys, sent by the backend per request; see app.core.llm.credentials.
+app.add_middleware(CredentialsMiddleware)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[origin.strip() for origin in settings.FRONTEND_URL.split(",") if origin.strip()],

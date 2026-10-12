@@ -2277,3 +2277,32 @@ class ExecutiveSchedule(Base):
     updated_at: Mapped[datetime] = mapped_column(
         DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
     )
+
+
+class TenantLLMCredential(Base):
+    """An API key a company entered for one model vendor, sealed at rest.
+
+    It replaces the deployment's own keys for that vendor on every model call the company
+    makes (app.core.llm_credentials). The key is never returned by the API: only the
+    last characters, so an administrator can tell which key is in place.
+    """
+
+    __tablename__ = "tenant_llm_credentials"
+    __table_args__ = (UniqueConstraint("tenant_id", "provider", name="uq_tenant_llm_credential"),)
+
+    id: Mapped[uuid.UUID] = mapped_column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    tenant_id: Mapped[uuid.UUID] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("tenants.id", ondelete="CASCADE"), nullable=False
+    )
+    provider: Mapped[str] = mapped_column(String(30), nullable=False)
+    sealed_key: Mapped[str] = mapped_column(Text, nullable=False)
+    key_hint: Mapped[str] = mapped_column(String(12), nullable=False)
+    updated_by_id: Mapped[uuid.UUID | None] = mapped_column(
+        UUID(as_uuid=True), ForeignKey("users.id", ondelete="SET NULL")
+    )
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now()
+    )
+    updated_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), server_default=func.now(), onupdate=func.now()
+    )

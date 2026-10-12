@@ -13,6 +13,15 @@ from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.config import settings
 from app.core.security import get_current_active_user
+from app.clients.ai_service_client import AIServiceError, get_ai_service_client
+from app.core.llm_credentials import (
+    PROVIDER_LABELS,
+    CredentialUnreadable,
+    forget_tenant,
+    key_hint,
+    open_key,
+    seal_key,
+)
 from app.models.models import (
     AIAgent,
     AgentWorkflow,
@@ -20,6 +29,7 @@ from app.models.models import (
     IntegrationConnection,
     Task,
     Tenant,
+    TenantLLMCredential,
     User,
 )
 from app.domains.platform.audit_events import add_audit_event
@@ -96,6 +106,18 @@ class WorkspaceUpdateRequest(BaseModel):
         return value
 
 
+class LLMKeyRequest(BaseModel):
+    api_key: str = Field(min_length=8, max_length=512)
+
+    @field_validator("api_key")
+    @classmethod
+    def strip_key(cls, value: str) -> str:
+        value = value.strip()
+        if len(value) < 8 or any(character.isspace() for character in value):
+            raise ValueError("API key không hợp lệ")
+        return value
+
+
 class DeletionRequest(BaseModel):
     confirmation_domain: str = Field(min_length=2, max_length=100)
     reason: str = Field(min_length=10, max_length=2000)
@@ -116,6 +138,47 @@ class DepartmentUpdateRequest(BaseModel):
 def _require_admin(current_user: User) -> None:
     if current_user.role not in ADMIN_ROLES:
         raise HTTPException(status_code=403, detail="Only Owner/Admin can manage the workspace")
+
+
+# Whether the deployment itself holds a key for the vendor, from the backend's own settings.
+_SYSTEM_KEY_SETTINGS = {"openai": "OPENAI_API_KEY", "gemini": "GOOGLE_AI_API_KEY"}
+
+
+def _llm_key_status(db: Session, tenant_id) -> list[dict]:
+    """Per vendor: the company's key as far as it may be shown, and whether a system key exists."""
+    rows = {
+        row.provider: row
+        for row in db.query(TenantLLMCredential).filter(TenantLLMCredential.tenant_id == tenant_id)
+    }
+    result = []
+    for provider, label in PROVIDER_LABELS.items():
+        row = rows.get(provider)
+        company_key = None
+        if row is not None:
+            try:
+                open_key(row.sealed_key)
+                readable = True
+            except CredentialUnreadable:
+                readable = False
+            company_key = {
+                "hint": row.key_hint,
+                "readable": readable,
+                "updated_at": (row.updated_at or row.created_at).isoformat() if (row.updated_at or row.created_at) else None,
+            }
+        result.append({
+            "provider": provider,
+            "label": label,
+            "company_key": company_key,
+            "system_key": bool(getattr(settings, _SYSTEM_KEY_SETTINGS[provider], None)),
+        })
+    return result
+
+
+def _llm_provider(provider: str) -> str:
+    provider = provider.lower()
+    if provider not in PROVIDER_LABELS:
+        raise HTTPException(status_code=404, detail=f"Không hỗ trợ nhà cung cấp: {provider}")
+    return provider
 
 
 def _serialize_department(department: Department, member_count: int = 0) -> dict:
@@ -151,11 +214,7 @@ def get_workspace(
         "notification_settings": tenant.notification_settings or {},
         "security_settings": tenant.security_settings or {},
         "supported_models": sorted(supported_model_names()),
-        "api_key_status": {
-            "OPENAI_API_KEY": bool(settings.OPENAI_API_KEY),
-            "ANTHROPIC_API_KEY": bool(settings.ANTHROPIC_API_KEY),
-            "GOOGLE_AI_API_KEY": bool(settings.GOOGLE_AI_API_KEY),
-        },
+        "llm_keys": _llm_key_status(db, tenant.id),
         "created_at": tenant.created_at.isoformat() if tenant.created_at else None,
         "current_user_role": current_user.role,
     }
@@ -206,6 +265,99 @@ def update_workspace(
     )
     db.commit()
     return {"message": "Workspace updated successfully", "updated_fields": sorted(data)}
+
+
+@router.put("/llm-keys/{provider}", summary="Save the company's own API key for a model vendor")
+def save_llm_key(
+    provider: str,
+    req: LLMKeyRequest,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """Checks the key against its vendor, then stores it sealed. It is never returned."""
+    _require_admin(current_user)
+    provider = _llm_provider(provider)
+    try:
+        verdict = get_ai_service_client().verify_llm_key(provider, req.api_key)
+    except AIServiceError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail="Không kiểm tra được key vì AI service không phản hồi; key chưa được lưu.",
+        ) from exc
+    if not verdict.get("ok"):
+        raise HTTPException(
+            status_code=422,
+            detail=(
+                f"{PROVIDER_LABELS[provider]} từ chối key này ({verdict.get('error') or 'lỗi không rõ'}); "
+                "key chưa được lưu."
+            ),
+        )
+    row = db.query(TenantLLMCredential).filter(
+        TenantLLMCredential.tenant_id == current_user.tenant_id,
+        TenantLLMCredential.provider == provider,
+    ).first()
+    before = {"provider": provider, "hint": row.key_hint} if row else None
+    if row is None:
+        row = TenantLLMCredential(tenant_id=current_user.tenant_id, provider=provider)
+        db.add(row)
+    row.sealed_key = seal_key(req.api_key)
+    row.key_hint = key_hint(req.api_key)
+    row.updated_by_id = current_user.id
+    row.updated_at = datetime.now(timezone.utc)
+    add_audit_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        actor_user=current_user,
+        action="workspace.llm_key_saved",
+        resource_type="WORKSPACE",
+        resource_id=str(current_user.tenant_id),
+        before_data=before,
+        # The hint only: an audit log is read by more people than the key's owner.
+        after_data={"provider": provider, "hint": row.key_hint},
+        request=request,
+    )
+    db.commit()
+    forget_tenant(current_user.tenant_id)
+    return {
+        "message": "Đã lưu key",
+        "provider": provider,
+        "hint": row.key_hint,
+        "models": int(verdict.get("models") or 0),
+    }
+
+
+@router.delete("/llm-keys/{provider}", summary="Remove the company's own API key for a model vendor")
+def delete_llm_key(
+    provider: str,
+    request: Request,
+    db: Session = Depends(get_db),
+    current_user: User = Depends(get_current_active_user),
+):
+    """The vendor goes back to the deployment's own keys, if it has any."""
+    _require_admin(current_user)
+    provider = _llm_provider(provider)
+    row = db.query(TenantLLMCredential).filter(
+        TenantLLMCredential.tenant_id == current_user.tenant_id,
+        TenantLLMCredential.provider == provider,
+    ).first()
+    if row is None:
+        raise HTTPException(status_code=404, detail="Công ty chưa nhập key cho nhà cung cấp này")
+    add_audit_event(
+        db,
+        tenant_id=current_user.tenant_id,
+        actor_user=current_user,
+        action="workspace.llm_key_removed",
+        resource_type="WORKSPACE",
+        resource_id=str(current_user.tenant_id),
+        before_data={"provider": provider, "hint": row.key_hint},
+        after_data=None,
+        request=request,
+    )
+    db.delete(row)
+    db.commit()
+    forget_tenant(current_user.tenant_id)
+    return {"message": "Đã xoá key", "provider": provider}
 
 
 @router.get("/export", summary="Export a sanitized workspace snapshot")

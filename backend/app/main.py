@@ -12,6 +12,7 @@ from fastapi.responses import JSONResponse
 from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
 from app.core.encryption import cipher
+from app.core.llm_credentials import TenantContextMiddleware
 from app.api.v1.router import api_router
 
 # ---------------------------------------------------------------------------
@@ -97,6 +98,11 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+# The caller's tenant, for the model calls made on its behalf: its own API keys go with
+# them (app.core.llm_credentials).
+app.add_middleware(TenantContextMiddleware)
 
 
 @app.middleware("http")

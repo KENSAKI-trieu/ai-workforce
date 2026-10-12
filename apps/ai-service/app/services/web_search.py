@@ -22,6 +22,7 @@ from google import genai
 from google.genai import types
 
 from app.core.config import settings
+from app.core.llm.factory import provider_keys
 
 logger = logging.getLogger(__name__)
 
@@ -65,7 +66,8 @@ def _site(url: str) -> str:
 
 
 def _generate(query: str) -> Any:
-    keys = settings.google_api_keys
+    # The company's own Gemini key when it entered one.
+    keys = provider_keys("gemini")
     if not keys:
         raise WebSearchUnavailable("GOOGLE_AI_API_KEY is not configured")
     config = types.GenerateContentConfig(

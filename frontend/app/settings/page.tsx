@@ -1,10 +1,13 @@
 "use client";
 
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
+import axios from "axios";
 import {
+  Bot,
   Building2,
   Download,
   KeyRound,
+  RefreshCw,
   Save,
   Shield,
   Trash2,
@@ -13,7 +16,49 @@ import {
 
 import AdminShell from "@/components/admin/AdminShell";
 import api from "@/lib/api";
-import { useAuthStore } from "@/store/useAuthStore";
+import { useAuthStore, userCan } from "@/store/useAuthStore";
+
+interface LLMKeyStatus {
+  provider: string;
+  label: string;
+  // The company's own key, shown by its last characters only; null when none was entered.
+  company_key: { hint: string; readable: boolean; updated_at: string | null } | null;
+  // Whether the deployment's own key (.env) exists for this vendor.
+  system_key: boolean;
+}
+
+interface AgentRow {
+  role_code: string;
+  name: string;
+  // null runs the AI service's default model.
+  model_name: string | null;
+  is_active: boolean;
+}
+
+interface ModelOption {
+  id: string;
+  provider: string;
+  label: string;
+  priced: boolean;
+}
+
+interface ModelOptions {
+  default: { provider: string; id: string } | null;
+  models: ModelOption[];
+  errors: Record<string, string>;
+}
+
+const PROVIDER_LABELS: Record<string, string> = {
+  gemini: "Google Gemini",
+  openai: "OpenAI",
+  bedrock: "Amazon Bedrock",
+};
+
+function messageFrom(error: unknown) {
+  if (!axios.isAxiosError(error)) return "Không thể xử lý yêu cầu.";
+  const detail = (error.response?.data as { detail?: unknown } | undefined)?.detail;
+  return typeof detail === "string" ? detail : error.message;
+}
 
 interface Workspace {
   id: string;
@@ -33,7 +78,7 @@ interface Workspace {
     ip_allowlist?: string[];
   };
   supported_models: string[];
-  api_key_status: Record<string, boolean>;
+  llm_keys: LLMKeyStatus[];
   current_user_role: string;
 }
 
@@ -56,6 +101,15 @@ export default function SettingsPage() {
   // Xoá workspace là việc của người tạo công ty. "Owner" giữ lại cho tài khoản tạo
   // trước khi chuỗi role được đổi tên thành "CEO".
   const canRequestDeletion = ["CEO", "Owner"].includes(user?.role || "");
+  const canConfigureAgents = userCan(user, "agents.configure");
+  const [keyDrafts, setKeyDrafts] = useState<Record<string, string>>({});
+  const [keyBusy, setKeyBusy] = useState<string | null>(null);
+  const [keyError, setKeyError] = useState("");
+  const [agents, setAgents] = useState<AgentRow[]>([]);
+  const [modelOptions, setModelOptions] = useState<ModelOptions | null>(null);
+  const [modelLoading, setModelLoading] = useState(false);
+  const [modelError, setModelError] = useState("");
+  const [savingAgent, setSavingAgent] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     const [workspaceResponse, departmentResponse] = await Promise.all([
@@ -66,10 +120,88 @@ export default function SettingsPage() {
     setDepartments(departmentResponse.data);
   }, []);
 
+  const loadModels = useCallback(async (refresh = false) => {
+    if (!canConfigureAgents) return;
+    setModelLoading(true);
+    setModelError("");
+    try {
+      const [agentResponse, optionResponse] = await Promise.all([
+        api.get<AgentRow[]>("/api/v1/agents"),
+        api.get<ModelOptions>("/api/v1/agents/model-options", { params: refresh ? { refresh: true } : undefined }),
+      ]);
+      setAgents(agentResponse.data);
+      setModelOptions(optionResponse.data);
+    } catch (reason) {
+      setModelError(messageFrom(reason));
+    } finally {
+      setModelLoading(false);
+    }
+  }, [canConfigureAgents]);
+
   useEffect(() => {
-    const timer = window.setTimeout(() => void load(), 0);
+    const timer = window.setTimeout(() => {
+      void load();
+      void loadModels();
+    }, 0);
     return () => window.clearTimeout(timer);
-  }, [load]);
+  }, [load, loadModels]);
+
+  const modelGroups = useMemo(() => {
+    const grouped = new Map<string, ModelOption[]>();
+    for (const model of modelOptions?.models || []) {
+      const items = grouped.get(model.provider) || [];
+      items.push(model);
+      grouped.set(model.provider, items);
+    }
+    return [...grouped.entries()];
+  }, [modelOptions]);
+
+  async function saveKey(provider: string) {
+    const apiKey = (keyDrafts[provider] || "").trim();
+    if (!apiKey) return;
+    setKeyBusy(provider);
+    setKeyError("");
+    try {
+      const { data } = await api.put<{ hint: string; models: number }>(`/api/v1/workspace/llm-keys/${provider}`, { api_key: apiKey });
+      setKeyDrafts((current) => ({ ...current, [provider]: "" }));
+      setMessage(`Đã kiểm tra và lưu key ${PROVIDER_LABELS[provider] || provider} (${data.hint}); key này mở được ${data.models} model.`);
+      await Promise.all([load(), loadModels(true)]);
+    } catch (reason) {
+      setKeyError(messageFrom(reason));
+    } finally {
+      setKeyBusy(null);
+    }
+  }
+
+  async function removeKey(provider: string) {
+    const label = PROVIDER_LABELS[provider] || provider;
+    if (!window.confirm(`Xoá key ${label} của công ty? Các agent sẽ quay về key hệ thống (nếu có).`)) return;
+    setKeyBusy(provider);
+    setKeyError("");
+    try {
+      await api.delete(`/api/v1/workspace/llm-keys/${provider}`);
+      setMessage(`Đã xoá key ${label} của công ty.`);
+      await Promise.all([load(), loadModels(true)]);
+    } catch (reason) {
+      setKeyError(messageFrom(reason));
+    } finally {
+      setKeyBusy(null);
+    }
+  }
+
+  async function saveAgentModel(roleCode: string, modelName: string) {
+    setSavingAgent(roleCode);
+    setModelError("");
+    try {
+      const { data } = await api.patch<AgentRow>(`/api/v1/agents/${roleCode}`, { model_name: modelName });
+      setAgents((current) => current.map((agent) => (agent.role_code === roleCode ? { ...agent, model_name: data.model_name } : agent)));
+      setMessage(`Đã đổi model của agent ${data.name || roleCode} sang ${data.model_name || "mặc định hệ thống"}.`);
+    } catch (reason) {
+      setModelError(messageFrom(reason));
+    } finally {
+      setSavingAgent(null);
+    }
+  }
 
   function update<K extends keyof Workspace>(key: K, value: Workspace[K]) {
     if (workspace) setWorkspace({ ...workspace, [key]: value });
@@ -174,16 +306,100 @@ export default function SettingsPage() {
         </section>
 
         <section className="ops-card">
-          <div className="ops-card-header"><h2>API keys</h2><KeyRound size={19} color="#64748b"/></div>
-          <div className="ops-alert">Key không được nhập hoặc trả về qua UI. Hãy cấu hình qua environment/secret vault rồi restart backend.</div>
-          {Object.entries(workspace.api_key_status).map(([key, configured]) => (
-            <div key={key} style={{ display: "flex", justifyContent: "space-between", padding: "10px 0", borderTop: "1px solid #eef2f7" }}>
-              <code>{key}</code>
-              <span className={`ops-badge ${configured ? "success" : "warning"}`}>{configured ? "Configured" : "Missing"}</span>
+          <div className="ops-card-header"><h2>API keys của công ty</h2><KeyRound size={19} color="#64748b"/></div>
+          <p className="ops-muted" style={{ fontSize: ".75rem", margin: "0 0 6px" }}>
+            Key nhập ở đây thay key hệ thống của đúng nhà cung cấp đó cho mọi agent của công ty. Key được kiểm tra với nhà cung cấp trước khi lưu, lưu mã hoá và không bao giờ hiển thị lại, chỉ hiện 4 ký tự cuối.
+          </p>
+          {keyError && <div className="ops-alert error">{keyError}</div>}
+          {workspace.llm_keys.map((item) => (
+            <div key={item.provider} style={{ padding: "12px 0", borderTop: "1px solid #eef2f7" }}>
+              <div style={{ display: "flex", justifyContent: "space-between", gap: 10, flexWrap: "wrap", alignItems: "center" }}>
+                <strong>{item.label}</strong>
+                {item.company_key ? (
+                  <span className={`ops-badge ${item.company_key.readable ? "success" : "error"}`}>
+                    {item.company_key.readable ? `Key công ty ${item.company_key.hint}` : `Key công ty ${item.company_key.hint} không giải mã được, hãy nhập lại`}
+                  </span>
+                ) : (
+                  <span className={`ops-badge ${item.system_key ? "warning" : "error"}`}>{item.system_key ? "Đang dùng key hệ thống" : "Chưa có key"}</span>
+                )}
+              </div>
+              {canEdit && (
+                <div style={{ display: "flex", gap: 8, marginTop: 8, flexWrap: "wrap" }}>
+                  <input
+                    type="password"
+                    autoComplete="off"
+                    spellCheck={false}
+                    value={keyDrafts[item.provider] || ""}
+                    onChange={(e) => setKeyDrafts((current) => ({ ...current, [item.provider]: e.target.value }))}
+                    placeholder={item.company_key ? "Nhập key mới để thay" : item.provider === "openai" ? "sk-..." : "AIza..."}
+                    style={{ flex: "1 1 200px", minWidth: 0, padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: 9 }}
+                  />
+                  <button className="ops-button" disabled={keyBusy !== null || !(keyDrafts[item.provider] || "").trim()} onClick={() => void saveKey(item.provider)}>
+                    <KeyRound size={14}/>{keyBusy === item.provider ? "Đang kiểm tra…" : "Lưu & kiểm tra"}
+                  </button>
+                  {item.company_key && (
+                    <button className="ops-button danger" disabled={keyBusy !== null} onClick={() => void removeKey(item.provider)}><Trash2 size={14}/>Xoá</button>
+                  )}
+                </div>
+              )}
             </div>
           ))}
+          <p className="ops-muted" style={{ fontSize: ".7rem", marginTop: 10 }}>Nhúng tài liệu (RAG) vẫn dùng key hệ thống để các vector đã lưu còn so khớp được.</p>
         </section>
       </div>
+
+      {canConfigureAgents && (
+        <section className="ops-card ops-section">
+          <div className="ops-card-header">
+            <h2>Model cho từng agent</h2>
+            <span style={{ display: "flex", gap: 10, alignItems: "center" }}>
+              <button className="ops-button secondary" onClick={() => void loadModels(true)} disabled={modelLoading} title="Lấy lại danh sách model từ nhà cung cấp">
+                <RefreshCw size={14} className={modelLoading ? "animate-spin" : ""}/>Làm mới
+              </button>
+              <Bot size={19} color="#64748b"/>
+            </span>
+          </div>
+          <p className="ops-muted" style={{ fontSize: ".75rem", margin: "0 0 10px" }}>
+            Danh sách lấy trực tiếp từ nhà cung cấp bằng key đang dùng (key công ty nếu đã nhập). Đổi model có hiệu lực ngay từ lượt chat tiếp theo.
+          </p>
+          {modelError && <div className="ops-alert error">{modelError}</div>}
+          {modelOptions && Object.keys(modelOptions.errors || {}).length > 0 && (
+            <div className="ops-alert error">
+              Không đọc được danh sách model của {Object.keys(modelOptions.errors).map((key) => PROVIDER_LABELS[key] || key).join(", ")}; chỉ hiện model mặc định của nhà cung cấp đó.
+            </div>
+          )}
+          {modelLoading && !modelOptions ? (
+            <div className="ops-muted" style={{ fontSize: ".8rem" }}>Đang lấy danh sách model…</div>
+          ) : (
+            agents.map((agent) => (
+              <div key={agent.role_code} style={{ display: "flex", justifyContent: "space-between", alignItems: "center", gap: 12, flexWrap: "wrap", padding: "10px 0", borderTop: "1px solid #eef2f7" }}>
+                <span><strong>{agent.name}</strong><br/><small className="ops-muted">{agent.role_code}{agent.is_active ? "" : " · đang tắt"}</small></span>
+                <select
+                  value={agent.model_name || ""}
+                  disabled={savingAgent !== null || !modelOptions}
+                  onChange={(e) => void saveAgentModel(agent.role_code, e.target.value)}
+                  style={{ flex: "0 1 340px", minWidth: 0, padding: "8px 10px", border: "1px solid #cbd5e1", borderRadius: 9, background: "#fff" }}
+                >
+                  <option value="">Mặc định hệ thống{modelOptions?.default ? ` (${modelOptions.default.id})` : ""}</option>
+                  {modelGroups.map(([provider, models]) => (
+                    <optgroup key={provider} label={PROVIDER_LABELS[provider] || provider}>
+                      {models.map((model) => (
+                        <option key={model.id} value={model.id}>
+                          {model.label !== model.id ? `${model.label} — ${model.id}` : model.id}
+                          {model.priced ? "" : " · chưa có bảng giá"}
+                        </option>
+                      ))}
+                    </optgroup>
+                  ))}
+                  {agent.model_name && !modelOptions?.models.some((model) => model.id === agent.model_name) && (
+                    <option value={agent.model_name}>{agent.model_name} (không có trong danh sách hiện tại)</option>
+                  )}
+                </select>
+              </div>
+            ))
+          )}
+        </section>
+      )}
 
       <section className="ops-card ops-section">
         <div className="ops-card-header"><h2>Export hoặc xóa dữ liệu</h2><Download size={19} color="#64748b"/></div>

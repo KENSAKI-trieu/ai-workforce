@@ -5,6 +5,7 @@ from langchain_google_genai import ChatGoogleGenerativeAI
 from langchain_openai import ChatOpenAI
 
 from app.core.config import settings
+from app.core.llm.credentials import overridden_keys
 
 
 LangChainProvider = Literal["openai", "gemini", "bedrock"]
@@ -16,7 +17,14 @@ PROVIDER_ORDER: tuple[LangChainProvider, ...] = ("bedrock", "openai", "gemini")
 
 
 def provider_keys(provider: str) -> tuple[str, ...]:
-    """Every credential configured for a vendor; Bedrock has none but one empty slot."""
+    """Every credential configured for a vendor; Bedrock has none but one empty slot.
+
+    Keys a company entered for this vendor, when the request carries them, replace the
+    deployment's own (see app.core.llm.credentials).
+    """
+    overridden = overridden_keys(provider)
+    if overridden is not None:
+        return overridden
     if provider == "bedrock":
         return ("",) if settings.BEDROCK_ENABLED else ()
     if provider == "openai":

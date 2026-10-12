@@ -9,6 +9,7 @@ import httpx
 
 from app.core.agent_models import selected_model
 from app.core.config import settings
+from app.core.llm_credentials import request_headers as llm_credential_headers
 
 
 class AIServiceError(RuntimeError):
@@ -65,14 +66,20 @@ class AIServiceClient:
         except httpx.RequestError as exc:
             raise AIServiceError(f"AI service request failed: {path}") from exc
 
-    def _get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
+    def _get(
+        self,
+        path: str,
+        params: dict[str, Any] | None = None,
+        *,
+        extra_headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         if not self.enabled:
             raise AIServiceError("AI service URL is not configured")
         try:
             response = httpx.get(
                 f"{self.base_url}{path}",
                 params=params,
-                headers=self.headers,
+                headers={**self.headers, **(extra_headers or {})},
                 timeout=self.timeout,
             )
             response.raise_for_status()
@@ -235,7 +242,7 @@ class AIServiceClient:
             "messages": messages,
             "provider": provider,
             "model": model,
-        }, timeout=timeout)
+        }, extra_headers=llm_credential_headers(), timeout=timeout)
 
     def web_search(
         self, query: str, *, max_results: int = 6, timeout: float | None = None
@@ -244,12 +251,21 @@ class AIServiceClient:
         return self._post(
             "/v1/web/search",
             {"query": query, "max_results": max_results},
+            extra_headers=llm_credential_headers(),
             timeout=timeout if timeout is not None else max(self.timeout, 90.0),
         )
 
     def list_models(self, *, refresh: bool = False) -> dict[str, Any]:
         """Chat models the AI service's vendors serve: {default, models, errors}."""
-        return self._get("/v1/llm/models", {"refresh": "true" if refresh else "false"})
+        return self._get(
+            "/v1/llm/models",
+            {"refresh": "true" if refresh else "false"},
+            extra_headers=llm_credential_headers(),
+        )
+
+    def verify_llm_key(self, provider: str, api_key: str) -> dict[str, Any]:
+        """Whether a key answers its vendor: {ok, error, models}. The key is not stored there."""
+        return self._post("/v1/llm/verify-key", {"provider": provider, "api_key": api_key})
 
     def run_orchestration(
         self,
@@ -260,7 +276,10 @@ class AIServiceClient:
         return self._post(
             "/v1/orchestration/run",
             payload,
-            extra_headers={"X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}"},
+            extra_headers={
+                "X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}",
+                **llm_credential_headers(),
+            },
         )
 
     def stream_orchestration(
@@ -272,7 +291,10 @@ class AIServiceClient:
         return self._stream_post(
             "/v1/orchestration/run/stream",
             payload,
-            extra_headers={"X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}"},
+            extra_headers={
+                "X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}",
+                **llm_credential_headers(),
+            },
         )
 
     def resume_orchestration(
@@ -284,7 +306,10 @@ class AIServiceClient:
         return self._post(
             "/v1/orchestration/resume",
             payload,
-            extra_headers={"X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}"},
+            extra_headers={
+                "X-Internal-Tool-Authorization": f"Bearer {internal_tool_jwt}",
+                **llm_credential_headers(),
+            },
         )
 
 

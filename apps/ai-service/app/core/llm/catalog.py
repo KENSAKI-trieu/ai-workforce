@@ -20,6 +20,7 @@ from collections.abc import Callable
 from dataclasses import dataclass
 
 from app.core.config import settings
+from app.core.llm.credentials import fingerprint as credentials_fingerprint
 from app.core.llm.factory import PROVIDER_ORDER, default_model_for, provider_keys
 
 logger = logging.getLogger(__name__)
@@ -126,22 +127,46 @@ def default_model() -> dict[str, str] | None:
     return None
 
 
+def verify_key(provider: str, api_key: str, listers: dict[str, Lister] | None = None) -> dict:
+    """Whether a key a company is about to save answers its vendor's model listing."""
+    lister = (listers if listers is not None else LISTERS).get(provider)
+    if lister is None:
+        return {"ok": False, "error": "UnsupportedProvider", "models": 0}
+    try:
+        listed = lister(api_key)
+    except Exception as exc:  # any vendor failure means the key cannot be used as it is
+        logger.warning("Verifying a %s key failed with %s", provider, exc.__class__.__name__)
+        return {"ok": False, "error": exc.__class__.__name__, "models": 0}
+    return {"ok": True, "error": None, "models": len(listed)}
+
+
 class ModelCatalog:
-    """Vendor listings, cached for a while: the picker is opened far more than it changes."""
+    """Vendor listings, cached for a while: the picker is opened far more than it changes.
+
+    Cached per set of keys: a company that entered its own key sees what that key serves,
+    and its listing never answers for another company.
+    """
+
+    MAX_CACHED = 64
 
     def __init__(self, listers: dict[str, Lister] | None = None, ttl: float = CATALOG_TTL_SECONDS) -> None:
         self._listers = listers if listers is not None else LISTERS
         self._ttl = ttl
         self._lock = threading.Lock()
-        self._cached: tuple[float, dict] | None = None
+        self._cached: dict[str, tuple[float, dict]] = {}
 
     def snapshot(self, *, refresh: bool = False) -> dict:
+        cache_key = credentials_fingerprint()
         with self._lock:
-            if not refresh and self._cached and time.monotonic() - self._cached[0] < self._ttl:
-                return self._cached[1]
+            cached = self._cached.get(cache_key)
+            if not refresh and cached and time.monotonic() - cached[0] < self._ttl:
+                return cached[1]
         result = self._build()
         with self._lock:
-            self._cached = (time.monotonic(), result)
+            if len(self._cached) >= self.MAX_CACHED and cache_key not in self._cached:
+                oldest = min(self._cached, key=lambda key: self._cached[key][0])
+                self._cached.pop(oldest, None)
+            self._cached[cache_key] = (time.monotonic(), result)
         return result
 
     def _build(self) -> dict:

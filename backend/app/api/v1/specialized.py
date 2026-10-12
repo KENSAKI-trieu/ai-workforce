@@ -2,6 +2,7 @@
 API Endpoints for Legal, IT, Finance, and Sales domain operations.
 """
 
+import contextvars
 import io
 import json
 import logging
@@ -785,7 +786,11 @@ async def stream_review_legal_document(
             "stage": "UPLOAD", "status": "done",
             "detail": f"{filename} · {max(1, len(data) // 1024)} KB", "elapsed_ms": 0,
         })
-        threading.Thread(target=work, name="contract-review", daemon=True).start()
+        # Run in a copy of this context: the company's API keys travel in it, as the
+        # tenant bound for the request (app.core.llm_credentials).
+        threading.Thread(
+            target=contextvars.copy_context().run, args=(work,), name="contract-review", daemon=True
+        ).start()
         while True:
             try:
                 item = events.get(timeout=15)

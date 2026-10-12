@@ -9,6 +9,7 @@ refusal or failure as ``error``.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import queue
@@ -103,7 +104,11 @@ def _stream(db: Session, user: User, run: Callable[[Callable[..., None]], dict[s
             events.put(None)
 
     def body():
-        threading.Thread(target=work, name="marketing-campaign", daemon=True).start()
+        # Run in a copy of this context: the company's API keys travel in it, as the
+        # tenant bound for the request (app.core.llm_credentials).
+        threading.Thread(
+            target=contextvars.copy_context().run, args=(work,), name="marketing-campaign", daemon=True
+        ).start()
         while True:
             try:
                 item = events.get(timeout=15)

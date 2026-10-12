@@ -1,7 +1,5 @@
 """
 Tests for the specialized Legal AI Employee.
-
-IT, Finance and Sales are under development; see test_under_development_agents.py.
 """
 
 from app.models.models import AIAgent, User

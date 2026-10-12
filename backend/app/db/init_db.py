@@ -314,13 +314,6 @@ def init_db():
                 "system_prompt": "You are the Legal Counsel AI Agent. Review contracts, highlight risk clauses, and suggest redlines.",
             },
             {
-                "role_code": "IT",
-                "name": "IT Support AI",
-                "avatar_emoji": "💻",
-                "description": "Hỗ trợ sự cố kỹ thuật, cấp quyền truy cập VPN/email và tạo Ticket Jira tự động.",
-                "system_prompt": "You are the IT Support AI Agent. Provide technical help and create Jira tickets when needed.",
-            },
-            {
                 "role_code": "FINANCE",
                 "name": "Finance & Accounting AI",
                 "avatar_emoji": "💰",
@@ -333,13 +326,6 @@ def init_db():
                 "avatar_emoji": "📣",
                 "description": "Lập chiến dịch truyền thông: dàn ý, bài Facebook, Instagram, Threads, kiểm chứng số liệu và gửi duyệt.",
                 "system_prompt": "You are the Marketing AI Agent. Plan campaigns from a brief and the company's documents; people approve every stage.",
-            },
-            {
-                "role_code": "SALES",
-                "name": "Sales & CRM AI",
-                "avatar_emoji": "📈",
-                "description": "Tra cứu danh mục sản phẩm, tạo báo giá PDF và cập nhật lead vào CRM.",
-                "system_prompt": "You are the Sales AI Agent. Assist with inventory search, PDF quote generation, and lead management.",
             },
         ]
 
@@ -552,7 +538,7 @@ def init_db():
         # Seed Audit Logs for last 7 days if count < 10
         audit_count = db.query(AuditLog).filter(AuditLog.tenant_id == tenant.id).count()
         if audit_count < 10:
-            roles = ["HR", "LEGAL", "IT", "FINANCE", "SALES", "KNOWLEDGE", "CEO"]
+            roles = ["HR", "LEGAL", "FINANCE", "KNOWLEDGE", "MARKETING", "CEO"]
             now_dt = datetime.now(timezone.utc)
             for day_offset in range(7):
                 created_dt = now_dt - timedelta(days=day_offset)

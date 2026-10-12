@@ -382,7 +382,7 @@ export default function LegalAgentPage() {
     try {
       const [agentResponse, documentsResponse, approvalsResponse, draftsResponse, reviewsResponse] = await Promise.all([
         api.get<Agent>("/api/v1/agents/LEGAL"),
-        api.get<DocumentItem[]>("/api/v1/documents"),
+        api.get<DocumentItem[]>("/api/v1/documents/"),
         api.get<ApprovalItem[]>("/api/v1/approvals/pending"),
         api.get<LegalDraft[]>("/api/v1/legal/document-drafts"),
         api.get<SavedReviewSummary[]>("/api/v1/legal/contract-reviews"),

@@ -93,10 +93,9 @@ const ROLE_LABELS: Record<string, string> = {
   CEO: "Điều hành",
   HR: "Nhân sự",
   LEGAL: "Pháp chế",
-  IT: "Công nghệ thông tin",
   FINANCE: "Tài chính",
-  SALES: "Kinh doanh",
   KNOWLEDGE: "Kho tri thức",
+  MARKETING: "Marketing",
 };
 
 function messageFrom(error: unknown) {

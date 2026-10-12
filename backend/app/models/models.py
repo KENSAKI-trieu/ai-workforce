@@ -355,7 +355,7 @@ class AIAgent(Base):
     name: Mapped[str] = mapped_column(String(100), nullable=False)
     role_code: Mapped[str] = mapped_column(
         String(50), nullable=False
-    )  # CEO, HR, LEGAL, IT, FINANCE, SALES, KNOWLEDGE
+    )  # CEO, HR, LEGAL, FINANCE, KNOWLEDGE, MARKETING
     system_prompt: Mapped[str] = mapped_column(Text, nullable=False)
     # Free text an administrator adds on top of the shipped answer prompt for this
     # tenant. Empty for every existing row and every new one, which is what makes it

@@ -52,9 +52,7 @@ DEFAULT_AGENTS = [
     {"name": "CEO Agent", "role_code": "CEO", "avatar_emoji": "👔", "description": "Executive assistant: the company briefing, requests waiting for decision, figures across departments, work assigned and followed up."},
     {"name": "HR Agent", "role_code": "HR", "avatar_emoji": "🧑‍💼", "description": "Handles leave requests, employee onboarding, and HR policy Q&A."},
     {"name": "Legal Agent", "role_code": "LEGAL", "avatar_emoji": "⚖️", "description": "Reviews contracts, detects risk clauses, generates amended documents."},
-    {"name": "IT Agent", "role_code": "IT", "avatar_emoji": "💻", "description": "Resolves technical issues via RAG and auto-creates support tickets."},
     {"name": "Finance Agent", "role_code": "FINANCE", "avatar_emoji": "💰", "description": "Reads e-invoices, matches them to POs, drafts journal entries for approval and answers questions from the books."},
-    {"name": "Sales Agent", "role_code": "SALES", "avatar_emoji": "📈", "description": "Looks up inventory, generates PDF quotations, logs leads to CRM."},
     {"name": "Knowledge Agent", "role_code": "KNOWLEDGE", "avatar_emoji": "📚", "description": "Company-wide knowledge base with hybrid RAG search and citations."},
     {"name": "Marketing Agent", "role_code": "MARKETING", "avatar_emoji": "📣", "description": "Plans multi-channel campaigns: outline, Facebook, Instagram and Threads posts, fact-checked and approved by people."},
 ]
@@ -77,10 +75,8 @@ DEFAULT_AGENT_CAPABILITIES = {
         "generate_legal_document",
         "rag_search",
     ],
-    "IT": ["search_it_kb", "create_jira_ticket"],
     # No deterministic flow: every Finance grant is a gateway tool, composed in below.
     "FINANCE": [],
-    "SALES": ["generate_quotation_pdf"],
     "KNOWLEDGE": ["rag_search"],
     # No deterministic flow: the campaign pipeline runs on its own page, and the chat on
     # the graph with gateway tools, composed in below.

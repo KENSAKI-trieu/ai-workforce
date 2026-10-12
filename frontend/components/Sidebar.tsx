@@ -16,9 +16,7 @@ import {
   LogOut,
   Users,
   Scale,
-  Laptop,
   DollarSign,
-  TrendingUp,
   BookOpen,
   ChevronDown,
   Database,
@@ -53,9 +51,7 @@ const AGENTS = [
   { name: { vi: "Trợ lý CEO", ja: "CEOエージェント" }, role: "CEO", emoji: "👔", icon: Bot, path: "/agents/CEO" },
   { name: { vi: "Trợ lý Nhân sự", ja: "人事エージェント" }, role: "HR", emoji: "🧑‍💼", icon: Users, path: "/agents/HR" },
   { name: { vi: "Trợ lý Pháp lý", ja: "法務エージェント" }, role: "LEGAL", emoji: "⚖️", icon: Scale, path: "/agents/LEGAL" },
-  { name: { vi: "Trợ lý CNTT", ja: "ITエージェント" }, role: "IT", emoji: "💻", icon: Laptop, path: "/agents/IT" },
   { name: { vi: "Trợ lý Tài chính", ja: "財務エージェント" }, role: "FINANCE", emoji: "💰", icon: DollarSign, path: "/agents/FINANCE" },
-  { name: { vi: "Trợ lý Kinh doanh", ja: "営業エージェント" }, role: "SALES", emoji: "📈", icon: TrendingUp, path: "/agents/SALES" },
   { name: { vi: "Trợ lý Tri thức", ja: "ナレッジエージェント" }, role: "KNOWLEDGE", emoji: "📚", icon: BookOpen, path: "/agents/KNOWLEDGE" },
   { name: { vi: "Trợ lý Marketing", ja: "マーケティングエージェント" }, role: "MARKETING", emoji: "📣", icon: Megaphone, path: "/agents/MARKETING" },
 ];
@@ -119,29 +115,6 @@ const SIDEBAR_TEXT = {
 
 interface SidebarProps {
   agentStatuses?: Record<string, boolean>;
-}
-
-// Listed so the product shows where it is heading; the backend refuses its chat.
-function UnderDevelopmentBadge() {
-  return (
-    <span
-      title="Under development"
-      style={{
-        fontSize: "0.58rem",
-        fontWeight: 700,
-        padding: "2px 6px",
-        borderRadius: "999px",
-        background: "#FEF3C7",
-        color: "#92400E",
-        letterSpacing: "0.02em",
-        lineHeight: 1,
-        flexShrink: 0,
-        whiteSpace: "nowrap",
-      }}
-    >
-      Under development
-    </span>
-  );
 }
 
 // ─── Status dot ─────────────────────────────────────────────────────────────
@@ -273,17 +246,14 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
     return () => { active = false; window.clearInterval(interval); };
   }, [user]);
 
-  // Which agents are still being built, and which this user's position may not use, comes
-  // from the backend, not from this list.
-  const [underDevelopment, setUnderDevelopment] = useState<Set<string>>(new Set());
+  // Which agents this user's position may not use comes from the backend, not from this list.
   const [notPermitted, setNotPermitted] = useState<Set<string>>(new Set());
   useEffect(() => {
     if (!user) return;
     let active = true;
-    api.get<Array<{ role_code: string; under_development?: boolean; can_use?: boolean }>>("/api/v1/agents/")
+    api.get<Array<{ role_code: string; can_use?: boolean }>>("/api/v1/agents/")
       .then(({ data }) => {
         if (active) {
-          setUnderDevelopment(new Set(data.filter((agent) => agent.under_development).map((agent) => agent.role_code)));
           setNotPermitted(new Set(data.filter((agent) => agent.can_use === false).map((agent) => agent.role_code)));
         }
       })
@@ -620,8 +590,6 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
                       >
                         {agent.name[locale]}
                       </span>
-
-                      {underDevelopment.has(agent.role) && <UnderDevelopmentBadge />}
 
                       {/* Online dot */}
                       <OnlineDot online={isOnline} />

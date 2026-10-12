@@ -51,7 +51,7 @@ async def lifespan(app: FastAPI):
         logger.warning(
             "⚠️ DATA_ENCRYPTION_KEY is not set: contract reviews and chat messages are stored unencrypted."
         )
-    graph_roles = sorted(role for role in ("HR", "LEGAL", "KNOWLEDGE", "IT", "FINANCE", "SALES", "CEO") if uses_langgraph(role))
+    graph_roles = sorted(role for role in ("HR", "LEGAL", "KNOWLEDGE", "FINANCE", "MARKETING", "CEO") if uses_langgraph(role))
     if graph_roles:
         # A role on LangGraph skips its deterministic flow. For LEGAL that means the intent
         # router, the "review or question?" prompt and grounded answers are replaced by the

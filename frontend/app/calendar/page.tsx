@@ -100,7 +100,7 @@ export default function CalendarPage() {
       setLoading(true);
       const [tasksRes, agentsRes, usersRes, hrEventsRes] = await Promise.allSettled([
         api.get("/api/v1/tasks"),
-        api.get("/api/v1/agents"),
+        api.get("/api/v1/agents/"),
         api.get("/api/v1/users-mgmt"),
         api.get("/api/v1/hr/calendar-events"),
       ]);

@@ -18,7 +18,6 @@ from app.agents.base.graph import build_agent_graph, public_phase
 from app.agents.base.nodes import OrchestrationRuntimeContext
 from app.agents.base.state import WorkforceAgentState
 from app.agents.ceo.agent import POLICY as CEO_POLICY
-from app.agents.customer_support.agent import POLICY as CUSTOMER_SUPPORT_POLICY
 from app.agents.finance.agent import POLICY as FINANCE_POLICY
 from app.agents.hr.graph import build_graph as build_hr_graph
 from app.agents.knowledge.graph import build_graph as build_knowledge_graph
@@ -32,18 +31,13 @@ GRAPH_BUILDERS: dict[str, Any] = {
     "MARKETING": build_marketing_graph,
     "FINANCE": lambda: build_agent_graph(FINANCE_POLICY),
     "CEO": lambda: build_agent_graph(CEO_POLICY),
-    # Under development: the backend never routes this role here yet.
-    "CUSTOMER_SUPPORT": lambda: build_agent_graph(CUSTOMER_SUPPORT_POLICY),
 }
 AGENTS = frozenset(GRAPH_BUILDERS)
-# Backend AI Employees served by another agent's graph.
-ROLE_ALIASES = {"IT": "CUSTOMER_SUPPORT", "SALES": "CUSTOMER_SUPPORT"}
 
 
 def resolve_agent(role: str | None) -> str:
     """The graph a backend role runs on; raises ValueError for a role with none."""
-    normalized = str(role or "").strip().upper()
-    agent = ROLE_ALIASES.get(normalized, normalized)
+    agent = str(role or "").strip().upper()
     if agent not in AGENTS:
         raise ValueError(f"Unknown agent role: {role!r}")
     return agent

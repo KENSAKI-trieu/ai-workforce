@@ -20,11 +20,8 @@ def test_list_agents(client, ceo_token_headers):
     assert response.status_code == 200
     agents = response.json()
     assert isinstance(agents, list)
-    assert len(agents) >= 7
-    roles = [a["role_code"] for a in agents]
-    assert "CEO" in roles
-    assert "HR" in roles
-    assert "KNOWLEDGE" in roles
+    roles = {a["role_code"] for a in agents}
+    assert roles == {"CEO", "HR", "LEGAL", "FINANCE", "KNOWLEDGE", "MARKETING"}
 
 
 def test_get_agent_by_role(client, ceo_token_headers):

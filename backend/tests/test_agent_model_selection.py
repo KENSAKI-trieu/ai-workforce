@@ -258,14 +258,14 @@ def test_a_configured_row_is_left_alone():
 def test_the_configuration_page_shows_an_upgraded_agent(
     client, ceo_token_headers, transactional_db_session, acme
 ):
-    agent = _agent(transactional_db_session, acme.tenant_id, "IT")
+    agent = _agent(transactional_db_session, acme.tenant_id, "KNOWLEDGE")
     before = (list(agent.tools_access), list(agent.allowed_actions), agent.configuration_version)
     agent.tools_access, agent.allowed_actions, agent.configuration_version = [], [], 1
     transactional_db_session.commit()
     try:
-        response = client.get("/api/v1/agents/IT", headers=ceo_token_headers)
+        response = client.get("/api/v1/agents/KNOWLEDGE", headers=ceo_token_headers)
         assert response.status_code == 200
-        assert set(response.json()["tools_access"]) == set(DEFAULT_AGENT_TOOLS["IT"])
+        assert set(response.json()["tools_access"]) == set(DEFAULT_AGENT_TOOLS["KNOWLEDGE"])
     finally:
         agent.tools_access, agent.allowed_actions, agent.configuration_version = before
         transactional_db_session.commit()

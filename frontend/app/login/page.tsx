@@ -162,7 +162,7 @@ export default function LoginPage() {
             </span>
           </h1>
           <p style={{ fontSize: "0.9rem", color: "rgba(255,255,255,0.65)", lineHeight: 1.6 }}>
-            Tự động hoá HR, Pháp lý, IT, Tài chính, Sales & Knowledge với AI Employees thông minh.
+            Tự động hoá HR, Pháp lý, Tài chính, Marketing & Knowledge với AI Employees thông minh.
           </p>
         </div>
 

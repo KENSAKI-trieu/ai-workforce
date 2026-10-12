@@ -48,10 +48,8 @@ class AgentChatResponse(BaseModel):
     tools_executed: list[dict[str, Any]] = Field(default_factory=list)
     approval_card: Optional[dict[str, Any]] = None
     hr_card: Optional[dict[str, Any]] = None
-    jira_card: Optional[dict[str, Any]] = None
     legal_risk_card: Optional[dict[str, Any]] = None
     invoice_card: Optional[dict[str, Any]] = None
-    quote_card: Optional[dict[str, Any]] = None
     dag_plan_card: Optional[dict[str, Any]] = None
     chart_cards: list[dict[str, Any]] = Field(default_factory=list)
 
@@ -109,10 +107,8 @@ def _result_attachments(result: dict[str, Any]) -> list[dict[str, Any]]:
     card_keys = (
         "approval_card",
         "hr_card",
-        "jira_card",
         "legal_risk_card",
         "invoice_card",
-        "quote_card",
         "dag_plan_card",
     )
     return [

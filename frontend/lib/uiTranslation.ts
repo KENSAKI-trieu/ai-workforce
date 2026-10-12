@@ -234,7 +234,7 @@ const EXACT_JA: Record<string, string> = {
   "Theo dõi chi tiết Token tiêu thụ, kiểm soát Ngân sách tháng, Cảnh báo vượt ngưỡng & Tối ưu chọn Model.": "トークン使用量、月次予算、しきい値アラート、モデル選択の最適化を詳細に追跡します。",
   "Kết nối công cụ công ty với scope cụ thể; AI Agent không bao giờ được mặc định truy cập toàn bộ dữ liệu.": "企業ツールを限定スコープで接続します。AIエージェントに全データへのアクセスが既定で付与されることはありません。",
   "AI Agents tự động hoá toàn bộ nghiệp vụ": "AIエージェントが業務全体を自動化",
-  "Tự động hoá HR, Pháp lý, IT, Tài chính, Sales & Knowledge với AI Employees thông minh.": "高度なAI従業員が人事、法務、IT、財務、営業、ナレッジ業務を自動化します。",
+  "Tự động hoá HR, Pháp lý, Tài chính, Marketing & Knowledge với AI Employees thông minh.": "高度なAI従業員が人事、法務、財務、マーケティング、ナレッジ業務を自動化します。",
   "Một vài thông tin về bạn...": "あなたについて簡単に入力してください...",
   "Dòng thời gian bất biến: người dùng hoặc AI nào đã làm gì, trên dữ liệu nào và kết quả ra sao.": "ユーザーまたはAIが、いつ、どのデータに対して何を行い、どのような結果になったかを示す変更不可のタイムラインです。",
   "Xu Hướng Tiêu Thụ Token & Chi Phí Theo Ngày": "日別トークン使用量・コスト推移",

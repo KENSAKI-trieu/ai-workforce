@@ -176,7 +176,7 @@ def test_integration_least_privilege_lifecycle(
             "credential_reference": "env:SLACK_CREDENTIAL",
             "permissions": ["*"],
             "allowed_resources": ["channel:support"],
-            "allowed_agent_roles": ["SALES"],
+            "allowed_agent_roles": ["MARKETING"],
         },
     )
     assert wildcard.status_code == 422
@@ -191,7 +191,7 @@ def test_integration_least_privilege_lifecycle(
             "credential_reference": "env:SLACK_CREDENTIAL",
             "permissions": ["messages:read", "chat:write"],
             "allowed_resources": ["channel:support"],
-            "allowed_agent_roles": ["SALES"],
+            "allowed_agent_roles": ["MARKETING"],
             "configuration": {"workspace": "support"},
         },
     )

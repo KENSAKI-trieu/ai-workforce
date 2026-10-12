@@ -538,8 +538,6 @@ class LangGraphEngine:
             "hr_tool_scope": "ANALYZING",
             "finance_policy": "ANALYZING",
             "finance_tool_scope": "ANALYZING",
-            "customer_support_policy": "ANALYZING",
-            "customer_support_tool_scope": "ANALYZING",
             "knowledge_policy": "ANALYZING",
             "knowledge_tool_scope": "ANALYZING",
             "marketing_policy": "ANALYZING",
@@ -925,10 +923,8 @@ class LangGraphEngine:
             "tools_executed": LangGraphEngine.sanitize_tool_calls(state),
             "approval_card": approval_card,
             "hr_card": stored.get("hr_card"),
-            "jira_card": None,
             "legal_risk_card": legal_risk_card,
             "invoice_card": None,
-            "quote_card": None,
             "dag_plan_card": None,
             # Drawn from the tool results the answer was written from, never from the
             # answer's text.

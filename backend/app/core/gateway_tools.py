@@ -132,10 +132,8 @@ GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
         "generate_legal_document",
         "submit_approval_request",
     ),
-    "IT": ("rag_search", "create_task", "submit_approval_request"),
     # Finance runs only on the graph; its grants grow by version in finance_capabilities.
     "FINANCE": finance_default_tools(),
-    "SALES": ("rag_search", "create_task", "submit_approval_request"),
     "KNOWLEDGE": ("rag_search",),
     # Versioned like Finance; see MARKETING_TOOL_INTRODUCTIONS.
     "MARKETING": versioned_default_tools("MARKETING"),

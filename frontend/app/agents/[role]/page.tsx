@@ -50,7 +50,6 @@ interface Agent {
   avatar_emoji?: string;
   description?: string;
   // Listed but not open for chat yet; the backend refuses its turns as well.
-  under_development?: boolean;
   // False when the user's position lacks the box that opens this agent.
   can_use?: boolean;
 }
@@ -156,8 +155,6 @@ export default function AgentPage() {
   const { isAuthenticated, hasHydrated, user } = useAuthStore();
   const [agent, setAgent] = useState<Agent | null>(null);
   const notPermitted = agent?.can_use === false;
-  const underDevelopment = Boolean(agent?.under_development) && !notPermitted;
-  const chatClosed = underDevelopment || notPermitted;
   const [conversations, setConversations] = useState<Conversation[]>([]);
   const [conversationId, setConversationId] = useState<string | null>(null);
   const [messages, setMessages] = useState<ChatMessage[]>([]);
@@ -720,12 +717,6 @@ export default function AgentPage() {
                   cấp quyền ở trang Cơ cấu tổ chức.
                 </div>
               )}
-              {underDevelopment && (
-                <div className="ai-chat-error" role="status" style={{ background: "#FFFBEB", color: "#92400E", borderColor: "#FDE68A" }}>
-                  <strong>Under development.</strong>&nbsp;{agent?.name || role} đang được phát triển nên chưa nhận tin nhắn.
-                  Bạn có thể dùng Trợ lý Nhân sự, Pháp lý hoặc Tri thức.
-                </div>
-              )}
               <form className="ai-chat-composer" onSubmit={sendMessage}>
                 <textarea
                   ref={composerRef}
@@ -736,16 +727,14 @@ export default function AgentPage() {
                   placeholder={
                     notPermitted
                       ? "Bạn chưa có quyền dùng agent này"
-                      : underDevelopment
-                      ? "Agent này đang được phát triển (Under development)"
                       : isReadOnly ? "Hội thoại này đang ở chế độ chỉ đọc" : `Nhắn tin cho ${agent?.name || role}…`
                   }
-                  disabled={busy || !agent?.is_active || isReadOnly || chatClosed}
+                  disabled={busy || !agent?.is_active || isReadOnly || notPermitted}
                   aria-label="Nội dung tin nhắn"
                 />
                 <button
                   type="submit"
-                  disabled={busy || !message.trim() || !agent?.is_active || isReadOnly || chatClosed}
+                  disabled={busy || !message.trim() || !agent?.is_active || isReadOnly || notPermitted}
                   aria-label="Gửi tin nhắn"
                   title="Gửi"
                 >

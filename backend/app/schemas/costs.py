@@ -6,7 +6,7 @@ from pydantic import BaseModel, Field, field_validator
 
 
 ScopeType = Literal["TENANT", "DEPARTMENT", "AGENT", "USER"]
-AgentRole = Literal["CEO", "HR", "LEGAL", "IT", "FINANCE", "SALES", "KNOWLEDGE", "ALL"]
+AgentRole = Literal["CEO", "HR", "LEGAL", "FINANCE", "KNOWLEDGE", "MARKETING", "ALL"]
 RoutingStrategy = Literal["LOW_COST", "BALANCED", "HIGH_PERFORMANCE"]
 
 

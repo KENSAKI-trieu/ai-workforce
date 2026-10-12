@@ -265,7 +265,7 @@ def test_every_shipped_package_validates():
     manifests = [load_manifest_file(path) for path in sorted(root.glob("*/plugin.yaml"))]
     assert manifests, "no plugin packages were found to validate"
     for manifest in manifests:
-        assert manifest.target_role in {"HR", "LEGAL", "CEO", "IT", "FINANCE", "SALES", "KNOWLEDGE"}
+        assert manifest.target_role in {"HR", "LEGAL", "CEO", "FINANCE", "KNOWLEDGE", "MARKETING"}
 
 
 def test_a_packages_directory_must_match_its_declared_name(tmp_path):

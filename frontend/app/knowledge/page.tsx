@@ -39,7 +39,7 @@ export default function KnowledgePage() {
     if (!silent) setLoading(true);
     setError(null);
     try {
-      const { data } = await api.get<KnowledgeDocument[]>("/api/v1/documents", { params: { mine: true } });
+      const { data } = await api.get<KnowledgeDocument[]>("/api/v1/documents/", { params: { mine: true } });
       setDocuments(data);
     } catch (reason) {
       setError(messageFrom(reason));

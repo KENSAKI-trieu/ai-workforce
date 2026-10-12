@@ -32,9 +32,8 @@ ROLE_DEPT_MAP = {
     "HR": "Human Resources",
     "KNOWLEDGE": "Knowledge Base",
     "LEGAL": "Legal Department",
-    "IT": "IT Department",
     "FINANCE": "Finance & Accounting",
-    "SALES": "Sales & Marketing",
+    "MARKETING": "Marketing",
 }
 
 DASHBOARD_TIMEZONE = ZoneInfo("Asia/Ho_Chi_Minh")

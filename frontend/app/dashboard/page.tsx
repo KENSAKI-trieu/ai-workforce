@@ -266,7 +266,7 @@ export default function DashboardPage() {
   async function fetchAgents() {
     try {
       setLoading(true);
-      const { data } = await api.get("/api/v1/agents");
+      const { data } = await api.get("/api/v1/agents/");
       setAgents(data);
     } catch (err) {
       console.error("Failed to fetch agents:", err);

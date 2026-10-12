@@ -163,9 +163,7 @@ def seed():
             {"role_code": "HR",        "name": "HR AI Employee",         "avatar_emoji": "🧑‍💼"},
             {"role_code": "KNOWLEDGE", "name": "Knowledge Base AI",      "avatar_emoji": "📚"},
             {"role_code": "LEGAL",     "name": "Legal Counsel AI",       "avatar_emoji": "⚖️"},
-            {"role_code": "IT",        "name": "IT Support AI",          "avatar_emoji": "💻"},
             {"role_code": "FINANCE",   "name": "Finance & Accounting AI","avatar_emoji": "💰"},
-            {"role_code": "SALES",     "name": "Sales & CRM AI",         "avatar_emoji": "📈"},
         ]
 
         for adata in agents_data:

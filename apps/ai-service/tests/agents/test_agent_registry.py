@@ -65,10 +65,8 @@ def test_every_agent_has_its_own_graph_without_routing_nodes() -> None:
 
 def test_roles_resolve_to_graphs_and_unknown_roles_are_refused() -> None:
     assert resolve_agent("legal") == "LEGAL"
-    # IT and Sales are served by the customer-support graph.
-    assert resolve_agent("IT") == "CUSTOMER_SUPPORT"
-    assert resolve_agent("SALES") == "CUSTOMER_SUPPORT"
-    for unknown in ("PURCHASING", "", None):
+    # IT and Sales were removed: their roles have no graph.
+    for unknown in ("PURCHASING", "IT", "SALES", "", None):
         with pytest.raises(ValueError):
             resolve_agent(unknown)
 
@@ -85,12 +83,6 @@ def test_a_requested_agent_that_differs_from_the_trusted_role_is_refused() -> No
     context = _context("KNOWLEDGE")
     with pytest.raises(PermissionError):
         LangGraphEngine().invoke(_state(context, "LEGAL"), context=context, thread_id=str(uuid.uuid4()))
-
-
-def test_an_alias_role_runs_on_the_shared_graph() -> None:
-    context = _context("IT")
-    result = LangGraphEngine().invoke(_state(context, "IT"), context=context, thread_id=str(uuid.uuid4()))
-    assert result["selected_agent"] == "CUSTOMER_SUPPORT"
 
 
 def _payload(**overrides) -> dict:

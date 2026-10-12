@@ -166,7 +166,7 @@ export default function TaskManagementPage() {
       setLoading(true);
       const [tasksRes, agentsRes, usersRes] = await Promise.allSettled([
         api.get("/api/v1/tasks"),
-        api.get("/api/v1/agents"),
+        api.get("/api/v1/agents/"),
         api.get<PaginatedUsersResponse>("/api/v1/users-mgmt", { params: { page: 1, page_size: 100 } }),
       ]);
 

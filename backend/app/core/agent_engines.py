@@ -5,8 +5,7 @@ evaluation passes while the others stay where they are:
 
     AGENT_ENGINES=KNOWLEDGE=langgraph,LEGAL=langgraph
 
-A role not named there follows LANGGRAPH_ENABLED. Agents under development never reach
-the graph whatever is configured: they answer with their fixed reply before any engine runs.
+A role not named there follows LANGGRAPH_ENABLED.
 
 HR's capabilities are gateway tools under their own names, each running the deterministic
 HR chat's branch for it, so HR moves like any other role; its deterministic flow stays as
@@ -20,7 +19,6 @@ from __future__ import annotations
 
 import logging
 
-from app.core.agent_status import is_under_development
 from app.core.config import settings
 
 logger = logging.getLogger(__name__)
@@ -52,8 +50,6 @@ def parse_agent_engines(raw: str | None) -> dict[str, str]:
 
 def engine_for(role_code: str) -> str:
     role = str(role_code or "").strip().upper()
-    if is_under_development(role):
-        return DETERMINISTIC
     configured = parse_agent_engines(settings.AGENT_ENGINES).get(role)
     if role in GRAPH_ONLY:
         if configured == DETERMINISTIC:

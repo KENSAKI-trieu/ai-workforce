@@ -19,10 +19,8 @@ def test_chat_stream_emits_public_sse_contract(
         "tools_executed": [],
         "approval_card": None,
         "hr_card": None,
-        "jira_card": None,
         "legal_risk_card": None,
         "invoice_card": None,
-        "quote_card": None,
         "dag_plan_card": None,
     })
 
@@ -63,11 +61,9 @@ def test_hr_stream_uses_governed_hr_flow_when_hr_stays_deterministic(
             "tools_executed": [],
             "approval_card": None,
             "hr_card": {"type": "LEAVE_REQUEST_DRAFT"},
-            "jira_card": None,
-            "legal_risk_card": None,
+                "legal_risk_card": None,
             "invoice_card": None,
-            "quote_card": None,
-            "dag_plan_card": None,
+                "dag_plan_card": None,
         }}
 
     monkeypatch.setattr(chat_api, "stream_hr_chat_events", fake_hr_flow)

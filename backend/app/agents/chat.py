@@ -15,7 +15,6 @@ from fastapi import HTTPException
 from sqlalchemy.orm import Session
 from app.models.models import AIAgent, User
 from app.core.agent_models import agent_model_name, using_model
-from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
 from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
 from app.domains.platform.agent_access import require_agent_use
@@ -137,19 +136,11 @@ def _execute_agent_chat_core(
         "tools_executed": [],
         "approval_card": None,
         "hr_card": None,
-        "jira_card": None,
         "legal_risk_card": None,
         "invoice_card": None,
-        "quote_card": None,
         "dag_plan_card": None,
         "chart_cards": [],
     }
-
-    # Checked before either engine: an unfinished agent answers the same way whether or
-    # not LangGraph is on, and never reaches its placeholder logic.
-    if is_under_development(role_code_upper):
-        response_data["reply"] = UNDER_DEVELOPMENT_REPLY
-        return response_data
 
     # The engine is chosen per role (AGENT_ENGINES); HR keeps its own LLM-first gate.
     if allow_graph and uses_langgraph(role_code_upper):

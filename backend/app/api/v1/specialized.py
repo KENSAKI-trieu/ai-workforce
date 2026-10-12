@@ -17,7 +17,7 @@ from typing import Dict, Any, Optional, List
 from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, File, Form, HTTPException, Request, UploadFile
-from fastapi.responses import PlainTextResponse, Response, StreamingResponse
+from fastapi.responses import Response, StreamingResponse
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
@@ -70,9 +70,6 @@ from app.domains.legal.legal_document_submission import (
 from app.domains.legal.legal_documents import list_document_schemas, validate_document_fields
 from app.domains.knowledge.agent_knowledge_scope import agent_scope_for_role
 from app.domains.knowledge.rag_service import hybrid_search_documents, user_search_scope
-from app.core.agent_status import refuse_under_development
-from app.domains.incubating.it_service import handle_it_request
-from app.domains.incubating.sales_service import handle_sales_request
 
 router = APIRouter(tags=["Specialized Domain APIs"])
 # Legal work that calls the LLM runs on the model chosen for the Legal agent.
@@ -122,17 +119,6 @@ class ContractAuditRequest(BaseModel):
     document_name: str = "Contract.pdf"
     contract_text: str
     represented_party: str = "NEUTRAL"
-
-
-class CreateJiraTicketRequest(BaseModel):
-    summary: str
-    description: Optional[str] = None
-    priority: str = "MEDIUM"
-
-
-class SalesQuotationRequest(BaseModel):
-    customer_name: str = "Khách Hàng Doanh Nghiệp"
-    item_query: str
 
 
 class LegalDocumentGenerateRequest(BaseModel):
@@ -1481,31 +1467,3 @@ def submit_contract_review_for_approval(
     )
     return response
 
-
-# --- IT ---
-@router.post("/it/tickets", summary="Create Jira ticket for technical issue")
-def create_jira_ticket_endpoint(
-    req: CreateJiraTicketRequest,
-    db: Session = Depends(get_db),
-    current_user: User = Depends(get_current_active_user),
-) -> Dict[str, Any]:
-    # The IT agent is under development: this issued a Jira key no Jira ever saw.
-    refuse_under_development("IT")
-    return handle_it_request(db, current_user, f"{req.summary} - {req.description or ''}")
-
-
-# --- SALES ---
-@router.post("/sales/quotation", summary="Generate sales quotation PDF payload")
-def generate_quotation_endpoint(
-    req: SalesQuotationRequest,
-    current_user: User = Depends(get_current_active_user),
-) -> Dict[str, Any]:
-    # The Sales agent is under development: every request was quoted the same camera.
-    refuse_under_development("SALES")
-    return handle_sales_request(req.item_query, customer_name=req.customer_name)
-
-
-@router.get("/sales/download-quote/{file_id}", response_class=PlainTextResponse, summary="Download sales PDF quotation file")
-def download_quote(file_id: str):
-    refuse_under_development("SALES")
-    return f"SIMULATED PDF QUOTATION FILE FOR {file_id}\nOfficial AI Workforce Quotation Document."

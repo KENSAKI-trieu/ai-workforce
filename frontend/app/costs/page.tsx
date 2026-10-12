@@ -51,10 +51,9 @@ const AGENT_EMOJIS: Record<string, string> = {
   CEO: "👔",
   HR: "🧑‍💼",
   LEGAL: "⚖️",
-  IT: "💻",
   FINANCE: "💰",
-  SALES: "📈",
   KNOWLEDGE: "📚",
+  MARKETING: "📣",
 };
 
 type BudgetScope = "TENANT" | "DEPARTMENT" | "AGENT" | "USER";

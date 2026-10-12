@@ -6,8 +6,6 @@ from typing import Literal, Optional
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, computed_field
 
-from app.core.agent_status import is_under_development
-
 
 # ---------------------------------------------------------------------------
 # User schemas
@@ -107,12 +105,6 @@ class AIAgentResponse(AIAgentBase):
     can_use: bool = True
 
     model_config = {"from_attributes": True}
-
-    @computed_field  # type: ignore[prop-decorator]
-    @property
-    def under_development(self) -> bool:
-        """Listed so the product shows where it is heading, but not open for chat yet."""
-        return is_under_development(self.role_code)
 
     @computed_field  # type: ignore[prop-decorator]
     @property

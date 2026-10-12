@@ -44,12 +44,6 @@ def test_the_global_switch_is_the_default_and_a_role_can_opt_out(engines) -> Non
     assert not uses_langgraph("LEGAL")
 
 
-def test_unfinished_agents_never_reach_the_graph(engines) -> None:
-    engines("SALES=langgraph,IT=langgraph", langgraph_enabled=True)
-    assert engine_for("SALES") == agent_engines.DETERMINISTIC
-    assert engine_for("IT") == agent_engines.DETERMINISTIC
-
-
 def test_hr_moves_to_the_graph_like_any_other_role(engines) -> None:
     # Its capabilities are gateway tools now, so the graph has HR's whole toolset.
     engines("")

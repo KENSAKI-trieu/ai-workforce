@@ -321,25 +321,30 @@ def test_search_rag_applies_the_agent_knowledge_scope(
     assert captured["agent_access"] == []
 
 
-def test_submit_approval_rejects_a_self_named_approver(client, transactional_db_session) -> None:
-    actor = transactional_db_session.query(User).filter(User.email == "employee@company.com").one()
-    token = create_internal_tool_token(actor)
-    response = client.post(
-        "/api/v1/internal/tools/submit_approval_request/invoke",
-        headers={"Authorization": f"Bearer {token}"},
-        json={
-            "input": {
-                "tenant_id": str(actor.tenant_id),
-                "audit": _mutating_audit(),
-                "title": "Send the external notice",
-                "action_type": "EXTERNAL_ACTION_APPROVAL",
-                "payload": {"target": "customer"},
-                "approver_id": str(actor.id),
-            }
-        },
-    )
-    assert response.status_code == 422
-    assert "requester cannot be the approver" in str(response.json()["detail"])
+def test_a_self_named_approver_must_hold_the_signing_box(client, transactional_db_session) -> None:
+    def submit(actor: User):
+        return client.post(
+            "/api/v1/internal/tools/submit_approval_request/invoke",
+            headers={"Authorization": f"Bearer {create_internal_tool_token(actor)}"},
+            json={
+                "input": {
+                    "tenant_id": str(actor.tenant_id),
+                    "audit": _mutating_audit(),
+                    "title": "Send the external notice",
+                    "action_type": "EXTERNAL_ACTION_APPROVAL",
+                    "payload": {"target": "customer"},
+                    "approver_id": str(actor.id),
+                }
+            },
+        )
+
+    employee = transactional_db_session.query(User).filter(User.email == "employee@company.com").one()
+    refused = submit(employee)
+    assert refused.status_code == 422
+    assert "approvals.sign permission" in str(refused.json()["detail"])
+    # Whoever may sign may name themselves, as they may sign their own request.
+    manager = transactional_db_session.query(User).filter(User.email == "it.lead@company.com").one()
+    assert submit(manager).status_code == 200
 
 
 def test_submit_approval_rejects_reserved_payload_keys(client, transactional_db_session) -> None:
@@ -545,9 +550,27 @@ def test_gateway_and_graph_payload_agree_on_the_grant(transactional_db_session) 
         transactional_db_session.flush()
 
 
-def test_a_requester_cannot_approve_their_own_gate(client, transactional_db_session) -> None:
-    # A Manager who leaves approver_id empty used to fall through to the unconditional
-    # `return True` at the end of _can_approve.
+def test_a_requester_decides_their_own_gate_only_with_the_signing_box(client, transactional_db_session) -> None:
+    employee = transactional_db_session.query(User).filter(User.email == "employee@company.com").one()
+    own = client.post(
+        "/api/v1/internal/tools/submit_approval_request/invoke",
+        headers={"Authorization": f"Bearer {create_internal_tool_token(employee)}"},
+        json={
+            "input": {
+                "tenant_id": str(employee.tenant_id),
+                "audit": _mutating_audit(),
+                "title": "Hành động ra ngoài của nhân viên",
+                "action_type": "EXTERNAL_ACTION_APPROVAL",
+                "payload": {"channel": "email"},
+            }
+        },
+    )
+    assert own.status_code == 200, own.text
+    unsigned = transactional_db_session.query(WorkflowApproval).filter(
+        WorkflowApproval.id == uuid.UUID(own.json()["result"]["approval_id"])
+    ).one()
+    assert _can_approve(transactional_db_session, employee, unsigned) is False
+
     manager = transactional_db_session.query(User).filter(
         User.email == "it.lead@company.com"
     ).one()
@@ -569,7 +592,8 @@ def test_a_requester_cannot_approve_their_own_gate(client, transactional_db_sess
         WorkflowApproval.id == uuid.UUID(response.json()["result"]["approval_id"])
     ).one()
     assert approval.approver_id is None
-    assert _can_approve(transactional_db_session, manager, approval) is False
+    # "Phê duyệt yêu cầu" signs, the signer's own request included.
+    assert _can_approve(transactional_db_session, manager, approval) is True
 
     executive = transactional_db_session.query(User).filter(
         User.email == "admin@company.com"

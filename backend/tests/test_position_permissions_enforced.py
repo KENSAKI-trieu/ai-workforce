@@ -168,14 +168,49 @@ def _signer_in(db, tenant: Tenant, position: Position, name: str) -> User:
     return user
 
 
-def test_a_request_no_one_else_can_sign_is_shown_to_its_requester_with_a_warning(client, transactional_db_session):
-    """The only critical signer escalating a CRITICAL request: it used to wait unseen."""
+def test_a_request_no_one_can_sign_is_shown_to_its_requester_with_a_warning(client, transactional_db_session):
+    """A CRITICAL request in a company where nobody holds the box: it used to wait unseen."""
     db = transactional_db_session
     tenant = Tenant(id=uuid.uuid4(), name="Solo Signer Tenant", domain=f"solo-{uuid.uuid4().hex}.test")
     db.add(tenant)
     db.flush()
+    staff = Position(
+        id=uuid.uuid4(), tenant_id=tenant.id, name="Nhân viên", slug=f"solo-{uuid.uuid4().hex[:8]}",
+        permissions=[], grants_all=False, sort_order=2, is_active=True,
+    )
     board = Position(
         id=uuid.uuid4(), tenant_id=tenant.id, name="Giám đốc", slug=f"solo-{uuid.uuid4().hex[:8]}",
+        permissions=["approvals.sign_critical"], grants_all=False, sort_order=1, is_active=True,
+    )
+    db.add_all([staff, board])
+    db.flush()
+    clerk = _signer_in(db, tenant, staff, "clerk")
+    critical = _approval(db, clerk, risk="CRITICAL", action="LEGAL_CONTRACT_APPROVAL")
+    db.commit()
+
+    assert eligible_approvers(db, critical) == []
+    headers = _login(client, clerk)
+    assert client.get("/api/v1/approvals/pending", headers=headers).json() == []
+    sent = client.get("/api/v1/approvals/submitted", headers=headers).json()
+    item = next(entry for entry in sent if entry["id"] == str(critical.id))
+    assert item["eligible_approver_count"] == 0
+    assert "tối quan trọng" in item["warning"]
+
+    # Someone now holds the box, and the warning goes away.
+    founder = _signer_in(db, tenant, board, "founder")
+    assert eligible_approvers(db, critical) == [founder]
+    item = next(entry for entry in client.get("/api/v1/approvals/submitted", headers=headers).json() if entry["id"] == str(critical.id))
+    assert item["eligible_approver_count"] == 1 and item["warning"] is None
+
+
+def test_the_only_signer_decides_their_own_critical_request(client, transactional_db_session):
+    """Whoever holds the box signs their own request: it no longer waits for nobody."""
+    db = transactional_db_session
+    tenant = Tenant(id=uuid.uuid4(), name="Own Signer Tenant", domain=f"own-{uuid.uuid4().hex}.test")
+    db.add(tenant)
+    db.flush()
+    board = Position(
+        id=uuid.uuid4(), tenant_id=tenant.id, name="Giám đốc", slug=f"own-{uuid.uuid4().hex[:8]}",
         permissions=["approvals.sign_critical"], grants_all=False, sort_order=1, is_active=True,
     )
     db.add(board)
@@ -184,19 +219,16 @@ def test_a_request_no_one_else_can_sign_is_shown_to_its_requester_with_a_warning
     critical = _approval(db, founder, risk="CRITICAL", action="LEGAL_CONTRACT_APPROVAL")
     db.commit()
 
-    assert eligible_approvers(db, critical) == []
+    assert eligible_approvers(db, critical) == [founder]
     headers = _login(client, founder)
-    assert client.get("/api/v1/approvals/pending", headers=headers).json() == []
-    sent = client.get("/api/v1/approvals/submitted", headers=headers).json()
-    item = next(entry for entry in sent if entry["id"] == str(critical.id))
-    assert item["eligible_approver_count"] == 0
-    assert "tối quan trọng" in item["warning"]
-
-    # A second holder of the box can now decide it, and the warning goes away.
-    partner = _signer_in(db, tenant, board, "partner")
-    assert eligible_approvers(db, critical) == [partner]
-    item = next(entry for entry in client.get("/api/v1/approvals/submitted", headers=headers).json() if entry["id"] == str(critical.id))
-    assert item["eligible_approver_count"] == 1 and item["warning"] is None
+    pending = client.get("/api/v1/approvals/pending", headers=headers).json()
+    assert [entry["id"] for entry in pending] == [str(critical.id)]
+    decided = client.post(
+        f"/api/v1/approvals/{critical.id}/action", json={"action": "APPROVE"}, headers=headers
+    )
+    assert decided.status_code == 200, decided.text
+    db.refresh(critical)
+    assert critical.status == "APPROVED"
 
 
 def test_legal_documents_and_reviews_follow_their_boxes(staffer, transactional_db_session):

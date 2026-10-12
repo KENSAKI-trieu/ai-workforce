@@ -76,11 +76,7 @@ def open_marketing_approval(db: Session, actor: User, campaign: MarketingCampaig
 def can_approve_marketing(db: Session | None, user: User, approval: WorkflowApproval) -> bool:
     from app.domains.platform.position_service import user_permissions
 
-    payload = approval.payload or {}
-    if str(payload.get("requester_id") or "") == str(user.id):
-        return False
-    if approval.workflow is not None and approval.workflow.initiator_id == user.id:
-        return False
+    # Whoever holds the permission, the campaign's author included.
     return APPROVE_PERMISSION in user_permissions(db, user)
 
 

@@ -136,8 +136,8 @@ def get_submitted_approvals(
 ) -> list[dict[str, Any]]:
     """The requester's side of the approvals: read-only, with who can still decide each.
 
-    `/pending` lists only what the viewer may sign, and a requester may never sign their
-    own request, so what they had just sent never appeared anywhere they could see.
+    `/pending` lists only what the viewer may sign. A requester who may not sign their own
+    request would otherwise never see what they had just sent; one who may finds it in both.
     """
     approvals = db.query(WorkflowApproval).join(AgentWorkflow).filter(
         AgentWorkflow.tenant_id == current_user.tenant_id,

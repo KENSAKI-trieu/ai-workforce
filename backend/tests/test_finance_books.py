@@ -259,9 +259,10 @@ def test_the_amount_decides_who_signs(amount, permission, risk, transactional_db
     assert required_permission(get_settings(db, tenant_id), Decimal(amount)) == (permission, risk)
 
 
-def test_a_finance_draft_is_signed_by_the_right_level_and_never_by_its_requester(transactional_db_session):
+def test_a_finance_draft_is_signed_by_the_right_level_its_requester_included(transactional_db_session):
     db = transactional_db_session
     requester = person(db, "finance.journal.draft", "finance.journal.approve_high")
+    drafter = person(db, "finance.journal.draft")
     accountant = person(db, "finance.journal.approve")
     chief = person(db, "finance.journal.approve_high")
     approval = open_finance_approval(
@@ -273,11 +274,19 @@ def test_a_finance_draft_is_signed_by_the_right_level_and_never_by_its_requester
     # The caller's payload could not lower the bar.
     assert approval.payload["required_permission"] == "finance.journal.approve_high"
     assert approval.payload["amount"] == "120000000.00"
-    assert not can_approve(db, requester, approval)
+    # Who signs is the level the amount needs: the requester holds it, so may sign too.
+    assert can_approve(db, requester, approval)
     assert not can_approve(db, accountant, approval)
     assert can_approve(db, chief, approval)
-    assert chief.id in {user.id for user in eligible_approvers(db, approval)}
+    assert {chief.id, requester.id} <= {user.id for user in eligible_approvers(db, approval)}
     assert can_approve_finance(db, chief, approval)
+    # Drafting one's own entry gives no signing level.
+    own = open_finance_approval(
+        db, drafter, action_type=JOURNAL_APPROVAL, title="Bút toán thử 2",
+        amount=Decimal("5000000"), record_id=str(uuid.uuid4()), payload={},
+    )
+    db.commit()
+    assert not can_approve(db, drafter, own)
 
 
 def test_the_generic_approval_tool_cannot_open_a_finance_approval(transactional_db_session):

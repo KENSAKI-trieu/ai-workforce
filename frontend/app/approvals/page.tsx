@@ -73,7 +73,7 @@ export default function ApprovalsCenterPage() {
   // "Xem mọi bản rà soát hợp đồng" in org-structure: who may open a review they did not run.
   const canOpenContracts = userCan(user, "legal.review.view_all");
   const [approvals, setApprovals] = useState<ApprovalItem[]>([]);
-  // What the viewer asked for: /pending never lists it, since no one signs their own request.
+  // What the viewer asked for. /pending lists it too when the viewer may sign it themselves.
   const [submittedItems, setSubmittedItems] = useState<ApprovalItem[]>([]);
   const [tab, setTab] = useState<Tab>("pending");
   const [selectedId, setSelectedId] = useState<string | null>(null);

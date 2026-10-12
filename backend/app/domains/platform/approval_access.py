@@ -33,6 +33,9 @@ def can_approve(db: Session, current_user: User, approval: WorkflowApproval) -> 
     "Phê duyệt yêu cầu" (approvals.sign) signs within the signer's own management scope
     and below CRITICAL; "... tối quan trọng" (approvals.sign_critical) signs anything. They
     replace the Manager and Owner/Admin/CEO role sets, which no box could change.
+
+    Whoever holds the permission a request needs may decide it, their own request
+    included: the company decides who signs by the boxes it ticks, not by who sent it.
     """
     payload = approval.payload or {}
     critical_signer = can_sign_critical(db, current_user)
@@ -44,7 +47,7 @@ def can_approve(db: Session, current_user: User, approval: WorkflowApproval) -> 
             return False
         initiator = approval.workflow.initiator
         if initiator.id == current_user.id:
-            return False
+            return True
         return (
             initiator.manager_id == current_user.id
             or initiator.department == current_user.department
@@ -61,14 +64,6 @@ def can_approve(db: Session, current_user: User, approval: WorkflowApproval) -> 
         return can_approve_finance(db, current_user, approval)
     if is_marketing_approval(approval):
         return can_approve_marketing(db, current_user, approval)
-    if str(payload.get("requester_id") or "") == str(current_user.id):
-        # Blocking a requester who named themselves approver was only half of it: with
-        # `approver_id` left empty this branch fell through to `return True` for anyone
-        # holding an approver role, so a Manager could open a gate and walk through it.
-        # `requester_id` is written by the server, never by the caller, so it is the one
-        # field that reliably says whose request this is. The graph branch above already
-        # refuses the initiator this way.
-        return False
     if not signer:
         return approval.approver_id == current_user.id
     if approval.approver_id and approval.approver_id != current_user.id:
@@ -90,9 +85,9 @@ def eligible_approvers(db: Session, approval: WorkflowApproval) -> list[User]:
 
 
 NO_APPROVER_WARNING = (
-    "Chưa có ai đủ quyền duyệt yêu cầu này: người gửi không được tự duyệt, và không có "
-    "chức vụ nào khác được tick quyền “{permission}”. Admin cần cấp quyền đó cho một chức "
-    "vụ khác thì yêu cầu mới hiện ở Trung tâm phê duyệt của người duyệt."
+    "Chưa có ai đủ quyền duyệt yêu cầu này: không chức vụ nào được tick quyền "
+    "“{permission}”. Admin cần cấp quyền đó cho một chức vụ thì yêu cầu mới hiện ở Trung "
+    "tâm phê duyệt của người duyệt."
 )
 
 

@@ -24,13 +24,8 @@ def _validate_approver(context: ToolContext, request: SubmitApprovalInput) -> Us
     if not request.approver_id:
         return None
     actor = context.actor
-    if request.approver_id == actor.id:
-        # `_can_approve` lets the named approver act on their own request, so a requester
-        # naming themselves approves their own external action.
-        raise HTTPException(
-            status_code=422,
-            detail="The requester cannot be the approver of their own request",
-        )
+    # Naming oneself is allowed like any other approver: the permission check below is
+    # what decides, since whoever may sign may sign their own request.
     approver = context.db.query(User).filter(
         User.id == request.approver_id,
         User.tenant_id == actor.tenant_id,

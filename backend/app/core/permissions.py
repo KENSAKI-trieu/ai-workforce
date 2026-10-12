@@ -260,8 +260,8 @@ PERMISSIONS: tuple[Permission, ...] = (
     Permission(
         "marketing.content.approve", "Marketing", "Duyệt",
         "Duyệt nội dung truyền thông",
-        "Duyệt hoặc từ chối bài truyền thông được gửi lên trước khi đăng. Không tự duyệt bài "
-        "của chính mình.",
+        "Duyệt hoặc từ chối bài truyền thông được gửi lên trước khi đăng, kể cả bài của chính "
+        "mình.",
     ),
     # --- Báo cáo & giám sát ---
     Permission(

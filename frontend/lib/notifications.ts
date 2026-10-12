@@ -50,6 +50,7 @@ const EVENTS: Record<string, EventMeta> = {
   TASK_COMPLETED: { label: "Task hoàn thành", icon: ListChecks, tone: "green" },
   TASK_FAILED: { label: "Task gặp lỗi", icon: AlertTriangle, tone: "red" },
   TASK_DUE_SOON: { label: "Task sắp đến hạn", icon: Clock, tone: "amber" },
+  TASK_ASSIGNED: { label: "Được giao việc mới", icon: ListChecks, tone: "blue" },
   WORKFLOW_FAILED: { label: "Quy trình gặp lỗi", icon: AlertOctagon, tone: "red" },
   AGENT_COST_LIMIT: { label: "Chạm ngưỡng chi phí AI", icon: Wallet, tone: "red" },
   DOCUMENT_READY: { label: "Tài liệu đã sẵn sàng", icon: FileCheck2, tone: "blue" },

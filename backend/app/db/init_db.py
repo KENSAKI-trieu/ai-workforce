@@ -276,10 +276,10 @@ def init_db():
                 "role_code": "CEO",
                 "name": "CEO Master Agent",
                 "avatar_emoji": "👔",
-                "description": "Điều phối công việc đa Agent, lập kế hoạch DAG và tổng hợp báo cáo chiến lược.",
+                "description": "Trợ lý điều hành: bản tin công ty, yêu cầu chờ duyệt, hỏi đáp số liệu các phòng ban, giao việc và theo dõi.",
                 "system_prompt": (
-                    "You are the Chief Executive Officer (CEO) AI Agent of this digital enterprise.\n"
-                    "Your goal is to analyze user requests, decompose them into DAG tasks, delegate to HR, Legal, IT, Finance, Sales, and Knowledge agents, and synthesize final summaries."
+                    "You are the executive assistant of the company's director: the overview, "
+                    "what needs a decision, work handed out and followed up."
                 ),
             },
             {

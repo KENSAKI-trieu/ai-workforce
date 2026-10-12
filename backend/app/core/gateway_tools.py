@@ -61,6 +61,13 @@ GATEWAY_TOOL_DESCRIPTIONS: dict[str, str] = {
     "draft_payment_reminder": "Soạn thư nhắc nợ khách hàng gửi duyệt; chỉ gửi khi được duyệt.",
     "start_marketing_campaign": "Lập chiến dịch truyền thông từ brief trong chat: dàn ý chờ người viết duyệt, rồi bài Facebook, Instagram, Threads.",
     "web_search": "Tìm kiếm trên web qua Google Search (Gemini): xu hướng, đối thủ, tin tức; trả lời kèm link nguồn. Câu tìm kiếm được gửi ra ngoài công ty.",
+    "executive_briefing": "Bản tin điều hành: tài chính, nhân sự, pháp lý, marketing, phê duyệt, công việc, chi phí AI; mỗi mục theo quyền xem của người hỏi.",
+    "compare_income_statements": "So sánh doanh thu, chi phí, lợi nhuận giữa hai kỳ, kèm chênh lệch và phần trăm.",
+    "list_my_approvals": "Danh sách yêu cầu đang chờ chính người hỏi duyệt, xếp theo mức gấp; chỉ liệt kê, không duyệt thay.",
+    "list_contract_reviews": "Danh sách hợp đồng đã rà soát rủi ro và tình trạng xử lý phát hiện.",
+    "list_marketing_campaigns": "Danh sách chiến dịch marketing và bước đang chờ.",
+    "assign_task": "Giao việc cho một đồng nghiệp theo tên, kèm hạn chót; hỏi lại khi tên trùng hoặc không tìm thấy, báo cho người nhận.",
+    "list_tasks": "Theo dõi việc người hỏi đã giao hoặc được giao: đang làm, quá hạn, đã xong.",
     # The HR capabilities, also gateway tools under the same names for the LangGraph HR agent.
     **{name: HR_CAPABILITY_DESCRIPTIONS[name] for name in HR_GATEWAY_TOOLS},
 }
@@ -97,6 +104,13 @@ GATEWAY_TOOL_LABELS: dict[str, str] = {
     "draft_payment_reminder": "soạn thư nhắc nợ",
     "start_marketing_campaign": "lập chiến dịch truyền thông",
     "web_search": "tìm kiếm trên web",
+    "executive_briefing": "xem bản tin điều hành",
+    "compare_income_statements": "so sánh kết quả kinh doanh",
+    "list_my_approvals": "xem yêu cầu chờ duyệt",
+    "list_contract_reviews": "xem hợp đồng đã rà soát",
+    "list_marketing_campaigns": "xem chiến dịch marketing",
+    "assign_task": "giao việc",
+    "list_tasks": "theo dõi công việc",
     **{name: HR_CAPABILITY_LABELS[name] for name in HR_GATEWAY_TOOLS},
 }
 assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a user-facing label"
@@ -105,21 +119,12 @@ assert set(GATEWAY_TOOL_LABELS) == GATEWAY_TOOLS, "every gateway tool needs a us
 # still be enabled per tenant through the configuration API, and the gateway's own
 # role/department ACL applies on top of whatever is granted.
 #
-# `employee_lookup` and `leave_lookup` are withheld from CEO on purpose even though
-# DOMAIN_POLICIES["CEO"] lists them: those tools take a `purpose` argument that widens the
-# sections HR policy will release, and on this path the argument is chosen by the model.
-# Granting them is an explicit tenant decision, not a default.
-#
 # HR's gateway tools carry its capability names, so its default grant is the same set the
 # deterministic HR chat checks: one switch turns a capability on or off in both engines.
 GATEWAY_TOOL_GRANTS: dict[str, tuple[str, ...]] = {
-    "CEO": (
-        "rag_search",
-        "create_task",
-        "expense_lookup",
-        "generate_legal_document",
-        "submit_approval_request",
-    ),
+    # Versioned like Finance; see CEO_TOOL_INTRODUCTIONS. Reading tools and assigning work
+    # only: another department's writes stay with that department's agent.
+    "CEO": versioned_default_tools("CEO"),
     "HR": tuple(sorted({"rag_search", *HR_GATEWAY_TOOLS})),
     "LEGAL": (
         "rag_search",

@@ -45,7 +45,7 @@ def _security(
     role: str = "Employee",
     department: str = "HR",
     workflow_id: uuid.UUID | None = None,
-    agent_role: str = "CEO",
+    agent_role: str = "CUSTOMER_SUPPORT",
 ):
     return AgentRuntimeContext(
         tenant_id=uuid.uuid4(),
@@ -134,24 +134,24 @@ def test_stream_exposes_only_public_phases_and_validated_answer_tokens() -> None
 
 
 def test_read_only_tool_executes_then_returns_to_model_decision() -> None:
-    security = _security(allowed_tools={"rag_search", "leave_lookup"})
+    security = _security(allowed_tools={"rag_search", "list_my_approvals"}, agent_role="CEO")
     rag = FakeTool("rag_search", "READ_ONLY", [])
-    leave = FakeTool("leave_lookup", "READ_ONLY", {"remaining_days": 7})
+    leave = FakeTool("list_my_approvals", "READ_ONLY", {"waiting_count": 7})
     decisions = SequenceDecisionProvider(
-        GraphDecision(tool_name="leave_lookup", reason="Read authoritative balance."),
-        GraphDecision(final_answer="You have 7 leave days remaining.", reason="Synthesize tool result."),
+        GraphDecision(tool_name="list_my_approvals", reason="Read what waits for the user."),
+        GraphDecision(final_answer="7 requests are waiting for your decision.", reason="Synthesize tool result."),
     )
     context = OrchestrationRuntimeContext(
         security=security,
         decision_provider=decisions,
-        tools={"rag_search": rag, "leave_lookup": leave},
+        tools={"rag_search": rag, "list_my_approvals": leave},
     )
     result = LangGraphEngine().invoke(
-        _state(security, "Check my leave balance", requested_agent="CEO"),
+        _state(security, "What waits for my approval?", requested_agent="CEO"),
         context=context,
         thread_id="read-thread",
     )
-    assert result["final_answer"] == "You have 7 leave days remaining."
+    assert result["final_answer"] == "7 requests are waiting for your decision."
     assert len(leave.calls) == 1
     assert leave.calls[0]["tenant_id"] == str(security.tenant_id)
     assert leave.calls[0]["audit"]["correlation_id"] == str(security.correlation_id)
@@ -175,7 +175,7 @@ def test_action_tool_interrupts_and_executes_only_after_approval() -> None:
     )
     engine = LangGraphEngine()
     first = engine.invoke(
-        _state(security, "Create a report task", requested_agent="CEO"),
+        _state(security, "Create a report task", requested_agent="CUSTOMER_SUPPORT"),
         context=context,
         thread_id="action-thread",
     )
@@ -220,7 +220,7 @@ def test_approval_is_registered_idempotently_before_interrupt() -> None:
     )
     engine = LangGraphEngine()
     first = engine.invoke(
-        _state(security, "Create task", requested_agent="CEO"),
+        _state(security, "Create task", requested_agent="CUSTOMER_SUPPORT"),
         context=context,
         thread_id=str(security.conversation_id),
     )
@@ -269,7 +269,7 @@ def test_separate_actions_in_one_thread_get_distinct_approval_ids() -> None:
     thread_id = str(security.conversation_id)
 
     engine.invoke(
-        _state(security, "Create first task", requested_agent="CEO"),
+        _state(security, "Create first task", requested_agent="CUSTOMER_SUPPORT"),
         context=context,
         thread_id=thread_id,
     )
@@ -281,7 +281,7 @@ def test_separate_actions_in_one_thread_get_distinct_approval_ids() -> None:
     )
 
     engine.invoke(
-        _state(security, "Create second task", requested_agent="CEO"),
+        _state(security, "Create second task", requested_agent="CUSTOMER_SUPPORT"),
         context=context,
         thread_id=thread_id,
     )
@@ -302,7 +302,7 @@ def test_action_rejection_does_not_execute_tool() -> None:
         tools={"rag_search": rag, "create_task": task},
     )
     engine = LangGraphEngine()
-    engine.invoke(_state(security, "Create task", requested_agent="CEO"), context=context, thread_id="reject-thread")
+    engine.invoke(_state(security, "Create task", requested_agent="CUSTOMER_SUPPORT"), context=context, thread_id="reject-thread")
     final = engine.resume(False, context=context, thread_id="reject-thread")
     assert task.calls == []
     assert final["tool_calls"][0]["status"] == "REJECTED"
@@ -338,7 +338,7 @@ def test_resume_rejects_a_different_checkpoint_principal() -> None:
         tools={"rag_search": rag, "create_task": task},
     )
     engine = LangGraphEngine()
-    engine.invoke(_state(security, "Create task", requested_agent="CEO"), context=context, thread_id="bound-thread")
+    engine.invoke(_state(security, "Create task", requested_agent="CUSTOMER_SUPPORT"), context=context, thread_id="bound-thread")
 
     other_security = security.model_copy(update={"user_id": uuid.uuid4()})
     other_context = OrchestrationRuntimeContext(
@@ -363,7 +363,7 @@ def test_resume_rechecks_current_tool_acl_before_action() -> None:
         tools={"rag_search": rag, "create_task": task},
     )
     engine = LangGraphEngine()
-    engine.invoke(_state(security, "Create task", requested_agent="CEO"), context=context, thread_id="revoked-thread")
+    engine.invoke(_state(security, "Create task", requested_agent="CUSTOMER_SUPPORT"), context=context, thread_id="revoked-thread")
 
     revoked_security = security.model_copy(update={"allowed_tools": frozenset({"rag_search"})})
     revoked_context = OrchestrationRuntimeContext(
@@ -388,7 +388,7 @@ def test_suspended_thread_cannot_be_overwritten_by_a_new_run() -> None:
         tools={"create_task": task},
     )
     engine = LangGraphEngine()
-    state = _state(security, "Create task", requested_agent="CEO")
+    state = _state(security, "Create task", requested_agent="CUSTOMER_SUPPORT")
     engine.invoke(state, context=context, thread_id="suspended-thread")
 
     with pytest.raises(ValueError, match="must be resumed"):
@@ -514,3 +514,26 @@ def test_a_tool_that_opens_its_own_approval_runs_without_a_second_gate() -> None
     assert len(draft.calls) == 1
     # Still a write: the gateway gets its idempotency key.
     assert draft.calls[0]["audit"]["idempotency_key"].startswith("graph:")
+
+
+@pytest.mark.parametrize(("agent", "answered"), [("CEO", True), ("CUSTOMER_SUPPORT", False)])
+def test_a_domain_may_take_more_decisions_than_the_default(agent: str, answered: bool) -> None:
+    """The CEO reads one tool per department it compares; four decisions cut that short."""
+    security = _security(allowed_tools={"rag_search"}, agent_role=agent)
+    rag = FakeTool("rag_search", "READ_ONLY", [])
+    decisions = SequenceDecisionProvider(
+        *(GraphDecision(tool_name="rag_search", tool_args={"query": "q"}, reason="Search again.") for _ in range(5)),
+        GraphDecision(final_answer="Done.", reason="Answer."),
+    )
+    context = OrchestrationRuntimeContext(
+        security=security, decision_provider=decisions, tools={"rag_search": rag}
+    )
+    result = LangGraphEngine().invoke(
+        _state(security, "Compare", requested_agent=agent), context=context, thread_id=f"limit-{agent}"
+    )
+    if answered:
+        assert result["final_answer"] == "Done."
+        assert result["model_iterations"] == 6
+    else:
+        assert result["final_answer"] == notices.ITERATION_LIMIT
+        assert result["model_iterations"] == 4

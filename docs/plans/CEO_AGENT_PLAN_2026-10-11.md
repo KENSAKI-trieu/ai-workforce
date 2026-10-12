@@ -1,5 +1,13 @@
 # Plan: Đưa CEO Agent từ "Under development" thành trợ lý điều hành thật
 
+## Trạng thái (2026-10-12)
+
+- **C0–C3 đã làm, đã live test** (nhánh `feat/ceo-agent`): CEO mở khoá, chỉ chạy LangGraph, tối đa 6 vòng/lượt, số liệu bắt buộc lấy từ tool. Domain [executive/](../../backend/app/domains/executive/), tool ở [executors/executive.py](../../backend/app/tools/executors/executive.py), quyền tool đánh phiên bản 301–304.
+- Tool: `executive_briefing`, `list_my_approvals`, `compare_income_statements`, `list_contract_reviews`, `list_marketing_campaigns`, `assign_task` (tìm người theo tên, hỏi lại khi trùng, thông báo `TASK_ASSIGNED` — migration `e6f7a8b9c0d1`), `list_tasks`, cùng tool đọc của Finance và `expense_lookup`. Không làm `list_tasks` theo phạm vi phòng ban, chỉ việc mình giao/được giao.
+- HR trong bản tin đọc thẳng qua service HR (số nhân sự, ai nghỉ, HĐLĐ hết hạn 30 ngày, đơn chờ duyệt); không cấp tool HR terminal cho CEO.
+- **Chưa làm:** C4 (bộ lập lịch, luật cảnh báo, khối "Bản tin hôm nay" trên trang, xuất báo cáo), C5.
+- Cùng đợt: luật duyệt đổi thành *ai có quyền duyệt thì duyệt được, kể cả yêu cầu mình gửi* (user yêu cầu 12/10).
+
 ## Context
 
 Blueprint ([BLUEPRINT.md](../../BLUEPRINT.md) §1, [05-agent-design.md](../05-agent-design.md)) mô tả CEO là "Master Orchestrator": nhận chỉ thị → lập DAG → giao HR/IT/Finance/Knowledge → tổng hợp báo cáo. Thực tế trong repo:
@@ -40,8 +48,8 @@ CEO agent **không phải người làm thay các phòng ban**, mà là **trợ 
 
 **2. Domain mới `backend/app/domains/executive/`** — chỉ đọc và tổng hợp; không có bảng nghiệp vụ riêng ở C0–C3 (đọc qua service của từng domain, không query thẳng bảng domain khác để khỏi lách logic lọc quyền của domain đó).
 
-**3. Quyền chức vụ** — ✅ đã thêm 2026-10-11 (migration `c4d5e6f7a8b9`), nhóm "Điều hành & phê duyệt" → mục "Trợ lý CEO" trong [permissions.py](../../backend/app/core/permissions.py). Đang gắn `coming_soon=True` (trang phân quyền hiện nhãn "Sắp có"); **bỏ cờ này khi C1 bắt đầu kiểm quyền thật**.
-- `executive.briefing.view` — dùng Trợ lý CEO + xem bản tin tổng hợp. Mặc định cho `owner`, `ceo`.
+**3. Quyền chức vụ** — ✅ đã thêm 2026-10-11 (migration `c4d5e6f7a8b9`), nhóm "Điều hành & phê duyệt" → mục "Trợ lý CEO" trong [permissions.py](../../backend/app/core/permissions.py). `executive.alerts.manage` còn gắn `coming_soon=True` (nhãn "Sắp có"); **bỏ cờ này khi C4 bắt đầu kiểm quyền thật**.
+- `executive.briefing.view` — dùng Trợ lý CEO + xem bản tin tổng hợp. Mặc định cho `owner`, `ceo`. ✅ 2026-10-12 đã kiểm thật: là cổng vào CEO agent ([agent_access.py](../../backend/app/domains/platform/agent_access.py)) — thiếu quyền thì chat/stream/tạo lại trả 403, danh sách agent trả `can_use: false`, sidebar ẩn CEO, trang chat khoá ô nhập.
 - `executive.alerts.manage` — cấu hình ngưỡng cảnh báo + lịch bản tin.
 - Không thêm quyền "xem mọi thứ": từng mục trong bản tin vẫn kiểm quyền gốc của domain (`finance.ledger.view`, `finance.ar_ap.view`, quyền HR…). Thiếu quyền mục nào thì mục đó hiện "không có quyền xem", không lặng lẽ biến mất.
 - Migration backfill theo mẫu `y08f3b5c9d17`; test chốt từng membership (cạm bẫy RBAC đã ghi).

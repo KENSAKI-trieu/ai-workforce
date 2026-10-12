@@ -24,6 +24,9 @@ EVENT_TYPES = [
     "ONBOARDING_TASK_CREATED",
     "CONTRACT_EXPIRING",
     "PROBATION_ENDING",
+    # Someone handed you a task (the CEO assistant's assign_task). A type added later is
+    # missing from preferences saved before it, so its migration ticks it on for them.
+    "TASK_ASSIGNED",
 ]
 CHANNELS = ["IN_APP", "EMAIL", "SLACK", "TEAMS", "MOBILE_PUSH"]
 DEFAULT_CHANNELS = ["IN_APP"]

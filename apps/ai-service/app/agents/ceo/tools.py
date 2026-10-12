@@ -1,15 +1,29 @@
 """Tools the CEO agent may be offered: the ceiling the backend's grant is
-intersected with. Tools run in the backend; this only names them."""
+intersected with. Tools run in the backend; this only names them.
 
-# `employee_lookup` and `leave_lookup` are listed here but withheld from CEO by the backend's
-# gateway grants: their `purpose` argument widens the HR sections released, and on this
-# path the model would choose it. Granting them is an explicit tenant decision.
+Reading tools only, apart from assigning a task: the assistant gives the overview and
+follows work up, and every department's writes stay with that department's own agent.
+Each tool still checks the asker's own permissions, so the assistant shows a director
+nothing their position does not already let them see.
+"""
+
 TOOLS: tuple[str, ...] = (
     "rag_search",
-    "employee_lookup",
-    "leave_lookup",
+    # The overview and the decisions waiting.
+    "executive_briefing",
+    "list_my_approvals",
+    # One department's detail.
+    "compare_income_statements",
+    "get_income_statement",
+    "get_expense_breakdown",
+    "get_account_trend",
+    "budget_vs_actual",
+    "ar_ap_aging",
+    "payment_schedule",
+    "list_contract_reviews",
+    "list_marketing_campaigns",
     "expense_lookup",
-    "create_task",
-    "generate_legal_document",
-    "submit_approval_request",
+    # Work handed out and followed up.
+    "assign_task",
+    "list_tasks",
 )

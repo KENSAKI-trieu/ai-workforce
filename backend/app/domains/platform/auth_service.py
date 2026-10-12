@@ -49,7 +49,7 @@ class AuthSession(NamedTuple):
 
 
 DEFAULT_AGENTS = [
-    {"name": "CEO Agent", "role_code": "CEO", "avatar_emoji": "👔", "description": "Master orchestrator — plans and delegates tasks across all AI employees."},
+    {"name": "CEO Agent", "role_code": "CEO", "avatar_emoji": "👔", "description": "Executive assistant: the company briefing, requests waiting for decision, figures across departments, work assigned and followed up."},
     {"name": "HR Agent", "role_code": "HR", "avatar_emoji": "🧑‍💼", "description": "Handles leave requests, employee onboarding, and HR policy Q&A."},
     {"name": "Legal Agent", "role_code": "LEGAL", "avatar_emoji": "⚖️", "description": "Reviews contracts, detects risk clauses, generates amended documents."},
     {"name": "IT Agent", "role_code": "IT", "avatar_emoji": "💻", "description": "Resolves technical issues via RAG and auto-creates support tickets."},
@@ -64,7 +64,8 @@ DEFAULT_AGENTS = [
 # here -- a tenant registered through signup used to get capability names only, which left
 # every routed agent with an empty gateway toolset and no retrieval at all.
 DEFAULT_AGENT_CAPABILITIES = {
-    "CEO": ["generate_and_execute_ceo_dag"],
+    # No deterministic flow: every CEO grant is a gateway tool, composed in below.
+    "CEO": [],
     # Derived, not copied: a hand-maintained list drifted from the executor's dispatch and
     # kept granting names no branch could reach.
     "HR": default_hr_tools(),

@@ -19,6 +19,9 @@ class DomainPolicy:
     # Every figure in a reply must be one a tool returned this turn (see figures.py).
     # For domains whose answers are numbers, where a citation proves nothing.
     numbers_from_tools: bool = False
+    # Model decisions a turn may take, when the default is too few: a question that
+    # compares two domains reads one tool for each before it can answer.
+    max_model_iterations: int | None = None
 
     @property
     def node_prefix(self) -> str:
@@ -33,7 +36,7 @@ def policy_node(policy: DomainPolicy):
     """Apply the domain's prompt and citation rule to the turn."""
 
     def apply_policy(state: WorkforceAgentState) -> dict[str, Any]:
-        return {
+        update: dict[str, Any] = {
             "selected_agent": policy.agent,
             "intent": f"{policy.agent}_REQUEST",
             "domain_prompt": policy.prompt,
@@ -41,6 +44,9 @@ def policy_node(policy: DomainPolicy):
             "numbers_from_tools": policy.numbers_from_tools,
             "execution_trace": _trace(state, f"{policy.node_prefix}_policy"),
         }
+        if policy.max_model_iterations:
+            update["max_model_iterations"] = policy.max_model_iterations
+        return update
 
     return apply_policy
 

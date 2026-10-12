@@ -31,9 +31,9 @@ GRAPH_BUILDERS: dict[str, Any] = {
     "KNOWLEDGE": build_knowledge_graph,
     "MARKETING": build_marketing_graph,
     "FINANCE": lambda: build_agent_graph(FINANCE_POLICY),
-    # Under development: the backend never routes these roles here yet.
-    "CUSTOMER_SUPPORT": lambda: build_agent_graph(CUSTOMER_SUPPORT_POLICY),
     "CEO": lambda: build_agent_graph(CEO_POLICY),
+    # Under development: the backend never routes this role here yet.
+    "CUSTOMER_SUPPORT": lambda: build_agent_graph(CUSTOMER_SUPPORT_POLICY),
 }
 AGENTS = frozenset(GRAPH_BUILDERS)
 # Backend AI Employees served by another agent's graph.

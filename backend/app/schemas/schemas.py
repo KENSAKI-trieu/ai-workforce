@@ -103,6 +103,8 @@ class AIAgentResponse(AIAgentBase):
     id: UUID
     tenant_id: UUID
     created_at: datetime
+    # Whether the asker's position may chat with it; set per request (agent_access.py).
+    can_use: bool = True
 
     model_config = {"from_attributes": True}
 

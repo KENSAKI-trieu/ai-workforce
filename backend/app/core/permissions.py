@@ -84,9 +84,8 @@ PERMISSIONS: tuple[Permission, ...] = (
     Permission(
         "executive.briefing.view", "Điều hành & phê duyệt", "Trợ lý CEO",
         "Dùng Trợ lý CEO",
-        "Hỏi Trợ lý CEO và xem bản tin tổng hợp tài chính, nhân sự, pháp lý, marketing, phê "
-        "duyệt. Mỗi mục chỉ hiện khi chức vụ có cả quyền xem của phòng ban đó.",
-        coming_soon=True,
+        "Mở và trò chuyện với Trợ lý CEO; chức vụ không có quyền này không thấy agent. Bản "
+        "tin tổng hợp (khi có) chỉ hiện mục nào chức vụ có cả quyền xem của phòng ban đó.",
     ),
     Permission(
         "executive.alerts.manage", "Điều hành & phê duyệt", "Trợ lý CEO",

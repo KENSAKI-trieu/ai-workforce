@@ -135,7 +135,7 @@ def model_decision(
     runtime: Runtime[OrchestrationRuntimeContext],
 ) -> dict[str, Any]:
     iteration = int(state.get("model_iterations") or 0) + 1
-    limit = runtime.context.max_model_iterations
+    limit = int(state.get("max_model_iterations") or runtime.context.max_model_iterations)
     if iteration > limit:
         return _iteration_limit(state, iteration)
     # The last decision is told no tool can follow it, so a search that keeps coming up
@@ -444,11 +444,17 @@ def _citation_is_verified(citation: str, context: list[dict[str, Any]]) -> bool:
     return any(document in _allowed_citation_sources([item]) for item in owners)
 
 
-def _withhold_answer(state: WorkforceAgentState, error: str) -> dict[str, Any]:
+def _withhold_answer(
+    state: WorkforceAgentState, error: str, rejected: Any = ()
+) -> dict[str, Any]:
+    entry: dict[str, Any] = {"node": "citation_verification", "error": error}
+    if rejected:
+        # What was refused, so a withheld answer can be traced to the citation behind it.
+        entry["citations"] = sorted(str(item)[:120] for item in rejected)[:5]
     return {
         "final_answer": notices.CITATION_UNVERIFIED,
         "citations": [],
-        "errors": [*(state.get("errors") or []), {"node": "citation_verification", "error": error}],
+        "errors": [*(state.get("errors") or []), entry],
         "execution_trace": _trace(state, "citation_verification", "FAILED"),
     }
 
@@ -476,16 +482,26 @@ def _searched_documents(state: WorkforceAgentState) -> list[dict[str, Any]]:
     return documents
 
 
+def _result_sources(value: Any) -> set[str]:
+    """Every `source` a result names, at any depth: a briefing names one per section."""
+    if isinstance(value, dict):
+        found = {str(value["source"]).casefold()} if isinstance(value.get("source"), str) else set()
+        for item in value.values():
+            found |= _result_sources(item)
+        return found
+    if isinstance(value, list):
+        return {source for item in value for source in _result_sources(item)}
+    return set()
+
+
 def _tool_sources(state: WorkforceAgentState) -> set[str]:
-    """Names of the data tools that succeeded this turn, and the `source` each result gave."""
+    """Names of the data tools that succeeded this turn, and every `source` their results gave."""
     sources: set[str] = set()
     for call in state.get("tool_calls") or []:
         if call.get("status") != "SUCCESS" or call.get("name") == "rag_search":
             continue
         sources.add(str(call.get("name") or "").casefold())
-        result = call.get("result")
-        if isinstance(result, dict) and result.get("source"):
-            sources.add(str(result["source"]).casefold())
+        sources |= _result_sources(call.get("result"))
     return {source for source in sources if len(source) >= 4}
 
 
@@ -572,11 +588,12 @@ def _verify_citations(state: WorkforceAgentState) -> dict[str, Any]:
         # the `source` its result names, as the Finance tools do -- is citing data it
         # really returned, and used to withhold every correctly sourced balance.
         tool_sources = _tool_sources(state)
-        if supplied and not all(
-            _citation_is_verified(citation, context) or _names_tool_source(citation, tool_sources)
-            for citation in supplied
-        ):
-            return _withhold_answer(state, "UNVERIFIED_CITATION")
+        unverified = [
+            citation for citation in supplied
+            if not (_citation_is_verified(citation, context) or _names_tool_source(citation, tool_sources))
+        ]
+        if unverified:
+            return _withhold_answer(state, "UNVERIFIED_CITATION", unverified)
         return {"execution_trace": _trace(state, "citation_verification")}
     if not context:
         # Retrieval found nothing, so there is no source any citation could be checked
@@ -586,10 +603,13 @@ def _verify_citations(state: WorkforceAgentState) -> dict[str, Any]:
         # have caught it. An answer with no citation is still allowed: a governed domain
         # has to be able to say something without pretending it read a document.
         if supplied:
-            return _withhold_answer(state, "CITATION_WITHOUT_CONTEXT")
+            return _withhold_answer(state, "CITATION_WITHOUT_CONTEXT", supplied)
         return {"citations": [], "execution_trace": _trace(state, "citation_verification", "NO_CONTEXT")}
     if not supplied or not all(_citation_is_verified(citation, context) for citation in supplied):
-        return _withhold_answer(state, "UNVERIFIED_CITATION")
+        return _withhold_answer(
+            state, "UNVERIFIED_CITATION",
+            [citation for citation in supplied if not _citation_is_verified(citation, context)],
+        )
     return {"execution_trace": _trace(state, "citation_verification")}
 
 

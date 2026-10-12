@@ -45,9 +45,9 @@ def test_the_global_switch_is_the_default_and_a_role_can_opt_out(engines) -> Non
 
 
 def test_unfinished_agents_never_reach_the_graph(engines) -> None:
-    engines("SALES=langgraph,CEO=langgraph", langgraph_enabled=True)
+    engines("SALES=langgraph,IT=langgraph", langgraph_enabled=True)
     assert engine_for("SALES") == agent_engines.DETERMINISTIC
-    assert engine_for("CEO") == agent_engines.DETERMINISTIC
+    assert engine_for("IT") == agent_engines.DETERMINISTIC
 
 
 def test_hr_moves_to_the_graph_like_any_other_role(engines) -> None:
@@ -62,11 +62,12 @@ def test_hr_moves_to_the_graph_like_any_other_role(engines) -> None:
     assert engine_for("HR") == agent_engines.DETERMINISTIC
 
 
-def test_finance_has_no_deterministic_flow_and_always_runs_on_the_graph(engines) -> None:
+@pytest.mark.parametrize("role", ["FINANCE", "MARKETING", "CEO"])
+def test_graph_only_agents_have_no_deterministic_flow(engines, role) -> None:
     engines("")
-    assert engine_for("FINANCE") == agent_engines.LANGGRAPH
-    engines("FINANCE=deterministic")
-    assert engine_for("FINANCE") == agent_engines.LANGGRAPH
+    assert engine_for(role) == agent_engines.LANGGRAPH
+    engines(f"{role}=deterministic")
+    assert engine_for(role) == agent_engines.LANGGRAPH
 
 
 def test_the_graph_payload_carries_the_earlier_turns(transactional_db_session) -> None:

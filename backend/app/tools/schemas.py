@@ -467,3 +467,75 @@ class MarketingCampaignInput(IdempotentToolInput):
             "one before it, and so on. Use 1 when the current message only says to go ahead."
         ),
     )
+
+
+# --------------------------------------------------------------------------- executive
+class ExecutiveBriefingInput(TenantToolInput):
+    period: Literal["TODAY", "WEEK", "MONTH", "QUARTER"] = Field(
+        default="TODAY",
+        description=(
+            "TODAY, WEEK (this week), MONTH (this month) or QUARTER (this quarter). The books "
+            "are read by month: TODAY and WEEK give this month so far against last month."
+        ),
+    )
+    sections: list[Literal["FINANCE", "PEOPLE", "LEGAL", "MARKETING", "APPROVALS", "TASKS", "AI_COST"]] = Field(
+        default_factory=list,
+        max_length=7,
+        description="Only these sections; empty for all of them.",
+    )
+
+
+class CompareIncomeStatementsInput(TenantToolInput):
+    from_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="First month of the period asked about, YYYY-MM.")
+    to_period: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Last month of the period asked about, YYYY-MM.")
+    compare_from: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="First month of the period it is compared with, YYYY-MM.")
+    compare_to: str = Field(pattern=r"^\d{4}-(0[1-9]|1[0-2])$", description="Last month of the period it is compared with, YYYY-MM.")
+
+
+class MyApprovalsInput(TenantToolInput):
+    limit: int = Field(default=10, ge=1, le=30)
+
+
+class ContractReviewListInput(TenantToolInput):
+    risk_levels: list[Literal["LOW", "MEDIUM", "HIGH", "CRITICAL"]] = Field(
+        default_factory=list, max_length=4, description="Only these risk levels; empty for every level.",
+    )
+    unresolved_only: bool = Field(
+        default=False, description="Only reviews whose findings are not all decided yet.",
+    )
+    limit: int = Field(default=10, ge=1, le=30)
+
+
+class MarketingCampaignListInput(TenantToolInput):
+    waiting_only: bool = Field(
+        default=False,
+        description="Only campaigns waiting for someone: an outline or posts to approve, or a campaign sent for approval.",
+    )
+    limit: int = Field(default=10, ge=1, le=30)
+
+
+class AssignTaskInput(IdempotentToolInput):
+    assignee: str = Field(
+        min_length=1, max_length=120,
+        description="The person as the user named them (\"chị Lan\", \"Trần Văn Nam\"). " + _EMAIL_NOTE,
+    )
+    title: str = Field(min_length=1, max_length=255, description="The task in one short line, in the user's words.")
+    description: str | None = Field(default=None, max_length=4000, description="Further detail the user gave, if any.")
+    due_date: date | None = Field(
+        default=None, description="Deadline as YYYY-MM-DD, worked out from today's date; empty when the user gave none.",
+    )
+    priority: Literal["LOW", "MEDIUM", "HIGH", "URGENT"] = Field(
+        default="MEDIUM", description="HIGH or URGENT only when the user said the work is urgent or important.",
+    )
+
+
+class TaskListInput(TenantToolInput):
+    scope: Literal["ASSIGNED_BY_ME", "ASSIGNED_TO_ME"] = Field(
+        default="ASSIGNED_BY_ME",
+        description="ASSIGNED_BY_ME: work the user handed out. ASSIGNED_TO_ME: the user's own to-do list.",
+    )
+    status: Literal["OPEN", "OVERDUE", "DONE", "ALL"] = Field(
+        default="OPEN",
+        description="OPEN not finished yet, OVERDUE past its due date and not finished, DONE completed, ALL any.",
+    )
+    limit: int = Field(default=15, ge=1, le=50)

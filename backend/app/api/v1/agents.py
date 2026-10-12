@@ -20,6 +20,7 @@ from app.core.hr_capabilities import (
 )
 from app.core.tool_permissions import canonical_tool_names
 from app.core.security import PermissionRequired, get_current_active_user
+from app.domains.platform.agent_access import can_use_agent
 from app.domains.platform.position_service import has_permission
 from app.models.models import AIAgent, AgentWorkflow, AuditLog, DocumentChunk, LLMCostLog, User
 from app.schemas.schemas import AIAgentResponse
@@ -39,7 +40,6 @@ router = APIRouter(prefix="/agents", tags=["AI Agents"])
 AGENT_CONFIG_PERMISSION = "agents.configure"
 TOOL_DESCRIPTIONS = {
     **HR_CAPABILITY_DESCRIPTIONS,
-    "generate_and_execute_ceo_dag": "Lập và thực thi kế hoạch đa agent.",
     "audit_contract_risk": "Rà soát rủi ro hợp đồng.",
     "compare_contract_versions": "So sánh điều khoản giữa hai phiên bản hợp đồng.",
     "check_sensitive_data": "Phát hiện dữ liệu cá nhân và dữ liệu hạn chế.",
@@ -121,7 +121,9 @@ def _model_options(*, refresh: bool = False) -> dict:
 
 
 def _public_agent_response(agent: AIAgent, current_user: User) -> AIAgentResponse:
-    response = AIAgentResponse.model_validate(agent)
+    response = AIAgentResponse.model_validate(agent).model_copy(
+        update={"can_use": can_use_agent(None, current_user, agent.role_code)}
+    )
     if has_permission(None, current_user, AGENT_CONFIG_PERMISSION):
         return response
     return response.model_copy(update={
@@ -449,7 +451,9 @@ def update_agent(
     ))
     db.commit()
     db.refresh(agent)
-    return AIAgentResponse.model_validate(agent)
+    return AIAgentResponse.model_validate(agent).model_copy(
+        update={"can_use": can_use_agent(db, current_user, agent.role_code)}
+    )
 
 
 @router.patch(

@@ -18,6 +18,7 @@ from app.core.agent_models import agent_model_name, using_model
 from app.core.agent_status import UNDER_DEVELOPMENT_REPLY, is_under_development
 from app.core.agent_engines import uses_langgraph
 from app.core.config import settings
+from app.domains.platform.agent_access import require_agent_use
 from app.domains.platform.auth_service import upgrade_agent_grants
 from app.agents.langgraph.engine import LangGraphEngine
 from app.clients.ai_service_client import AIServiceError
@@ -38,6 +39,12 @@ FINANCE_UNAVAILABLE_REPLY = (
 )
 
 
+CEO_UNAVAILABLE_REPLY = (
+    "Trợ lý CEO tạm thời không trả lời được vì dịch vụ AI đang không phản hồi. Số liệu vẫn "
+    "xem được ở trang của từng phòng ban và trang Phê duyệt; vui lòng thử lại sau ít phút."
+)
+
+
 MARKETING_UNAVAILABLE_REPLY = (
     "Trợ lý Marketing tạm thời không trả lời được trong chat vì dịch vụ AI đang không phản "
     "hồi. Bạn vẫn lập chiến dịch được ở mục Chiến dịch mới, hoặc thử lại sau ít phút."
@@ -54,6 +61,7 @@ def execute_agent_chat(
     allow_graph: bool = True,
 ) -> Dict[str, Any]:
     """Run the turn on the role's engine: the graph, or its deterministic flow."""
+    require_agent_use(db, user, role_code)
     # Every LLM call of the turn runs on the model chosen for this agent.
     with using_model(agent_model_name(db, user.tenant_id, role_code)):
         if role_code.upper() != "HR" or (allow_graph and uses_langgraph("HR")):
@@ -253,6 +261,10 @@ def _dispatch_deterministic(
 
     elif role_code_upper == "MARKETING":
         response_data["reply"] = MARKETING_UNAVAILABLE_REPLY
+        return response_data
+
+    elif role_code_upper == "CEO":
+        response_data["reply"] = CEO_UNAVAILABLE_REPLY
         return response_data
 
     else:

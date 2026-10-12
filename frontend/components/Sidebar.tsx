@@ -273,15 +273,18 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
     return () => { active = false; window.clearInterval(interval); };
   }, [user]);
 
-  // Which agents are still being built comes from the backend, not from this list.
+  // Which agents are still being built, and which this user's position may not use, comes
+  // from the backend, not from this list.
   const [underDevelopment, setUnderDevelopment] = useState<Set<string>>(new Set());
+  const [notPermitted, setNotPermitted] = useState<Set<string>>(new Set());
   useEffect(() => {
     if (!user) return;
     let active = true;
-    api.get<Array<{ role_code: string; under_development?: boolean }>>("/api/v1/agents/")
+    api.get<Array<{ role_code: string; under_development?: boolean; can_use?: boolean }>>("/api/v1/agents/")
       .then(({ data }) => {
         if (active) {
           setUnderDevelopment(new Set(data.filter((agent) => agent.under_development).map((agent) => agent.role_code)));
+          setNotPermitted(new Set(data.filter((agent) => agent.can_use === false).map((agent) => agent.role_code)));
         }
       })
       .catch(() => {
@@ -567,7 +570,7 @@ export default function Sidebar({ agentStatuses = {} }: SidebarProps) {
                 paddingBottom: "4px",
               }}
             >
-              {AGENTS.map((agent) => {
+              {AGENTS.filter((agent) => !notPermitted.has(agent.role)).map((agent) => {
                 const isActive = pathname === agent.path;
                 const isOnline = agentStatuses[agent.role] !== false;
                 return (

@@ -19,6 +19,7 @@ from app.core.agent_engines import uses_langgraph
 from app.core.agent_models import bind_while_iterating
 from app.core.config import settings
 from app.core.security import get_current_active_user
+from app.domains.platform.agent_access import require_agent_use
 from app.models.models import AIAgent, ChatConversation, ChatMessage, Task, User
 from app.agents.chat import execute_agent_chat
 from app.agents.hr.stream import stream_hr_chat_events
@@ -160,6 +161,8 @@ def chat_with_agent(
     ).first()
     if not agent:
         raise HTTPException(status_code=404, detail=f"Agent '{role_code}' not found")
+    # Before the conversation is opened, so a refused turn leaves nothing behind.
+    require_agent_use(db, current_user, role_code)
 
     if req.conversation_id:
         conversation = _get_conversation(
@@ -223,6 +226,7 @@ def stream_chat_with_agent(
         raise HTTPException(status_code=404, detail=f"Agent '{role_code}' not found")
     if not agent.is_active:
         raise HTTPException(status_code=409, detail=f"Agent '{role_code}' is inactive")
+    require_agent_use(db, current_user, role_code)
 
     if req.conversation_id:
         conversation = _get_conversation(
@@ -464,6 +468,7 @@ def regenerate_last_response(
     ).order_by(ChatMessage.created_at.desc()).first()
     if not last_user_message:
         raise HTTPException(status_code=409, detail="Conversation has no user message")
+    require_agent_use(db, current_user, conversation.ai_agent.role_code)
     result = execute_agent_chat(
         db,
         current_user,

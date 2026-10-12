@@ -1,4 +1,4 @@
-"""The Finance (and Marketing) agents' tool grants, and how an existing row catches up.
+"""The Finance, Marketing and CEO agents' tool grants, and how an existing row catches up.
 
 Finance runs only on the graph, so its grants are gateway tool names. They arrive in
 stages; each stage is a version, and a row is upgraded once per version by adding only
@@ -62,10 +62,38 @@ MARKETING_TOOL_INTRODUCTIONS: dict[int, tuple[str, ...]] = {
     203: ("web_search",),
 }
 
+# The CEO assistant's, from 301. It runs only on the graph too, and reads the other
+# departments through their own filters; assigning a task is its one write.
+CEO_TOOL_INTRODUCTIONS: dict[int, tuple[str, ...]] = {
+    301: ("rag_search", "expense_lookup", "executive_briefing", "list_my_approvals"),
+    302: (
+        "get_income_statement",
+        "get_expense_breakdown",
+        "get_account_trend",
+        "budget_vs_actual",
+        "ar_ap_aging",
+        "payment_schedule",
+        "list_contract_reviews",
+        "list_marketing_campaigns",
+    ),
+    303: ("assign_task", "list_tasks"),
+    304: ("compare_income_statements",),
+}
+
+# What the placeholder seeded: a capability no flow dispatched, a free-form task with no
+# way to name its assignee, and two writes that belong to Legal and to the approvers.
+CEO_RETIRED_TOOLS: frozenset[str] = frozenset({
+    "generate_and_execute_ceo_dag",
+    "create_task",
+    "generate_legal_document",
+    "submit_approval_request",
+})
+
 # role -> (version -> tools that version added, tools retired before the first version)
 VERSIONED_ROLE_TOOLS: dict[str, tuple[dict[int, tuple[str, ...]], frozenset[str]]] = {
     "FINANCE": (FINANCE_TOOL_INTRODUCTIONS, FINANCE_RETIRED_TOOLS),
     "MARKETING": (MARKETING_TOOL_INTRODUCTIONS, frozenset()),
+    "CEO": (CEO_TOOL_INTRODUCTIONS, CEO_RETIRED_TOOLS),
 }
 
 

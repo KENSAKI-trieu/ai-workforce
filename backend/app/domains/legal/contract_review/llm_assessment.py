@@ -30,6 +30,7 @@ reused by the callers before this runs, so repeating a contract costs nothing.
 
 from __future__ import annotations
 
+import contextvars
 import json
 import logging
 import re
@@ -533,8 +534,12 @@ def assess_contract(
     _progress(on_progress, "REVIEW", "running", f"0/{len(batches)} nhóm điều khoản")
     results: list[dict[str, Any] | None] = [None] * len(batches)
     with ThreadPoolExecutor(max_workers=len(batches)) as pool:
+        # A fresh copy of the caller's context per call: the agent's model travels in it.
         futures = {
-            pool.submit(_call, ai_client, REVIEW_SYSTEM_PROMPT, {**context, "clauses_to_review": batch}, timeout): position
+            pool.submit(
+                contextvars.copy_context().run,
+                _call, ai_client, REVIEW_SYSTEM_PROMPT, {**context, "clauses_to_review": batch}, timeout,
+            ): position
             for position, batch in enumerate(batches)
         }
         for finished, future in enumerate(as_completed(futures), 1):

@@ -12,6 +12,7 @@ import uuid
 
 import pytest
 
+from app.core.agent_models import selected_model, using_model
 from app.domains.legal import contract_translation
 from app.domains.legal.contract_translation import (
     MAX_TRANSLATED_CHARS,
@@ -117,6 +118,24 @@ def test_a_long_contract_is_translated_in_order_block_by_block() -> None:
     result = text_for_review(text, client=translator)  # type: ignore[arg-type]
     assert len(translator.calls) > 1
     assert result.text.split("\n\n") == [p.replace("Clause", "Điều") for p in paragraphs]
+
+
+def test_every_block_is_translated_on_the_agents_model() -> None:
+    """The blocks run at once on worker threads, which do not inherit the bound model."""
+    text = "\n\n".join(f"Clause {index}. {ENGLISH_CLAUSE}" for index in range(300))
+    models: list[str | None] = []
+
+    def generate_text(messages, **_kwargs):
+        models.append(selected_model())
+        block = messages[-1]["content"]
+        return {"provider": "gemini", "content": "LANGUAGE: en\n" + block.replace("Clause", "Điều")}
+
+    translator = Translator()
+    translator.generate_text = generate_text  # type: ignore[method-assign]
+    with using_model("gemini-2.5-flash"):
+        text_for_review(text, client=translator)  # type: ignore[arg-type]
+    assert len(models) > 1
+    assert set(models) == {"gemini-2.5-flash"}
 
 
 # --- Through the gateway tool, which LangGraph reviews with ----------------------

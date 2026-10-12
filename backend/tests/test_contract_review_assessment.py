@@ -7,6 +7,7 @@ contract that withheld the employee's diploma was faulted only for lacking an IP
 
 import json
 
+from app.core.agent_models import selected_model, using_model
 from app.domains.legal import contract_review_store
 from app.domains.legal.chat_contract_review import run_chat_contract_review
 from app.domains.legal.contract_review.analyzer import ASSESSED_REVIEW_VERSION, review_contract
@@ -334,6 +335,26 @@ def test_the_provider_never_sees_personal_data_and_the_review_shows_it_back():
     marriage = next(finding for finding in result["findings"] if finding["clause"] == "4")
     assert "Lê Thị Mai" in marriage["reason"] and "Lê Thị Mai" in marriage["evidence"]
     assert result["metadata"]["party_b"] == "Lê Thị Mai"
+
+
+def test_every_stage_runs_on_the_agents_model():
+    """The clause batches run at once on worker threads, which do not inherit the bound model."""
+
+    class Recording(StagedModel):
+        def __init__(self, contract):
+            super().__init__(contract)
+            self.models: list[str | None] = []
+
+        def generate_text(self, messages, **kwargs):
+            self.models.append(selected_model())
+            return super().generate_text(messages, **kwargs)
+
+    model = Recording(EMPLOYMENT)
+    with using_model("gemini-2.5-flash"):
+        review_with_assessment(EMPLOYMENT, "hd.txt", "PARTY_A", client=model)
+
+    assert [stage for stage, _ in model.calls].count("review") >= 2
+    assert set(model.models) == {"gemini-2.5-flash"}
 
 
 def test_a_failed_batch_is_named_and_the_rest_still_counts():

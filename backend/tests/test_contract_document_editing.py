@@ -14,6 +14,7 @@ from docx.enum.text import WD_ALIGN_PARAGRAPH
 from docx.shared import Pt
 from pypdf import PdfReader
 
+from app.core.agent_models import selected_model
 from app.core.config import settings
 from app.domains.knowledge.document_markdown import to_markdown
 from app.domains.legal.contract_document import (
@@ -311,6 +312,30 @@ def test_streamed_review_reports_each_stage_and_keeps_the_file(client, employee_
     assert review["document"]["editable"] is True
     stored = list(legal_storage.rglob("original/*"))
     assert stored and stored[0].read_bytes() != b""
+
+
+def test_the_streamed_review_runs_on_the_legal_agents_model(client, employee_token_headers, monkeypatch):
+    """The review runs on a thread of its own, which does not inherit the bound model."""
+    monkeypatch.setattr(
+        "app.core.agent_models.agent_model_name",
+        lambda db, tenant_id, role_code: "gemini-2.5-flash" if role_code == "LEGAL" else None,
+    )
+    seen = []
+
+    def review(db, user, filename, data, represented_party, progress):
+        seen.append(selected_model())
+        return {"review_id": "review-1"}
+
+    monkeypatch.setattr("app.api.v1.specialized._review_uploaded_contract", review)
+    response = client.post(
+        "/api/v1/legal/review-document/stream",
+        files={"file": ("hop-dong-model.docx", _docx(), "application/octet-stream")},
+        data={"represented_party": "PARTY_B"},
+        headers=employee_token_headers,
+    )
+    assert response.status_code == 200
+    assert _sse_events(response.text)[-1] == ("complete", {"review_id": "review-1"})
+    assert seen == ["gemini-2.5-flash"]
 
 
 def test_accept_apply_download_and_submit_for_approval(client, employee_token_headers, ceo_token_headers, legal_storage):

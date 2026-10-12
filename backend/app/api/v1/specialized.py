@@ -22,7 +22,7 @@ from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from sqlalchemy.orm.attributes import flag_modified
 
-from app.core.agent_models import agent_model_dependency
+from app.core.agent_models import agent_model_dependency, selected_model, using_model
 from app.core.database import get_db
 from app.core.security import PermissionRequired, get_current_active_user
 from app.models.models import AIAgent, AgentWorkflow, ContractReview, User, WorkflowApproval
@@ -763,6 +763,8 @@ async def stream_review_legal_document(
     filename, data = await _legal_file_bytes(file)
     events: "queue.Queue[tuple[str, dict[str, Any]] | None]" = queue.Queue()
     started = time.monotonic()
+    # Bound by LEGAL_MODEL in this request's context; a plain thread does not inherit it.
+    model = selected_model()
 
     def progress(stage: str, status: str, detail: str | None = None) -> None:
         events.put(("progress", {
@@ -772,9 +774,10 @@ async def stream_review_legal_document(
 
     def work() -> None:
         try:
-            events.put(("complete", _review_uploaded_contract(
-                db, current_user, filename, data, represented_party, progress
-            )))
+            with using_model(model):
+                events.put(("complete", _review_uploaded_contract(
+                    db, current_user, filename, data, represented_party, progress
+                )))
         except HTTPException as exc:
             db.rollback()
             events.put(("error", {"message": str(exc.detail), "status_code": exc.status_code}))

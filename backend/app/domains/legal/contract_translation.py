@@ -13,6 +13,7 @@ included, is sent to the model, which says what it is.
 
 from __future__ import annotations
 
+import contextvars
 import logging
 import re
 import unicodedata
@@ -170,7 +171,12 @@ def text_for_review(
         raise ContractNotReviewable(TOO_LONG_REPLY)
     try:
         with ThreadPoolExecutor(max_workers=len(blocks)) as pool:
-            results = list(pool.map(lambda block: _translate_block(ai_client, block), blocks))
+            # A fresh copy of the caller's context per call: the agent's model travels in it.
+            futures = [
+                pool.submit(contextvars.copy_context().run, _translate_block, ai_client, block)
+                for block in blocks
+            ]
+            results = [future.result() for future in futures]
     except (AIServiceError, TypeError, ValueError):
         logger.warning("Contract translation failed; the contract is not reviewed", exc_info=True)
         raise ContractNotReviewable(UNAVAILABLE_REPLY) from None

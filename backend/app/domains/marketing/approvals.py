@@ -1,9 +1,9 @@
 """Approval of a campaign's final posts before they are published.
 
 The author sends the posts they settled on; someone holding marketing.content.approve
-signs or rejects them in the approval centre, and may correct a post while approving. The
-author never signs their own campaign. Signing changes the campaign's stage; nothing is
-posted anywhere by the system.
+signs or rejects them in the approval centre, and may correct a post while approving -- the
+author too, when they hold it. Signing changes the campaign's stage; nothing is posted
+anywhere by the system.
 """
 
 from __future__ import annotations

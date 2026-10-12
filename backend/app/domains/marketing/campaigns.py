@@ -435,7 +435,7 @@ def decide_drafts(
 
 
 def submit_for_approval(db: Session, user: User, campaign_id: Any) -> tuple[MarketingCampaign, Any]:
-    """Send the settled posts to whoever signs content; never to their author."""
+    """Send the settled posts to whoever signs content."""
     from app.domains.platform.approval_access import eligible_approvers
     from app.domains.platform.notification_service import create_notification
 

@@ -103,3 +103,42 @@ def test_a_tag_naming_the_tool_is_dropped_but_a_document_citation_stays():
     assert citation_verification(state)["final_answer"] == "Tổng nợ quá hạn là 125.000.000 ₫."
     kept = "Theo TT200 [Citation: TT200.pdf, Điều 52]."
     assert _drop_tool_tags(kept, {"ar_ap_aging", "fin_invoices posted out"}) == kept
+
+
+POLICY_CHUNK = {
+    "id": "chunk-7",
+    "document_id": "doc-7",
+    "document_title": "Quy_dinh_Cong_tac_phi_2025.md",
+    "content": "Phụ cấp lưu trú: 500.000 VNĐ/ngày trong nước, 1.500.000 VNĐ/ngày nước ngoài.",
+}
+
+
+def _searched(answer: str, citations=None):
+    # No tool ran: the graph's own search found documents, as it does on every turn.
+    return {**_state(answer, []), "tool_calls": [], "retrieved_context": [POLICY_CHUNK], "citations": citations or []}
+
+
+def test_a_figure_printed_in_a_document_it_read_is_not_invented():
+    # The CEO quoting the expense policy used to be withheld as "no books behind it".
+    answer = "Phụ cấp lưu trú là 500.000 VNĐ/ngày trong nước và 1.500.000 VNĐ/ngày nước ngoài."
+    passed = citation_verification(_searched(answer, [{"document_title": "Quy_dinh_Cong_tac_phi_2025.md"}]))
+    assert "errors" not in passed
+    invented = citation_verification(_searched("Phụ cấp lưu trú nước ngoài là 2.500.000 VNĐ/ngày."))
+    assert invented["errors"][-1]["error"] == "UNSUPPORTED_FIGURES"
+    # What was refused can be traced: the words around it are kept.
+    assert "nước ngoài là 2.500.000 VNĐ" in invented["errors"][-1]["context"][0]
+
+
+def test_a_reply_that_needed_no_document_is_not_withheld_for_citing_none():
+    # Asked what it can do, the assistant answers from its role, not from the marketing
+    # book the graph's search happened to find.
+    passed = citation_verification(_searched("Tôi tóm tắt tình hình công ty, liệt kê việc chờ duyệt và giao việc."))
+    assert "final_answer" not in passed and "errors" not in passed
+    # A citation it does give must still name what was read.
+    invented = citation_verification(_searched("Theo quy chế, bạn được tự duyệt.", [{"document_title": "Quy_che_noi_bo.pdf"}]))
+    assert invented["errors"][-1]["error"] == "UNVERIFIED_CITATION"
+
+
+def test_a_document_domain_still_withholds_an_uncited_answer_beside_its_documents():
+    state = {**_searched("Phụ cấp lưu trú do công ty quy định."), "numbers_from_tools": False}
+    assert citation_verification(state)["errors"][-1]["error"] == "UNVERIFIED_CITATION"

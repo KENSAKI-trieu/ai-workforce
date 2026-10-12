@@ -392,3 +392,145 @@ def test_the_chat_tool_starts_a_campaign_from_the_users_own_brief(client, db, em
     assert f"/agents/MARKETING?campaign={result['campaign_id']}" in result["reply"]
     campaign = db.get(MarketingCampaign, uuid.UUID(result["campaign_id"]))
     assert campaign.brief == BRIEF and campaign.conversation_id == conversation.id
+
+
+def _login(client, email: str) -> dict[str, str]:
+    login = client.post("/api/v1/auth/login", json={"email": email, "password": "Password123!"})
+    return {"Authorization": f"Bearer {login.json()['access_token']}"}
+
+
+def _settled(db, user) -> MarketingCampaign:
+    campaign = _outlined(db, user)
+    campaign = decide_outline(db, user, campaign.id, "approve", writer=_writer(ScriptedModel()))
+    return decide_drafts(db, user, campaign.id, "approve")
+
+
+def test_a_rejected_campaign_is_corrected_and_sent_again(client, db, employee):
+    campaign, first = submit_for_approval(db, employee, _settled(db, employee).id)
+
+    response = client.post(
+        f"/api/v1/approvals/{first.id}/action",
+        json={"action": "REJECT", "comments": "Bỏ con số 70%"},
+        headers=_login(client, "it.lead@company.com"),
+    )
+    assert response.status_code == 200, response.text
+    db.refresh(campaign)
+    assert campaign.stage == "REJECTED"
+    # Sending again needs the posts settled anew.
+    with pytest.raises(HTTPException) as unsettled:
+        submit_for_approval(db, employee, campaign.id)
+    assert unsettled.value.status_code == 409
+
+    campaign = decide_drafts(
+        db, employee, campaign.id, "edit", updated_drafts={"facebook": "PayNow đối soát hoá đơn tự động."}
+    )
+    assert campaign.stage == "FINAL"
+    campaign, second = submit_for_approval(db, employee, campaign.id)
+
+    assert campaign.stage == "SUBMITTED" and campaign.approval_id == second.id != first.id
+    assert second.payload["drafts"]["facebook"] == "PayNow đối soát hoá đơn tự động."
+    assert second.payload["fact_check"]["edited_after_check"] == ["facebook"]
+
+
+def test_post_edits_name_a_channel_and_hold_some_text(db, employee):
+    campaign = _outlined(db, employee)
+    campaign = decide_outline(db, employee, campaign.id, "approve", writer=_writer(ScriptedModel()))
+    for drafts in ({"tiktok": "Bài mới"}, {}, {"facebook": "   "}, {"facebook": "x" * 8001}):
+        with pytest.raises(HTTPException) as refused:
+            decide_drafts(db, employee, campaign.id, "edit", updated_drafts=drafts)
+        assert refused.value.status_code == 422, drafts
+    db.refresh(campaign)
+    assert campaign.stage == "DRAFTS_PENDING"
+
+    # Re-sending a post unchanged does not tell the approver it was rewritten after the check.
+    campaign = decide_drafts(
+        db, employee, campaign.id, "edit", updated_drafts={"instagram": campaign.drafts["instagram"]}
+    )
+    assert campaign.stage == "FINAL"
+    assert "edited_platforms" not in campaign.fact_check_report
+
+
+def test_a_drafting_campaign_left_behind_by_a_dead_request_can_be_decided_again(db, employee):
+    from datetime import datetime, timedelta, timezone
+
+    campaign = _outlined(db, employee)
+    campaign.stage = "DRAFTING"
+    db.commit()
+    with pytest.raises(HTTPException) as live:
+        decide_outline(db, employee, campaign.id, "approve", writer=_writer(ScriptedModel()))
+    assert live.value.status_code == 409
+
+    campaign.updated_at = datetime.now(timezone.utc) - timedelta(minutes=11)
+    db.commit()
+    campaign = decide_outline(db, employee, campaign.id, "approve", writer=_writer(ScriptedModel()))
+    assert campaign.stage == "DRAFTS_PENDING"
+
+
+def test_a_brief_must_be_present_short_enough_and_from_someone_allowed(db, employee, monkeypatch):
+    for brief, status in (("   ", 422), ("x" * 8001, 422)):
+        with pytest.raises(HTTPException) as refused:
+            start_campaign(db, employee, brief, writer=_writer(ScriptedModel()))
+        assert refused.value.status_code == status
+
+    monkeypatch.setattr(campaigns_module, "_permissions", lambda _db, _user: set())
+    model = ScriptedModel()
+    with pytest.raises(HTTPException) as forbidden:
+        start_campaign(db, employee, BRIEF, writer=_writer(model))
+    assert forbidden.value.status_code == 403
+    assert model.calls == []
+
+
+def test_web_pages_are_cited_after_the_documents(db, employee, monkeypatch):
+    queries: list[str] = []
+
+    def fake_search_web(_db, _user, agent_role, query, *, max_results):
+        queries.append(query)
+        assert agent_role == "MARKETING"
+        return {"results": [
+            {"title": "Thị trường SME 2026", "url": "https://example.vn/sme", "site": "example.vn",
+             "snippet": "62% SME dùng phần mềm kế toán."},
+            {"title": "Trang trống", "url": "https://example.vn/empty", "site": "example.vn", "snippet": ""},
+        ]}
+
+    monkeypatch.setattr(campaigns_module, "web_search_enabled", lambda _db, _agent: True)
+    monkeypatch.setattr(campaigns_module, "search_web", fake_search_web)
+    model = ScriptedModel()
+
+    campaign = _outlined(db, employee, model)
+
+    documents = [source for source in campaign.sources if source["kind"] == "document"]
+    pages = [source for source in campaign.sources if source["kind"] == "web"]
+    # A page with nothing to check a claim against is dropped; the rest follow the documents.
+    assert [page["url"] for page in pages] == ["https://example.vn/sme"]
+    assert pages[0]["ref"] == len(documents) + 1
+    # The brief leaves for the search engine pseudonymised, as it does for the writer.
+    assert "0912 345 678" not in queries[0] and "[SĐT_1]" in queries[0]
+    _kind, prompt = model.calls[0]
+    assert "(Web) Thị trường SME 2026" in prompt and "https://example.vn/sme" in prompt
+
+
+def test_a_failed_web_search_does_not_stop_the_campaign(db, employee, monkeypatch):
+    from app.domains.knowledge.web_search import WebSearchUnavailable
+
+    def down(*_args, **_kwargs):
+        raise WebSearchUnavailable("quota")
+
+    monkeypatch.setattr(campaigns_module, "web_search_enabled", lambda _db, _agent: True)
+    monkeypatch.setattr(campaigns_module, "search_web", down)
+    stages: list[tuple[str, str, str | None]] = []
+
+    campaign = start_campaign(
+        db, employee, BRIEF, writer=_writer(ScriptedModel()),
+        progress=lambda stage, status, detail=None: stages.append((stage, status, detail)),
+    )
+
+    assert campaign.stage == "OUTLINE_PENDING"
+    assert all(source["kind"] == "document" for source in campaign.sources)
+    assert ("WEB", "done", "0 trang web") in stages
+
+
+def test_an_author_who_signs_content_may_approve_their_own_campaign(db, manager):
+    # Rule since 12/10: whoever holds the permission decides, the requester included.
+    campaign, approval = submit_for_approval(db, manager, _settled(db, manager).id)
+    assert campaign.stage == "SUBMITTED"
+    assert can_approve(db, manager, approval)

@@ -517,16 +517,27 @@ def _used_non_document_tool(state: WorkforceAgentState) -> bool:
     )
 
 
+def _around(answer: str, written: str, width: int = 40) -> str:
+    at = answer.find(written)
+    if at < 0:
+        return written
+    return answer[max(0, at - width):at + len(written) + width].replace("\n", " ")
+
+
 def _unsupported_figures(state: WorkforceAgentState) -> dict[str, Any] | None:
-    """Withhold a reply whose figures no tool returned, showing the tools' own instead."""
+    """Withhold a reply whose figures no tool returned, showing the tools' own instead.
+
+    A figure printed in a document the model was shown is supported too: an allowance in
+    the expense policy is the company's own number, and quoting it is not arithmetic.
+    """
     results = [
         call.get("result")
         for call in state.get("tool_calls") or []
         if call.get("status") == "SUCCESS" and call.get("name") != "rag_search"
     ]
-    unsupported = unsupported_figures(
-        str(state.get("final_answer") or ""), results, [_latest_user_text(state)]
-    )
+    documents = [str(item.get("content")) for item in _searched_documents(state) if item.get("content")]
+    answer = str(state.get("final_answer") or "")
+    unsupported = unsupported_figures(answer, [*results, *documents], [_latest_user_text(state)])
     if not unsupported:
         return None
     rendered = render_results(results)
@@ -537,7 +548,13 @@ def _unsupported_figures(state: WorkforceAgentState) -> dict[str, Any] | None:
         "citations": [],
         "errors": [
             *(state.get("errors") or []),
-            {"node": "citation_verification", "error": "UNSUPPORTED_FIGURES", "figures": unsupported[:10]},
+            {
+                "node": "citation_verification",
+                "error": "UNSUPPORTED_FIGURES",
+                "figures": unsupported[:10],
+                # The withheld reply is gone; the words around each figure say what it was.
+                "context": [_around(answer, written) for written in unsupported[:10]],
+            },
         ],
         "execution_trace": _trace(state, "citation_verification", "FAILED"),
     }
@@ -605,6 +622,12 @@ def _verify_citations(state: WorkforceAgentState) -> dict[str, Any]:
         if supplied:
             return _withhold_answer(state, "CITATION_WITHOUT_CONTEXT", supplied)
         return {"citations": [], "execution_trace": _trace(state, "citation_verification", "NO_CONTEXT")}
+    if not supplied and state.get("numbers_from_tools"):
+        # These domains answer from their tools and search the documents on every turn
+        # anyway, so a reply that needed none -- "what can you do?", a refusal -- was
+        # withheld for not citing what it never used. Its figures were held to the tools and
+        # the documents above; a citation it does give is still checked below.
+        return {"execution_trace": _trace(state, "citation_verification", "UNCITED")}
     if not supplied or not all(_citation_is_verified(citation, context) for citation in supplied):
         return _withhold_answer(
             state, "UNVERIFIED_CITATION",
